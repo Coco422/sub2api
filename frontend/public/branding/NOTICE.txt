@@ -1,0 +1,6 @@
+狗站 / 88dog — static corgi mark
+
+Created for this project on 2026-10-19 using the built-in image generation tool.
+Optimized PNG: /branding/corgi.png (256 px).
+The same PNG is embedded into /logo.svg to preserve the upstream logo and favicon paths.
+Generation prompt: frontend/branding-prompt.txt in the source repository.

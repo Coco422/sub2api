@@ -327,6 +327,18 @@ describe('useAppStore', () => {
   // --- 公开设置 ---
 
   describe('公开设置加载', () => {
+    it('将注入的上游默认站名显示为狗站，保留原始配置和自定义 Logo', () => {
+      const settings = createPublicSettings({ site_name: 'Sub2API', site_logo: '/custom-dog.svg' })
+      window.__APP_CONFIG__ = settings
+      const store = useAppStore()
+
+      expect(store.initFromInjectedConfig()).toBe(true)
+      expect(store.siteName).toBe('狗站')
+      expect(store.siteLogo).toBe('/custom-dog.svg')
+      expect(store.cachedPublicSettings?.site_name).toBe('Sub2API')
+      expect(settings.site_name).toBe('Sub2API')
+    })
+
     it('并发调用复用并等待同一个请求，包括 force 调用', async () => {
       const deferred = createDeferred<PublicSettings>()
       vi.mocked(getPublicSettings).mockReturnValue(deferred.promise)

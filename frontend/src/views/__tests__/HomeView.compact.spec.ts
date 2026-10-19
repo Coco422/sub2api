@@ -87,6 +87,18 @@ describe('HomeView compact mode', () => {
     expect(wrapper.find('[data-testid="compact-home"]').exists()).toBe(false)
   })
 
+  it('renders 狗站 / 88dog when the server still supplies upstream branding', () => {
+    const wrapper = mountHome({
+      compact_home_enabled: true,
+      site_name: 'Sub2API',
+      site_subtitle: 'Subscription to API Conversion Platform',
+    })
+
+    expect(wrapper.get('h1').text()).toBe('狗站')
+    expect(wrapper.text()).toContain('88dog · 你的 AI 接口小站')
+    expect(wrapper.find('img').attributes('src')).toBe('/logo.svg')
+  })
+
   it('renders custom URL content ahead of compact mode', () => {
     const wrapper = mountHome({
       compact_home_enabled: true,
