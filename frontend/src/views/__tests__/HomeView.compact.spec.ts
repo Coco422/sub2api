@@ -33,7 +33,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-i18n')>()
   return {
     ...actual,
-    useI18n: () => ({ t: (key: string) => key }),
+    useI18n: () => ({ t: (key: string) => key, locale: { value: 'zh-CN' } }),
   }
 })
 
@@ -94,9 +94,16 @@ describe('HomeView compact mode', () => {
       site_subtitle: 'Subscription to API Conversion Platform',
     })
 
-    expect(wrapper.get('h1').text()).toBe('狗站')
+    expect(wrapper.get('h1').text()).toBe('88dog')
     expect(wrapper.text()).toContain('88dog · 你的 AI 接口小站')
-    expect(wrapper.find('img').attributes('src')).toBe('/logo.svg')
+    expect(wrapper.find('img').attributes('src')).toBe('/logo.svg?v=88dog-orange-20261021')
+  })
+
+  it('keeps a custom site name visible instead of showing the fixed 88dog wordmark', () => {
+    const wrapper = mountHome({ compact_home_enabled: true, site_name: 'Custom service', site_logo: '' })
+    expect(wrapper.get('h1').text()).toBe('Custom service')
+    expect(wrapper.get('h1').classes()).not.toContain('sr-only')
+    expect(wrapper.find('img[src="/branding/88dog-wordmark.png"]').exists()).toBe(false)
   })
 
   it('renders custom URL content ahead of compact mode', () => {
@@ -192,5 +199,16 @@ describe('HomeView compact mode', () => {
     })
 
     expect(modelPlazaDestination(wrapper)).toBeUndefined()
+  })
+})
+
+// The links must be actual anchors for navigation, including anonymous visitors.
+describe('88dog service entrances', () => {
+  it.each([true, false])('offers docs, recharge and drawing when compact=%s', (compact) => {
+    const wrapper = mountHome({ compact_home_enabled: compact })
+    const hrefs = wrapper.findAll('a[href]').map(link => link.attributes('href'))
+    expect(hrefs).toContain('https://doc.88888888.dog/')
+    expect(hrefs).toContain('https://getplus.88888888.dog/')
+    expect(hrefs).toContain('https://tutu.88888888.dog/create')
   })
 })

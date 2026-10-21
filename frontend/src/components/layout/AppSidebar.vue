@@ -11,10 +11,10 @@
       <!-- Custom Logo or Default Logo -->
       <router-link
         :to="homePath"
-        class="sidebar-logo flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl shadow-glow transition-opacity hover:opacity-80"
+        class="sidebar-logo flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl transition-opacity hover:opacity-80"
         @click="handleMenuItemClick(homePath)"
       >
-        <img v-if="settingsLoaded" :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
+        <img v-if="settingsLoaded" :src="siteLogo || '/logo.svg?v=88dog-orange-20261021'" alt="Logo" class="h-full w-full object-contain" />
       </router-link>
       <div class="sidebar-brand" :class="{ 'sidebar-brand-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">
         <router-link
@@ -166,6 +166,13 @@
           </router-link>
         </div>
       </template>
+      <div class="sidebar-section mt-3 border-t border-gray-100 pt-3 dark:border-dark-800">
+        <a v-for="link in serviceLinks" :key="link.href" :href="link.href" target="_blank" rel="noopener noreferrer"
+          class="sidebar-link mb-1" :class="{ 'sidebar-link-collapsed': sidebarCollapsed }" :title="link.label">
+          <Icon :name="link.icon" size="md" class="h-5 w-5 flex-shrink-0" />
+          <span class="sidebar-label" :class="{ 'sidebar-label-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">{{ link.label }} ↗</span>
+        </a>
+      </div>
     </nav>
 
     <!-- Bottom Section -->
@@ -216,6 +223,7 @@ import { useAdminSettingsStore, useAppStore, useAuthStore, useOnboardingStore, u
 import VersionBadge from '@/components/common/VersionBadge.vue'
 import FeatureSearch from './FeatureSearch.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { getServiceLinks } from '@/utils/serviceLinks'
 import { sanitizeSvg } from '@/utils/sanitize'
 import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
@@ -260,7 +268,8 @@ function applyFeatureFlags(items: NavItem[]): NavItem[] {
   return out
 }
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const serviceLinks = computed(() => getServiceLinks(locale.value))
 
 const route = useRoute()
 const router = useRouter()
@@ -797,6 +806,7 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true },
     { path: '/affiliate', label: t('nav.affiliate'), icon: UsersIcon, hideInSimpleMode: true, featureFlag: flagAffiliate },
     { path: '/support-tickets', label: t('nav.supportTickets'), icon: SupportTicketIcon, featureFlag: flagUserSupportTickets, badge: () => supportTicketStore.userUnread },
+    { path: '/security-records', label: t('securityRecords.title'), icon: ShieldIcon },
     { path: '/profile', label: t('nav.profile'), icon: UserIcon },
     ...customMenuItemsForUser.value.map((item): NavItem => ({
       path: `/custom/${item.id}`,

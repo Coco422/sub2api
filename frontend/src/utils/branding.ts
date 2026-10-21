@@ -1,12 +1,12 @@
 import { sanitizeUrl } from '@/utils/url'
 
 // Keep fork-specific defaults here so upstream business pages stay unchanged.
-export const DEFAULT_SITE_NAME = '狗站'
+export const DEFAULT_SITE_NAME = '88dog'
 export const DEFAULT_SITE_SUBTITLE = '88dog · 你的 AI 接口小站'
 
 export function resolveSiteName(value?: string): string {
   const name = value?.trim()
-  return !name || name === 'Sub2API' ? DEFAULT_SITE_NAME : name
+  return !name || ['Sub2API', '狗站'].includes(name) ? DEFAULT_SITE_NAME : name
 }
 
 export function resolveSiteSubtitle(value?: string): string {

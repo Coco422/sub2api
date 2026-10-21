@@ -21,9 +21,9 @@ describe('resolveDocumentTitle', () => {
   })
 
   it('站点名为空时，回退默认站点名', () => {
-    expect(resolveDocumentTitle('Dashboard', '')).toBe('Dashboard - 狗站')
-    expect(resolveDocumentTitle(undefined, '   ')).toBe('狗站')
-    expect(resolveDocumentTitle('Dashboard', 'Sub2API')).toBe('Dashboard - 狗站')
+    expect(resolveDocumentTitle('Dashboard', '')).toBe('Dashboard - 88dog')
+    expect(resolveDocumentTitle(undefined, '   ')).toBe('88dog')
+    expect(resolveDocumentTitle('Dashboard', 'Sub2API')).toBe('Dashboard - 88dog')
   })
 
   it('站点名变更时仅影响后续路由标题计算', () => {

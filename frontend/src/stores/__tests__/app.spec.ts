@@ -333,7 +333,7 @@ describe('useAppStore', () => {
       const store = useAppStore()
 
       expect(store.initFromInjectedConfig()).toBe(true)
-      expect(store.siteName).toBe('狗站')
+      expect(store.siteName).toBe('88dog')
       expect(store.siteLogo).toBe('/custom-dog.svg')
       expect(store.cachedPublicSettings?.site_name).toBe('Sub2API')
       expect(settings.site_name).toBe('Sub2API')

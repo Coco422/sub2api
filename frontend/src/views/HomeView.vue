@@ -22,7 +22,7 @@
       <nav class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 sm:gap-4">
         <div class="flex min-w-0 flex-1 items-center gap-3">
           <img
-            :src="siteLogo || '/logo.svg'"
+            :src="siteLogo || '/logo.svg?v=88dog-orange-20261021'"
             alt="Logo"
             class="h-9 w-9 shrink-0 rounded-lg object-contain"
           />
@@ -70,11 +70,11 @@
     <main class="flex min-w-0 flex-1 items-center justify-center px-4 py-16 sm:px-6">
       <div class="min-w-0 max-w-2xl text-center">
         <img
-          :src="siteLogo || '/logo.svg'"
-          alt="Logo"
-          class="mx-auto mb-6 h-20 w-20 rounded-2xl object-contain"
+          :src="siteLogo || (useDefaultBrand ? '/branding/88dog-wordmark.png' : '/logo.svg?v=88dog-orange-20261021')"
+          :alt="siteName"
+          :class="useDefaultBrand ? 'brand-wordmark mx-auto mb-6 h-28 w-80 max-w-full' : 'mx-auto mb-6 h-20 w-20 rounded-2xl object-contain'"
         />
-        <h1 class="[overflow-wrap:anywhere] text-3xl font-bold md:text-4xl">{{ siteName }}</h1>
+        <h1 :class="useDefaultBrand ? 'sr-only' : '[overflow-wrap:anywhere] text-3xl font-bold md:text-4xl'">{{ siteName }}</h1>
         <p class="mt-4 whitespace-pre-wrap [overflow-wrap:anywhere] text-base text-gray-600 dark:text-dark-300">{{ siteSubtitle }}</p>
         <router-link
           :to="isAuthenticated ? dashboardPath : '/login'"
@@ -86,6 +86,9 @@
     </main>
 
     <footer class="min-w-0 border-t border-gray-200 px-4 py-5 text-center text-sm text-gray-500 [overflow-wrap:anywhere] sm:px-6 dark:border-dark-800 dark:text-dark-400">
+      <nav aria-label="88dog 服务" class="mb-3 flex flex-wrap justify-center gap-4">
+        <a v-for="link in serviceLinks" :key="link.href" :href="link.href" target="_blank" rel="noopener noreferrer" class="hover:text-primary-600">{{ link.label }} ↗</a>
+      </nav>
       &copy; {{ currentYear }} {{ siteName }}
     </footer>
   </div>
@@ -93,35 +96,18 @@
   <!-- Default Home Page -->
   <div
     v-else
-    class="relative flex min-h-screen flex-col overflow-hidden bg-gradient-to-br from-gray-50 via-primary-50/30 to-gray-100 dark:from-dark-950 dark:via-dark-900 dark:to-dark-950"
+    class="relative flex min-h-screen flex-col overflow-hidden bg-gray-50 dark:bg-dark-950"
   >
-    <!-- Background Decorations -->
-    <div class="pointer-events-none absolute inset-0 overflow-hidden">
-      <div
-        class="absolute -right-40 -top-40 h-96 w-96 rounded-full bg-primary-400/20 blur-3xl"
-      ></div>
-      <div
-        class="absolute -bottom-40 -left-40 h-96 w-96 rounded-full bg-primary-500/15 blur-3xl"
-      ></div>
-      <div
-        class="absolute left-1/3 top-1/4 h-72 w-72 rounded-full bg-primary-300/10 blur-3xl"
-      ></div>
-      <div
-        class="absolute bottom-1/4 right-1/4 h-64 w-64 rounded-full bg-primary-400/10 blur-3xl"
-      ></div>
-      <div
-        class="absolute inset-0 bg-[linear-gradient(rgba(191,87,14,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(191,87,14,0.03)_1px,transparent_1px)] bg-[size:64px_64px]"
-      ></div>
-    </div>
-
     <!-- Header -->
     <header class="relative z-20 px-6 py-4">
       <nav class="mx-auto flex max-w-6xl items-center justify-between">
         <!-- Logo -->
         <div class="flex items-center">
-          <div class="h-10 w-10 overflow-hidden rounded-xl shadow-md">
-            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
-          </div>
+          <img
+            :src="siteLogo || (useDefaultBrand ? '/branding/88dog-wordmark.png' : '/logo.svg?v=88dog-orange-20261021')"
+            :alt="siteName"
+            :class="useDefaultBrand ? 'brand-wordmark h-12 w-36' : 'h-10 w-10 rounded-xl object-contain'"
+          />
         </div>
 
         <!-- Nav Actions -->
@@ -206,8 +192,9 @@
         <div class="mb-12 flex flex-col items-center justify-between gap-12 lg:flex-row lg:gap-16">
           <!-- Left: Text Content -->
           <div class="flex-1 text-center lg:text-left">
+            <img v-if="useDefaultBrand" src="/branding/88dog-wordmark.png" :alt="siteName" class="brand-wordmark mx-auto mb-4 h-28 w-80 max-w-full lg:mx-0" />
             <h1
-              class="mb-4 text-4xl font-bold text-gray-900 dark:text-white md:text-5xl lg:text-6xl"
+              :class="useDefaultBrand ? 'sr-only' : 'mb-4 text-4xl font-bold text-gray-900 dark:text-white md:text-5xl lg:text-6xl'"
             >
               {{ siteName }}
             </h1>
@@ -219,7 +206,7 @@
             <div>
               <router-link
                 :to="isAuthenticated ? dashboardPath : '/login'"
-                class="btn btn-primary px-8 py-3 text-base shadow-lg shadow-primary-500/30"
+                class="btn btn-primary px-8 py-3 text-base"
               >
                 {{ isAuthenticated ? t('home.goToDashboard') : t('home.getStarted') }}
                 <Icon name="arrowRight" size="md" class="ml-2" :stroke-width="2" />
@@ -265,42 +252,22 @@
           </div>
         </div>
 
-        <!-- Feature Tags - Centered -->
-        <div class="mb-12 flex flex-wrap items-center justify-center gap-4 md:gap-6">
-          <div
-            class="inline-flex items-center gap-2.5 rounded-full border border-gray-200/50 bg-white/80 px-5 py-2.5 shadow-sm backdrop-blur-sm dark:border-dark-700/50 dark:bg-dark-800/80"
-          >
-            <Icon name="swap" size="sm" class="text-primary-500" />
-            <span class="text-sm font-medium text-gray-700 dark:text-dark-200">{{
-              t('home.tags.subscriptionToApi')
-            }}</span>
-          </div>
-          <div
-            class="inline-flex items-center gap-2.5 rounded-full border border-gray-200/50 bg-white/80 px-5 py-2.5 shadow-sm backdrop-blur-sm dark:border-dark-700/50 dark:bg-dark-800/80"
-          >
-            <Icon name="shield" size="sm" class="text-primary-500" />
-            <span class="text-sm font-medium text-gray-700 dark:text-dark-200">{{
-              t('home.tags.stickySession')
-            }}</span>
-          </div>
-          <div
-            class="inline-flex items-center gap-2.5 rounded-full border border-gray-200/50 bg-white/80 px-5 py-2.5 shadow-sm backdrop-blur-sm dark:border-dark-700/50 dark:bg-dark-800/80"
-          >
-            <Icon name="chart" size="sm" class="text-primary-500" />
-            <span class="text-sm font-medium text-gray-700 dark:text-dark-200">{{
-              t('home.tags.realtimeBilling')
-            }}</span>
-          </div>
-        </div>
+        <nav aria-label="88dog 服务" class="mb-12 flex flex-wrap items-center justify-center gap-4 md:gap-6">
+          <a v-for="link in serviceLinks" :key="link.href" :href="link.href" target="_blank" rel="noopener noreferrer"
+            class="inline-flex items-center gap-2.5 rounded-full border border-gray-200/50 bg-white/80 px-5 py-2.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:border-primary-400 hover:text-primary-600 dark:border-dark-700/50 dark:bg-dark-800/80 dark:text-dark-200 dark:hover:text-primary-400">
+            <Icon :name="link.icon" size="sm" class="text-primary-500" />
+            {{ link.label }} <span aria-hidden="true">↗</span>
+          </a>
+        </nav>
 
         <!-- Features Grid -->
         <div class="mb-12 grid gap-6 md:grid-cols-3">
           <!-- Feature 1: Unified Gateway -->
           <div
-            class="group rounded-2xl border border-gray-200/50 bg-white/60 p-6 backdrop-blur-sm transition-all duration-300 hover:shadow-xl hover:shadow-primary-500/10 dark:border-dark-700/50 dark:bg-dark-800/60"
+            class="group rounded-2xl border border-gray-200/50 bg-white/60 p-6 backdrop-blur-sm transition-colors duration-200 hover:border-primary-200 dark:border-dark-700/50 dark:bg-dark-800/60"
           >
             <div
-              class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 shadow-lg shadow-blue-500/30 transition-transform group-hover:scale-110"
+              class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary-500 transition-colors"
             >
               <Icon name="server" size="lg" class="text-white" />
             </div>
@@ -314,10 +281,10 @@
 
           <!-- Feature 2: Account Pool -->
           <div
-            class="group rounded-2xl border border-gray-200/50 bg-white/60 p-6 backdrop-blur-sm transition-all duration-300 hover:shadow-xl hover:shadow-primary-500/10 dark:border-dark-700/50 dark:bg-dark-800/60"
+            class="group rounded-2xl border border-gray-200/50 bg-white/60 p-6 backdrop-blur-sm transition-colors duration-200 hover:border-primary-200 dark:border-dark-700/50 dark:bg-dark-800/60"
           >
             <div
-              class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500 to-primary-600 shadow-lg shadow-primary-500/30 transition-transform group-hover:scale-110"
+              class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary-500 transition-colors"
             >
               <svg
                 class="h-6 w-6 text-white"
@@ -343,10 +310,10 @@
 
           <!-- Feature 3: Billing & Quota -->
           <div
-            class="group rounded-2xl border border-gray-200/50 bg-white/60 p-6 backdrop-blur-sm transition-all duration-300 hover:shadow-xl hover:shadow-primary-500/10 dark:border-dark-700/50 dark:bg-dark-800/60"
+            class="group rounded-2xl border border-gray-200/50 bg-white/60 p-6 backdrop-blur-sm transition-colors duration-200 hover:border-primary-200 dark:border-dark-700/50 dark:bg-dark-800/60"
           >
             <div
-              class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 shadow-lg shadow-purple-500/30 transition-transform group-hover:scale-110"
+              class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary-500 transition-colors"
             >
               <svg
                 class="h-6 w-6 text-white"
@@ -469,9 +436,10 @@
         <p class="text-sm text-gray-500 dark:text-dark-400">
           &copy; {{ currentYear }} {{ siteName }}. {{ t('home.footer.allRightsReserved') }}
         </p>
-        <div class="flex items-center gap-4">
+        <div class="flex flex-wrap items-center justify-center gap-4">
+          <a v-for="link in serviceLinks" :key="link.href" :href="link.href" target="_blank" rel="noopener noreferrer" class="text-sm text-gray-500 hover:text-primary-600 dark:text-dark-400 dark:hover:text-primary-400">{{ link.label }} ↗</a>
           <a
-            v-if="docUrl"
+            v-if="docUrl && docUrl !== DOCS_URL"
             :href="docUrl"
             target="_blank"
             rel="noopener noreferrer"
@@ -500,10 +468,12 @@ import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeUrl } from '@/utils/url'
-import { resolveSiteName, resolveSiteSubtitle } from '@/utils/branding'
+import { DEFAULT_SITE_NAME, resolveSiteName, resolveSiteSubtitle } from '@/utils/branding'
+import { DOCS_URL, getServiceLinks } from '@/utils/serviceLinks'
 import { FeatureFlags, isFeatureFlagEnabled } from '@/utils/featureFlags'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const serviceLinks = computed(() => getServiceLinks(locale.value))
 
 const authStore = useAuthStore()
 const appStore = useAppStore()
@@ -511,8 +481,9 @@ const appStore = useAppStore()
 // Site settings - directly from appStore (already initialized from injected config)
 const siteName = computed(() => resolveSiteName(appStore.cachedPublicSettings?.site_name || appStore.siteName))
 const siteLogo = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.site_logo || appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
+const useDefaultBrand = computed(() => !siteLogo.value && siteName.value === DEFAULT_SITE_NAME)
 const siteSubtitle = computed(() => resolveSiteSubtitle(appStore.cachedPublicSettings?.site_subtitle))
-const docUrl = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.doc_url || appStore.docUrl || ''))
+const docUrl = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.doc_url || appStore.docUrl || DOCS_URL))
 const homeContent = computed(() => appStore.cachedPublicSettings?.home_content || '')
 const hasHomeContent = computed(() => homeContent.value.trim().length > 0)
 const compactHomeEnabled = computed(() => appStore.cachedPublicSettings?.compact_home_enabled === true)
@@ -590,20 +561,21 @@ onMounted(() => {
 
 /* Terminal Window */
 .terminal-window {
-  width: 420px;
-  background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
+  width: min(420px, calc(100vw - 48px));
+  max-width: 100%;
+  background: #29231f;
   border-radius: 14px;
   box-shadow:
     0 25px 50px -12px rgba(0, 0, 0, 0.4),
     0 0 0 1px rgba(255, 255, 255, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.1);
   overflow: hidden;
-  transform: perspective(1000px) rotateX(2deg) rotateY(-2deg);
+  transform: none;
   transition: transform 0.3s ease;
 }
 
 .terminal-window:hover {
-  transform: perspective(1000px) rotateX(0deg) rotateY(0deg) translateY(-4px);
+  transform: translateY(-2px);
 }
 
 /* Terminal Header */
@@ -611,7 +583,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   padding: 12px 16px;
-  background: rgba(30, 41, 59, 0.8);
+  background: #342b25;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -641,7 +613,7 @@ onMounted(() => {
   text-align: center;
   font-size: 12px;
   font-family: ui-monospace, monospace;
-  color: #64748b;
+  color: #ad9c8c;
   margin-right: 52px;
 }
 
@@ -691,16 +663,16 @@ onMounted(() => {
   font-weight: bold;
 }
 .code-cmd {
-  color: #38bdf8;
+  color: #f5c6aa;
 }
 .code-flag {
-  color: #a78bfa;
+  color: #e7ded2;
 }
 .code-url {
   color: theme('colors.primary.400');
 }
 .code-comment {
-  color: #64748b;
+  color: #ad9c8c;
   font-style: italic;
 }
 .code-success {

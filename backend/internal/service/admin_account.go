@@ -99,6 +99,7 @@ func cloneAccountJSONMap(value map[string]any) (map[string]any, error) {
 }
 
 var duplicateAccountDiscardedExtraKeys = map[string]struct{}{
+	OpenAITwoFAAdmissionExtraKey: {},
 	// A retry identity belongs to the operation that created one copy, not to later copies.
 	duplicateAccountOperationIDExtraKey: {},
 	// External sync identity belongs to one local account only.
@@ -446,18 +447,19 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	delete(accountExtra, OpenCodeGoUsageSnapshotExtraKey)
 	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
 	account := &Account{
-		InitialQualityPlan: input.InitialQualityPlan,
-		Name:               input.Name,
-		Notes:              normalizeAccountNotes(input.Notes),
-		Platform:           input.Platform,
-		Type:               input.Type,
-		Credentials:        input.Credentials,
-		Extra:              accountExtra,
-		ProxyID:            input.ProxyID,
-		Concurrency:        normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
-		Priority:           input.Priority,
-		Status:             StatusActive,
-		Schedulable:        true,
+		InitialQualityPlan:   input.InitialQualityPlan,
+		InitialAdmissionPlan: input.InitialAdmissionPlan,
+		Name:                 input.Name,
+		Notes:                normalizeAccountNotes(input.Notes),
+		Platform:             input.Platform,
+		Type:                 input.Type,
+		Credentials:          input.Credentials,
+		Extra:                accountExtra,
+		ProxyID:              input.ProxyID,
+		Concurrency:          normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
+		Priority:             input.Priority,
+		Status:               StatusActive,
+		Schedulable:          input.InitialAdmissionPlan == nil,
 	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
@@ -511,6 +513,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		return nil, err
 	}
 	if err := s.ApplyOAuthAutoConfig(ctx, input); err != nil {
+		return nil, err
+	}
+	if err := s.applyOpenAITwoFAAdmission(ctx, input); err != nil {
 		return nil, err
 	}
 	if err := ValidateObserverGroupBindings(ctx, input.GroupIDs); err != nil {
@@ -578,14 +583,24 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := s.ValidateAccountGroupBindings(ctx, groupIDs); err != nil {
 		return nil, err
 	}
-	if err := s.accountRepo.Create(ctx, account); err != nil {
-		return nil, err
-	}
-
-	// 绑定分组
-	if len(groupIDs) > 0 {
-		if err := s.accountRepo.BindGroups(ctx, account.ID, groupIDs); err != nil {
+	if account.InitialAdmissionPlan != nil && s.accountDuplicateRepo != nil {
+		// Publish the initially blocked account, its groups and both background
+		// plans atomically; the worker cannot race a partially bound import.
+		groups := make([]AccountGroup, 0, len(groupIDs))
+		for _, id := range groupIDs {
+			groups = append(groups, AccountGroup{GroupID: id, Priority: 50})
+		}
+		if err := s.accountDuplicateRepo.CreateWithAccountGroups(ctx, account, groups); err != nil {
 			return nil, err
+		}
+	} else {
+		if err := s.accountRepo.Create(ctx, account); err != nil {
+			return nil, err
+		}
+		if len(groupIDs) > 0 {
+			if err := s.accountRepo.BindGroups(ctx, account.ID, groupIDs); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -1026,6 +1041,7 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	}
 	updates = MergeOpenAICodexTicketExtra(updates, nil)
 	updates = sanitizedCodexFingerprintExtraUpdates(updates)
+	delete(updates, OpenAITwoFAAdmissionExtraKey)
 	updates = stripOpenAIAutoResetCreditManagedExtra(updates, true)
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
@@ -1061,6 +1077,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	input.Extra = MergeOpenAICodexTicketExtra(input.Extra, nil)
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
 	input.Extra = stripOpenAIAutoResetCreditManagedExtra(input.Extra, true)
+	delete(input.Extra, OpenAITwoFAAdmissionExtraKey)
 	delete(input.Extra, UpstreamBillingProbeEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingRateSyncEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingProbeExtraKey)
@@ -1072,6 +1089,14 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	delete(input.Extra, OpenCodeGoUsageSnapshotExtraKey)
 
 	if len(input.AccountIDs) == 0 && input.Filters != nil {
+		// Sorting and empty UI fields do not define a mutation scope. In particular,
+		// never turn a lost OAuth selection into an update of the entire inventory.
+		filters := input.Filters
+		if strings.TrimSpace(filters.Platform) == "" && strings.TrimSpace(filters.Type) == "" &&
+			strings.TrimSpace(filters.Status) == "" && strings.TrimSpace(filters.Group) == "" &&
+			strings.TrimSpace(filters.Search) == "" && strings.TrimSpace(filters.PrivacyMode) == "" {
+			return nil, infraerrors.BadRequest("BULK_UPDATE_SCOPE_REQUIRED", "Select account IDs or provide a non-empty account filter")
+		}
 		accountIDs, err := s.resolveBulkUpdateTargetIDs(ctx, input.Filters)
 		if err != nil {
 			return nil, err

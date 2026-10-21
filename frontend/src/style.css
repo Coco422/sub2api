@@ -80,10 +80,10 @@
   }
 
   .btn-primary {
-    @apply bg-gradient-to-r from-primary-500 to-primary-600;
-    @apply text-white shadow-md shadow-primary-500/25;
-    @apply hover:from-primary-600 hover:to-primary-700 hover:shadow-lg hover:shadow-primary-500/30;
-    @apply dark:shadow-primary-500/20;
+    @apply bg-primary-500;
+    @apply text-white shadow-sm;
+    @apply hover:bg-primary-600;
+    @apply dark:bg-primary-500;
   }
 
   .btn-secondary {
@@ -779,3 +779,19 @@
 
 .modal-fullscreen { width: 100vw !important; max-width: none !important; height: 100vh !important; max-height: none !important; border-radius: 0 !important; }
 .modal-fullscreen .modal-body { max-height: none !important; }
+
+/* 88dog: approved warm-orange identity; keep status and provider colors semantic. */
+@layer components {
+  .card, .card-glass, .glass-card {
+    @apply border-gray-200 bg-[#fffcf7] shadow-none dark:border-dark-700 dark:bg-dark-900;
+    backdrop-filter: none;
+  }
+  .sidebar { @apply bg-[#fffcf7] dark:bg-dark-900; }
+  .sidebar-logo { box-shadow: none; border-radius: 12px; }
+  .sidebar-brand-title { letter-spacing: -.04em; }
+  .sidebar-link-active { @apply bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300; }
+  .brand-wordmark { display: block; object-fit: contain; }
+  .dark .brand-wordmark { filter: brightness(0) invert(1); }
+  .brand-auth { @apply bg-gray-50 dark:bg-dark-950; }
+  .brand-auth .card-glass { @apply border border-gray-200 dark:border-dark-700; }
+}

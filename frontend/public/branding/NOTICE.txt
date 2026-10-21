@@ -1,6 +1,6 @@
-狗站 / 88dog — static corgi mark
+88dog — approved warm-orange identity (2026-10-21)
 
-Created for this project on 2026-10-19 using the built-in image generation tool.
-Optimized PNG: /branding/corgi.png (256 px).
-The same PNG is embedded into /logo.svg to preserve the upstream logo and favicon paths.
-Generation prompt: frontend/branding-prompt.txt in the source repository.
+88dog-wordmark.png: generated with the built-in image generation tool and approved by the user. Warm orange running dog silhouette with dark coffee 88dog typography, transparent background. Local production asset; no remote image request.
+logo.svg: code-native compact dog silhouette in the same approved visual direction, on a cream tile for small UI placements and favicon.
+
+corgi.png is the previous generated mark, retained as a legacy asset; it is no longer the default logo.

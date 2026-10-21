@@ -3,9 +3,10 @@ import { resolveSiteName, resolveSiteSubtitle, updateFavicon } from '@/utils/bra
 
 describe('site branding', () => {
   it('uses 狗站 / 88dog for missing and upstream default branding', () => {
-    expect(resolveSiteName()).toBe('狗站')
-    expect(resolveSiteName('   ')).toBe('狗站')
-    expect(resolveSiteName(' Sub2API ')).toBe('狗站')
+    expect(resolveSiteName()).toBe('88dog')
+    expect(resolveSiteName('   ')).toBe('88dog')
+    expect(resolveSiteName(' Sub2API ')).toBe('88dog')
+    expect(resolveSiteName(' 狗站 ')).toBe('88dog')
     expect(resolveSiteSubtitle()).toBe('88dog · 你的 AI 接口小站')
     expect(resolveSiteSubtitle('Subscription to API Conversion Platform')).toBe('88dog · 你的 AI 接口小站')
     expect(resolveSiteSubtitle('AI API Gateway Platform')).toBe('88dog · 你的 AI 接口小站')

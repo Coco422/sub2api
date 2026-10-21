@@ -7,53 +7,63 @@ export default {
       colors: {
         // 狗站 / 88dog：暖橙主色，500 起保持白色按钮文字的对比度。
         primary: {
-          50: '#fff8ed',
-          100: '#ffedd5',
-          200: '#fed7aa',
-          300: '#fdba74',
-          400: '#fb923c',
-          500: '#bf570e',
-          600: '#ad4710',
-          700: '#8f360d',
-          800: '#752f12',
-          900: '#602a13',
-          950: '#361307'
+          50: '#fff6ee',
+          100: '#fce7d7',
+          200: '#f5c6aa',
+          300: '#f1a078',
+          400: '#e86f3a',
+          500: '#bf4b1e',
+          600: '#a83d17',
+          700: '#893012',
+          800: '#6e2c17',
+          900: '#582719',
+          950: '#32170e'
         },
         gray: {
-          50: '#faf9f6',
-          100: '#f5f1ea'
+          50: '#f5f0e7',
+          100: '#f0e9df',
+          200: '#e4dbcf',
+          300: '#d1c4b5',
+          400: '#a69585',
+          500: '#7d6f62',
+          600: '#685a4e',
+          700: '#53463c',
+          800: '#40352e',
+          900: '#29231f',
+          950: '#191511'
         },
-        // 辅助色 - 深蓝灰
+        // 辅助色 - 暖咖与奶油
         accent: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#020617'
+          50: '#fffaf4',
+          100: '#f8ede1',
+          200: '#efd8c2',
+          300: '#dfbea0',
+          400: '#c89b75',
+          500: '#a47853',
+          600: '#855e3f',
+          700: '#684a34',
+          800: '#49372a',
+          900: '#31271f',
+          950: '#1a1510'
         },
         // 深色模式背景
         dark: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#020617'
+          50: '#fffcf7',
+          100: '#f5f0e7',
+          200: '#e7ded2',
+          300: '#cec1b2',
+          400: '#ad9c8c',
+          500: '#897767',
+          600: '#6e5e51',
+          700: '#4b3f35',
+          800: '#342b25',
+          900: '#241e19',
+          950: '#191511'
         }
       },
       fontFamily: {
         sans: [
+          'Avenir Next',
           'system-ui',
           '-apple-system',
           'BlinkMacSystemFont',
@@ -71,20 +81,20 @@ export default {
       boxShadow: {
         glass: '0 8px 32px rgba(0, 0, 0, 0.08)',
         'glass-sm': '0 4px 16px rgba(0, 0, 0, 0.06)',
-        glow: '0 0 20px rgba(191, 87, 14, 0.25)',
-        'glow-lg': '0 0 40px rgba(191, 87, 14, 0.35)',
+        glow: '0 0 20px rgba(232, 111, 58, 0.25)',
+        'glow-lg': '0 0 40px rgba(232, 111, 58, 0.35)',
         card: '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06)',
         'card-hover': '0 10px 40px rgba(0, 0, 0, 0.08)',
         'inner-glow': 'inset 0 1px 0 rgba(255, 255, 255, 0.1)'
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'gradient-primary': 'linear-gradient(135deg, #bf570e 0%, #ad4710 100%)',
-        'gradient-dark': 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+        'gradient-primary': 'linear-gradient(135deg, #e86f3a 0%, #bf4b1e 100%)',
+        'gradient-dark': 'linear-gradient(135deg, #342b25 0%, #241e19 100%)',
         'gradient-glass':
           'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%)',
         'mesh-gradient':
-          'radial-gradient(at 40% 20%, rgba(191, 87, 14, 0.12) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(251, 146, 60, 0.08) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(191, 87, 14, 0.08) 0px, transparent 50%)'
+          'radial-gradient(at 40% 20%, rgba(232, 111, 58, 0.12) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(251, 146, 60, 0.08) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(232, 111, 58, 0.08) 0px, transparent 50%)'
       },
       animation: {
         'fade-in': 'fadeIn 0.3s ease-out',
@@ -122,8 +132,8 @@ export default {
           '100%': { backgroundPosition: '200% 0' }
         },
         glow: {
-          '0%': { boxShadow: '0 0 20px rgba(191, 87, 14, 0.25)' },
-          '100%': { boxShadow: '0 0 30px rgba(191, 87, 14, 0.4)' }
+          '0%': { boxShadow: '0 0 20px rgba(232, 111, 58, 0.25)' },
+          '100%': { boxShadow: '0 0 30px rgba(232, 111, 58, 0.4)' }
         }
       },
       backdropBlur: {
