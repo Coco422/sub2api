@@ -259,14 +259,19 @@ func TestGatewaySnapshotMultiProcessFaultRecovery(t *testing.T) {
 		require.NoError(t, err)
 		return response.StatusCode, response.Header.Get("X-Test-Node")
 	}
-	sample := func() bool {
+	sample := func() int {
 		code, _ := status(reader.url + "/readyz")
 		admitted.Store(code == http.StatusOK)
-		return code == http.StatusOK
+		return code
 	}
 	assertRoute := func(stage string, ready bool) {
 		t.Helper()
-		require.Equal(t, ready, sample(), stage)
+		wantReadiness := http.StatusServiceUnavailable
+		if ready {
+			wantReadiness = http.StatusOK
+		}
+		readiness := sample()
+		require.Equal(t, wantReadiness, readiness, stage)
 		before := forwarded.Load()
 		code, node := status(ingress.URL + "/work")
 		if ready {
@@ -280,14 +285,14 @@ func TestGatewaySnapshotMultiProcessFaultRecovery(t *testing.T) {
 		}
 		code, _ = status(reader.url + "/health")
 		require.Equal(t, http.StatusOK, code, "withdrawal does not stop reader liveness")
-		t.Logf("stage=%s ready=%t routed=%t", stage, ready, ready)
+		t.Logf("stage=%s readiness_http=%d routed=%t", stage, readiness, ready)
 	}
 	publish := func() { t.Helper(); require.Empty(t, publisher.command(t, "publish").Error) }
 	assertRoute("cold-start", false)
 	publish()
 	assertRoute("first-publish", true)
 	publisher.crash(t)
-	require.Eventually(t, func() bool { return !sample() }, 6*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return sample() == http.StatusServiceUnavailable }, 6*time.Second, 50*time.Millisecond)
 	assertRoute("publisher-stopped-and-stale", false)
 	publisher = startFaultNode(t, "publisher", socket)
 	publish()
