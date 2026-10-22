@@ -56,6 +56,7 @@ export interface ContentModerationConfig {
 export type ContentModerationAPIKeyStatusValue = 'unknown' | 'ok' | 'error' | 'frozen'
 
 export interface ContentModerationAPIKeyStatus {
+  base_url?: string
   index: number
   key_hash: string
   masked: string
@@ -220,7 +221,7 @@ export interface ContentModerationLog {
 
 export type UpdateModerationEngineConfig = Pick<UpdateContentModerationConfig,
   'base_url' | 'model' | 'proxy_id' | 'api_keys' | 'api_keys_mode' | 'delete_api_key_hashes' |
-  'clear_api_key' | 'timeout_ms' | 'retry_count' | 'thresholds'>
+  'clear_api_key' | 'timeout_ms' | 'retry_count' | 'thresholds'> & { key_url_updates?: Array<{ key_hash: string; base_url: string; expected_base_url: string }> }
 
 export interface ListContentModerationLogsParams {
   page?: number
@@ -293,6 +294,8 @@ export interface ModerationUserState {
   version: number
   generation: number
   auto_ban_exempt: boolean
+  keyword_exempt: boolean
+  api_audit_exempt: boolean
   owned_disable: boolean
   status: string
   current_count: number
@@ -307,6 +310,8 @@ export interface ModerationUserAction {
   reason: string
   confirm: boolean
   auto_ban_exempt?: boolean
+  keyword_exempt?: boolean
+  api_audit_exempt?: boolean
 }
 
 export async function getModerationUser(userID: number): Promise<ModerationUserState> {
@@ -319,7 +324,7 @@ export async function manageModerationUser(userID: number, payload: ModerationUs
   return data
 }
 
-export async function listModerationUsers(params: { page: number; page_size: number; state: 'all' | 'exempt' | 'enforced'; user_id?: number }): Promise<{ items: ModerationUserState[]; total: number }> {
+export async function listModerationUsers(params: { page: number; page_size: number; state: 'all' | 'exempt' | 'enforced' | 'auto_ban_exempt' | 'keyword_exempt' | 'api_audit_exempt'; user_id?: number }): Promise<{ items: ModerationUserState[]; total: number }> {
   const { data } = await apiClient.get<{ items: ModerationUserState[]; total: number }>('/admin/risk-control/users', { params })
   return data
 }
