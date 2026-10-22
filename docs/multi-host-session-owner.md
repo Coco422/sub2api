@@ -46,6 +46,13 @@ runtime:
 
 开启的节点仅支持原生池化WS ingress，不接受WS HTTP bridge或passthrough，包括首帧为store=true的这些模式，以免后续切到store=false绕过门禁。HTTP Responses接口和其tenant-owner不受此开关影响。此功能约束原生ingress中实际store-disabled的`previous_response_id`续接；不承诺所有隐式session、工具状态或HTTP转WS传输都获得相同保护。
 
+| 开关 | 原生池化 | WS HTTP bridge / passthrough |
+| --- | --- | --- |
+| 关闭（默认） | 保留旧续接/恢复策略，不读写node-owner marker | 保留原模式，可正常完成mock回归；不执行node-owner检查 |
+| 开启 | 对store-disabled续接执行node/boot/连接归属检查 | store=true和store=false首帧均在上游发送前拒绝，不降级到其他模式 |
+
+因此“桥接/透传保持原行为”只描述关闭状态，开启后是明确的能力拒绝，不是这些模式已获得owner保护。
+
 服务实例首次使用时生成随机boot代次，与稳定node ID及原连接ID的SHA-256摘要组成内部v1 owner token；进程重启/重新构造服务会产生新代次。原生store-disabled响应成功后，以group、API Key、账号和response摘要为作用域发布Redis marker，TTL沿用现有response sticky TTL。声明使用原子compare-and-set：同owner可续期，另一node/boot或同boot的不同连接不能覆盖未过期owner。记录不包含客户正文、API Key字符串、明文连接ID、上游密钥或节点地址，不向客户端返回owner token。
 
 续接必须同时满足共享marker匹配当前node/boot、API Key/账号/group作用域匹配、本地response→conn绑定存在，并实际获取/保留同一个池连接；Redis可达或账号粘性命中本身不构成准入。缺记录、旧boot、不同node/Key/账号/group、版本不匹配、Redis故障、本地绑定过期或原连接丢失均保守关闭。此门禁不替代已有鉴权、调度资格、计费和并发检查，不能把owner token当用户授权。
@@ -55,3 +62,5 @@ runtime:
 开启前先保证全节点都具备新适配层并为节点设置不同稳定ID；存量未带marker的链会被拒绝，建议单独原生WS灰度范围、先排空并由客户端显式开启新会话。缺新cache能力时首个store-disabled请求也拒绝，不用本机memory降级。关闭开关恢复旧行为；marker按TTL自动清理，不改DB schema、不需要删除生产数据。
 
 新增config、仓储、service及原生WS假上游回归源码，覆盖相同boot继续两turn、未知owner在上游dial前拒绝、不同node/boot/Key/账号/group、marker过期及local conn丢失、失败脱敏、owner拒绝不进入failover/账号惩罚。**本轮均未运行，等待远端CI。** 仍未提供原节点发现、签名owner URL、跨节点转发/迁移、自动重建、生产网络故障或真实两机验收；此项是安全拒绝契约，不是“无损跨节点续接完成”。
+
+补充的真实ingress回归仍只连接本机httptest WS和假上游：默认关闭的原生两turn；同node/boot存活连接成功；foreign boot、本地绑定丢失、绑定尚在但池连接失效、cache错误均零上游发送且不产生成功AfterTurn；模型成功后marker发布失败只有一次生成和一次成功AfterTurn。额外的模式矩阵覆盖两种非目标模式×开关开/关×store=true/false：关闭时实际完成假上游响应，开启时零dial/零HTTP发送/零回调。这里验证的是调用与回调计数，不是实际账本/支付集成验收；无生产DB或真实模型。连接获取前已进入turn准入的失败允许一次用于释放槽位的失败AfterTurn，不能当作成功计费。

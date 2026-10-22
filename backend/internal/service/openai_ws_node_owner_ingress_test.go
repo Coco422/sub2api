@@ -17,9 +17,11 @@ import (
 )
 
 func TestWSNodeOwnerNativeIngress(t *testing.T) {
-	for _, name := range []string{"same-boot-two-turns", "unknown-owner-no-upstream-send", "publication-failure-no-replay"} {
+	for _, name := range []string{"same-boot-two-turns", "default-disabled-two-turns", "unknown-owner-no-upstream-send", "foreign-boot-no-send", "lost-local-binding-no-send", "lost-pool-connection-no-send", "cache-failure-no-send", "publication-failure-no-replay"} {
 		t.Run(name, func(t *testing.T) {
 			foreign := name == "unknown-owner-no-upstream-send"
+			seeded := name == "foreign-boot-no-send" || name == "lost-local-binding-no-send" || name == "lost-pool-connection-no-send" || name == "cache-failure-no-send"
+			rejected := foreign || seeded
 			publicationFailure := name == "publication-failure-no-replay"
 			gin.SetMode(gin.TestMode)
 			cache := &wsNodeOwnerCacheStub{}
@@ -27,6 +29,26 @@ func TestWSNodeOwnerNativeIngress(t *testing.T) {
 				cache.err = errors.New("fixture publication failure")
 			}
 			svc := ownerTestService(cache, "node-a")
+			if name == "default-disabled-two-turns" {
+				svc.cfg.Runtime.WSNodeOwner.Enabled = false
+				cache.err = errors.New("disabled gate must not call owner cache")
+			}
+			ref := WSNodeOwnerRef{GroupID: 17, APIKeyID: 101, AccountID: 201, ResponseID: "resp_foreign"}
+			if seeded {
+				publisher := svc
+				if name == "foreign-boot-no-send" {
+					publisher = ownerTestService(cache, "node-a")
+				}
+				publisher.getOpenAIWSStateStore().BindResponseConn(ref.ResponseID, "previous-pool-conn", time.Minute)
+				require.NoError(t, publisher.bindWSNodeOwner(context.Background(), ref))
+				svc.getOpenAIWSStateStore().BindResponseConn(ref.ResponseID, "previous-pool-conn", time.Minute)
+				if name == "lost-local-binding-no-send" {
+					svc.getOpenAIWSStateStore().DeleteResponseConn(ref.ResponseID)
+				}
+				if name == "cache-failure-no-send" {
+					cache.err = errors.New("fixture private cache failure")
+				}
+			}
 			cfg := svc.cfg
 			cfg.Gateway.OpenAIWS.Enabled = true
 			cfg.Gateway.OpenAIWS.APIKeyEnabled = true
@@ -50,7 +72,9 @@ func TestWSNodeOwnerNativeIngress(t *testing.T) {
 				Concurrency: 1, GroupIDs: []int64{17}, Credentials: map[string]any{"api_key": "fixture-not-a-key"}, Extra: map[string]any{"responses_websockets_v2_enabled": true}}
 			result := make(chan error, 1)
 			var completed atomic.Int64
+			var afterTurn atomic.Int64
 			hooks := &OpenAIWSIngressHooks{AfterTurn: func(_ int, r *OpenAIForwardResult, err error) {
+				afterTurn.Add(1)
 				if err == nil && r != nil {
 					completed.Add(1)
 				}
@@ -81,11 +105,11 @@ func TestWSNodeOwnerNativeIngress(t *testing.T) {
 			require.NoError(t, err)
 			defer func() { _ = client.CloseNow() }()
 			first := `{"type":"response.create","model":"gpt-6.1-sol","store":false,"stream":false}`
-			if foreign {
+			if rejected {
 				first = `{"type":"response.create","model":"gpt-6.1-sol","store":false,"previous_response_id":"resp_foreign"}`
 			}
 			require.NoError(t, client.Write(ctx, coderws.MessageText, []byte(first)))
-			if !foreign {
+			if !rejected {
 				_, event, err := client.Read(ctx)
 				require.NoError(t, err)
 				require.Equal(t, "resp_owner_1", gjson.GetBytes(event, "response.id").String())
@@ -94,26 +118,39 @@ func TestWSNodeOwnerNativeIngress(t *testing.T) {
 					_, event, err = client.Read(ctx)
 					require.NoError(t, err)
 					require.Equal(t, "resp_owner_2", gjson.GetBytes(event, "response.id").String())
+					require.Eventually(t, func() bool { return completed.Load() == 2 }, time.Second, time.Millisecond)
 					_ = client.Close(coderws.StatusNormalClosure, "fixture done")
 				}
 			}
 			select {
 			case err := <-result:
-				if foreign {
+				if rejected {
 					require.ErrorIs(t, err, ErrOpenAIWSNodeOwner)
+					var retry *UpstreamFailoverError
+					require.False(t, errors.As(err, &retry), "owner rejection must not trigger account failover")
+					require.NotContains(t, err.Error(), "fixture private")
 					require.Zero(t, dialer.DialCount())
 					require.Empty(t, capture.writes)
 					require.Zero(t, completed.Load())
+					if name == "lost-pool-connection-no-send" {
+						require.LessOrEqual(t, afterTurn.Load(), int64(1), "failed acquisition may only release the admitted turn once")
+					} else {
+						require.Zero(t, afterTurn.Load(), "pre-admission refusal must not account a model turn")
+					}
 				} else if publicationFailure {
 					require.ErrorIs(t, err, ErrOpenAIWSNodeOwner)
 					require.Len(t, capture.writes, 1, "completed generation must not replay after owner publication fails")
 					require.EqualValues(t, 1, completed.Load(), "existing AfterTurn must account for the completed call exactly once")
+					require.EqualValues(t, 1, afterTurn.Load(), "publication failure must not duplicate the accounting callback")
 				} else {
 					require.NoError(t, err)
 					require.Equal(t, 1, dialer.DialCount())
 					require.Len(t, capture.writes, 2)
 					require.EqualValues(t, 2, completed.Load())
-					require.Equal(t, "resp_owner_1", capture.writes[1]["previous_response_id"], "native continuation must not strip and replay")
+					require.EqualValues(t, 2, afterTurn.Load())
+					if name != "default-disabled-two-turns" {
+						require.Equal(t, "resp_owner_1", capture.writes[1]["previous_response_id"], "native continuation must not strip and replay")
+					}
 				}
 			case <-ctx.Done():
 				t.Fatal("isolated WS owner fixture timed out")
