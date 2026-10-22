@@ -1,10 +1,13 @@
 package service
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service/basispoints"
@@ -47,15 +50,29 @@ func TestImageRelayOwnerOriginKeepsCapabilitiesOnGeneratingNode(t *testing.T) {
 	require.Equal(t, "https://shared.example.invalid", settings.BaseURL, "node override must not mutate shared settings")
 	probe := func(relay *basispoints.ImageRelay, method, target string, want int) {
 		t.Helper()
-		response := httptest.NewRecorder()
-		relay.ServeHTTP(response, httptest.NewRequest(method, target, nil))
-		require.Equal(t, want, response.Code)
-		require.Equal(t, "private, no-store", response.Header().Get("Cache-Control"))
+		// Exercise net/http's actual HEAD semantics: NotFound writes an error
+		// body to a raw ResponseRecorder, while the server suppresses it on HEAD.
+		server := httptest.NewServer(relay)
+		defer server.Close()
+		capability, err := url.Parse(target)
+		require.NoError(t, err)
+		request, err := http.NewRequest(method, server.URL+capability.RequestURI(), nil)
+		require.NoError(t, err)
+		request.Host = capability.Host
+		client := server.Client()
+		client.Timeout = 2 * time.Second
+		response, err := client.Do(request)
+		require.NoError(t, err)
+		defer func() { _ = response.Body.Close() }()
+		body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		require.NoError(t, err)
+		require.Equal(t, want, response.StatusCode)
+		require.Equal(t, "private, no-store", response.Header.Get("Cache-Control"))
 		if want == http.StatusOK && method == http.MethodGet {
-			require.Equal(t, pixels, response.Body.Bytes())
+			require.Equal(t, pixels, body)
 		}
 		if method == http.MethodHead {
-			require.Empty(t, response.Body.Bytes())
+			require.Empty(t, body)
 		}
 	}
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
