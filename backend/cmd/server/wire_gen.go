@@ -178,34 +178,36 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codexHarvestNodeRepository := repository.NewCodexHarvestNodeRepository(db)
 	codexHarvestFlowRepository := repository.NewCodexHarvestFlowRepository(db)
 	codexHarvestService := service.ProvideCodexHarvestService(codexHarvestNodeRepository, settingRepository, configConfig, codexHarvestFlowRepository)
+	safetyPromptStore := service.NewSafetyPromptStore()
 	openAIGatewayDependencies := service.OpenAIGatewayDependencies{
-		TimezoneProber:   proxyExitInfoProber,
-		RegionalMetering: regionalMetering,
-		Accounts:         accountRepository,
-		Proxies:          proxyRepository,
-		UsageLogs:        usageLogRepository,
-		UsageBilling:     usageBillingRepository,
-		Users:            userRepository,
-		Subscriptions:    userSubscriptionRepository,
-		GroupRates:       userGroupRateRepository,
-		Cache:            gatewayCache,
-		Config:           configConfig,
-		Scheduler:        schedulerSnapshotService,
-		Concurrency:      concurrencyService,
-		Billing:          billingService,
-		RateLimit:        rateLimitService,
-		BillingCache:     billingCacheService,
-		Upstream:         httpUpstream,
-		Deferred:         deferredService,
-		OpenAITokens:     openAITokenProvider,
-		GrokTokens:       grokTokenProvider,
-		Pricing:          modelPricingResolver,
-		Channels:         channelService,
-		BalanceNotify:    balanceNotifyService,
-		Settings:         settingService,
-		Quotas:           serviceUserPlatformQuotaRepository,
-		RPMCache:         rpmCache,
-		Harvest:          codexHarvestService,
+		TimezoneProber:    proxyExitInfoProber,
+		RegionalMetering:  regionalMetering,
+		Accounts:          accountRepository,
+		Proxies:           proxyRepository,
+		UsageLogs:         usageLogRepository,
+		UsageBilling:      usageBillingRepository,
+		Users:             userRepository,
+		Subscriptions:     userSubscriptionRepository,
+		GroupRates:        userGroupRateRepository,
+		Cache:             gatewayCache,
+		Config:            configConfig,
+		Scheduler:         schedulerSnapshotService,
+		Concurrency:       concurrencyService,
+		Billing:           billingService,
+		RateLimit:         rateLimitService,
+		BillingCache:      billingCacheService,
+		Upstream:          httpUpstream,
+		Deferred:          deferredService,
+		OpenAITokens:      openAITokenProvider,
+		GrokTokens:        grokTokenProvider,
+		Pricing:           modelPricingResolver,
+		Channels:          channelService,
+		BalanceNotify:     balanceNotifyService,
+		Settings:          settingService,
+		Quotas:            serviceUserPlatformQuotaRepository,
+		RPMCache:          rpmCache,
+		Harvest:           codexHarvestService,
+		SafetyPromptStore: safetyPromptStore,
 	}
 	openAIGatewayService := service.ProvideOpenAIGatewayService(openAIGatewayDependencies)
 	geminiOAuthClient := repository.NewGeminiOAuthClient(configConfig)
@@ -353,7 +355,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	contentModerationRepository := repository.NewContentModerationRepository(db)
 	contentModerationHashCache := repository.NewContentModerationHashCache(redisClient)
 	contentModerationService := service.ProvideContentModerationService(settingRepository, contentModerationRepository, contentModerationHashCache, groupRepository, userRepository, proxyRepository, apiKeyAuthCacheInvalidator, emailService, db, secretEncryptor, configConfig)
-	contentModerationHandler := admin.NewContentModerationHandler(contentModerationService)
+	contentModerationHandler := admin.NewContentModerationHandlerWithSafetyPrompt(contentModerationService, safetyPromptStore, settingService)
 	configManager := securityaudit.NewConfigManager(db, settingRepository, redisClient, secretEncryptor, configConfig)
 	postgreSQLRepository := securityaudit.NewPostgreSQLRepository(db)
 	redisPayloadStore := securityaudit.NewRedisPayloadStore(redisClient)
