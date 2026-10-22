@@ -1850,6 +1850,7 @@ export default {
 
         historyLoadError: 'Some scheduled records could not be loaded. Available manual records are still shown.',
         dashboardHint: 'Retained scheduled and manual test outputs, refreshed every 15 seconds. Select a card to view the full result.',
+        allAccountsHistory: 'View all accounts',
         scheduledPreview: 'Scheduled preview',
         sourceManual: 'Manual',
         sourceScheduled: 'Scheduled',
