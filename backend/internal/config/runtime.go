@@ -14,6 +14,7 @@ const (
 // RuntimeConfig separates the primary's global jobs from request replicas.
 // Empty remains equivalent to full for programmatically constructed configs.
 type RuntimeConfig struct {
+	SchedulerSnapshotMode   string `mapstructure:"scheduler_snapshot_mode"`
 	RegionalFundsFile       string `mapstructure:"regional_funds_file"`
 	RegionalConcurrencyFile string `mapstructure:"regional_concurrency_file"`
 	RegionalAuthFile        string `mapstructure:"regional_auth_file"`
@@ -30,6 +31,9 @@ func (c *Config) RunsBackgroundJobs() bool {
 }
 
 func (c *Config) validateRuntime() error {
+	if err := c.validateSchedulerSnapshotMode(); err != nil {
+		return err
+	}
 	if err := serverless.ValidateRuntime(serverless.Runtime{ID: c.Runtime.ServerlessID, Endpoint: c.Runtime.ServerlessEndpoint, Region: c.Runtime.ServerlessRegion, Secret: c.Runtime.ServerlessSecret, Gateway: c.Runtime.Role == RuntimeRoleGateway}); err != nil {
 		return err
 	}
