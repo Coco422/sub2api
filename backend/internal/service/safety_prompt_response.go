@@ -236,7 +236,7 @@ func (b *safetyPromptSSEBody) run() {
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			frame.Write(line)
+			_, _ = frame.Write(line)
 			if isSSEFrameEnd(line) {
 				raw := append([]byte(nil), frame.Bytes()...)
 				frame.Reset()
@@ -249,7 +249,7 @@ func (b *safetyPromptSSEBody) run() {
 						buffering = true
 						buffered = append(buffered, raw)
 						bufferedBytes += len(raw)
-						text.WriteString(safetyPromptSSEFrameDelta(raw))
+						_, _ = text.WriteString(safetyPromptSSEFrameDelta(raw))
 						if bufferedBytes > safetyPromptMaxSSEBuffer || !strings.HasPrefix(b.info.Marker, text.String()) {
 							flushBuffered()
 						}
@@ -257,7 +257,7 @@ func (b *safetyPromptSSEBody) run() {
 				} else {
 					buffered = append(buffered, raw)
 					bufferedBytes += len(raw)
-					text.WriteString(safetyPromptSSEFrameDelta(raw))
+					_, _ = text.WriteString(safetyPromptSSEFrameDelta(raw))
 					prefixOK := strings.HasPrefix(b.info.Marker, text.String())
 					completed := safetyPromptSSEFrameCompleted(raw)
 					if bufferedBytes > safetyPromptMaxSSEBuffer || !prefixOK {
@@ -366,13 +366,13 @@ func rewriteSafetyPromptFrames(frames [][]byte, marker string) ([][]byte, bool) 
 		switch eventType {
 		case "response.output_text.delta":
 			if !replaced {
-				root["delta"] = mustJSON(refusal)
+				root["delta"] = safetyPromptJSON(refusal)
 				replaced = true
 			} else {
-				root["delta"] = mustJSON("")
+				root["delta"] = safetyPromptJSON("")
 			}
 		case "response.output_text.done":
-			root["text"] = mustJSON(refusal)
+			root["text"] = safetyPromptJSON(refusal)
 		case "response.content_part.done":
 			updated, err := sjson.SetBytes(payload, "part.text", refusal)
 			if err != nil {
@@ -388,7 +388,7 @@ func rewriteSafetyPromptFrames(frames [][]byte, marker string) ([][]byte, bool) 
 			if id := gjson.GetBytes(payload, "item.id").String(); id != "" {
 				item["id"] = id
 			}
-			root["item"] = mustJSON(item)
+			root["item"] = safetyPromptJSON(item)
 		case "response.completed":
 			item := map[string]any{
 				"type": "message", "role": "assistant", "status": "completed",
@@ -423,15 +423,15 @@ func rebuildSSEFrame(original, payload []byte) []byte {
 	for _, line := range lines {
 		if strings.HasPrefix(line, "data:") {
 			if !inserted {
-				out.WriteString("data: ")
-				out.Write(payload)
-				out.WriteByte('\n')
+				_, _ = out.WriteString("data: ")
+				_, _ = out.Write(payload)
+				_ = out.WriteByte('\n')
 				inserted = true
 			}
 			continue
 		}
-		out.WriteString(line)
-		out.WriteByte('\n')
+		_, _ = out.WriteString(line)
+		_ = out.WriteByte('\n')
 	}
 	if !inserted {
 		return original

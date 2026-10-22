@@ -45,38 +45,49 @@ func TestInjectSafetyPromptResponsesAppendsPolicyAndMarker(t *testing.T) {
 	next, err := injectSafetyPrompt(body, safetyPromptProtocolResponses, true, "sp-deadbeef")
 	require.NoError(t, err)
 
-	require.Contains(t, gjsonString(next, "instructions"), safetyPromptPolicy)
-	require.Contains(t, gjsonString(next, "instructions"), safetyPromptConvention)
-	require.True(t, strings.HasSuffix(gjsonString(next, "instructions"), "be concise"))
+	require.Contains(t, safetyPromptTestString(next, "instructions"), safetyPromptPolicy)
+	require.Contains(t, safetyPromptTestString(next, "instructions"), safetyPromptConvention)
+	require.True(t, strings.HasSuffix(safetyPromptTestString(next, "instructions"), "be concise"))
 
 	var input []map[string]any
-	require.NoError(t, json.Unmarshal(gjsonRaw(next, "input"), &input))
+	require.NoError(t, json.Unmarshal(safetyPromptTestRaw(next, "input"), &input))
 	require.Len(t, input, 2)
 	require.Equal(t, "user", input[0]["role"])
 	require.Equal(t, "developer", input[1]["role"])
-	content := input[1]["content"].([]any)
-	require.Contains(t, content[0].(map[string]any)["text"], "sp-deadbeef")
-	require.True(t, strings.HasPrefix(content[0].(map[string]any)["text"].(string), safetyPromptMarkerPrefix))
-	require.Equal(t, "gpt-5.1", gjsonString(next, "model"))
+	content, ok := input[1]["content"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, content)
+	part, ok := content[0].(map[string]any)
+	require.True(t, ok)
+	markerText, ok := part["text"].(string)
+	require.True(t, ok)
+	require.Contains(t, markerText, "sp-deadbeef")
+	require.True(t, strings.HasPrefix(markerText, safetyPromptMarkerPrefix))
+	require.Equal(t, "gpt-5.1", safetyPromptTestString(next, "model"))
 }
 
 func TestInjectSafetyPromptResponsesConvertsStringInput(t *testing.T) {
 	next, err := injectSafetyPrompt([]byte(`{"input":"hello"}`), safetyPromptProtocolResponses, true, "sp-1")
 	require.NoError(t, err)
 	var input []map[string]any
-	require.NoError(t, json.Unmarshal(gjsonRaw(next, "input"), &input))
+	require.NoError(t, json.Unmarshal(safetyPromptTestRaw(next, "input"), &input))
 	require.Len(t, input, 2)
 	require.Equal(t, "user", input[0]["role"])
-	require.Equal(t, "hello", input[0]["content"].([]any)[0].(map[string]any)["text"])
+	parts, ok := input[0]["content"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, parts)
+	part, ok := parts[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "hello", part["text"])
 	require.Equal(t, "developer", input[1]["role"])
 }
 
 func TestInjectSafetyPromptCompactSkipsMarker(t *testing.T) {
 	next, err := injectSafetyPrompt([]byte(`{"input":[{"role":"user","content":"x"}]}`), safetyPromptProtocolResponsesCompact, true, "sp-1")
 	require.NoError(t, err)
-	require.Contains(t, gjsonString(next, "instructions"), safetyPromptPolicy)
+	require.Contains(t, safetyPromptTestString(next, "instructions"), safetyPromptPolicy)
 	var input []map[string]any
-	require.NoError(t, json.Unmarshal(gjsonRaw(next, "input"), &input))
+	require.NoError(t, json.Unmarshal(safetyPromptTestRaw(next, "input"), &input))
 	require.Len(t, input, 1)
 	require.Equal(t, "user", input[0]["role"])
 }
@@ -85,7 +96,7 @@ func TestInjectSafetyPromptChat(t *testing.T) {
 	next, err := injectSafetyPrompt([]byte(`{"messages":[{"role":"user","content":"hi"}]}`), safetyPromptProtocolChat, true, "sp-chat")
 	require.NoError(t, err)
 	var messages []map[string]any
-	require.NoError(t, json.Unmarshal(gjsonRaw(next, "messages"), &messages))
+	require.NoError(t, json.Unmarshal(safetyPromptTestRaw(next, "messages"), &messages))
 	require.Len(t, messages, 3)
 	require.Equal(t, "system", messages[0]["role"])
 	require.Contains(t, messages[0]["content"], safetyPromptPolicy)
@@ -98,7 +109,7 @@ func TestInjectSafetyPromptChatWithoutMessagesStillAddsMarker(t *testing.T) {
 	next, err := injectSafetyPrompt([]byte(`{"model":"gpt-5.1"}`), safetyPromptProtocolChat, true, "sp-empty")
 	require.NoError(t, err)
 	var messages []map[string]any
-	require.NoError(t, json.Unmarshal(gjsonRaw(next, "messages"), &messages))
+	require.NoError(t, json.Unmarshal(safetyPromptTestRaw(next, "messages"), &messages))
 	require.Len(t, messages, 2)
 	require.Equal(t, "system", messages[0]["role"])
 	require.Equal(t, "developer", messages[1]["role"])
@@ -108,8 +119,8 @@ func TestInjectSafetyPromptChatWithoutMessagesStillAddsMarker(t *testing.T) {
 func TestInjectSafetyPromptAnthropicPolicyOnly(t *testing.T) {
 	next, err := injectSafetyPrompt([]byte(`{"system":"legacy","messages":[]}`), safetyPromptProtocolAnthropic, true, "sp-anth")
 	require.NoError(t, err)
-	require.Contains(t, gjsonString(next, "system"), safetyPromptPolicy)
-	require.True(t, strings.HasSuffix(gjsonString(next, "system"), "legacy"))
+	require.Contains(t, safetyPromptTestString(next, "system"), safetyPromptPolicy)
+	require.True(t, strings.HasSuffix(safetyPromptTestString(next, "system"), "legacy"))
 	require.NotContains(t, string(next), "sp-anth")
 }
 
@@ -117,7 +128,7 @@ func TestRewriteSafetyPromptJSONResponses(t *testing.T) {
 	raw := []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sp-abc"}]}]}`)
 	next, matched := rewriteSafetyPromptJSON(raw, &safetyPromptRequestInfo{Marker: "sp-abc", Protocol: safetyPromptProtocolResponses})
 	require.True(t, matched)
-	require.Equal(t, safetyPromptRefusal+"sp-abc", gjsonString(next, "output.0.content.0.text"))
+	require.Equal(t, safetyPromptRefusal+"sp-abc", safetyPromptTestString(next, "output.0.content.0.text"))
 
 	extra := []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sp-abc extra"}]}]}`)
 	_, matched = rewriteSafetyPromptJSON(extra, &safetyPromptRequestInfo{Marker: "sp-abc", Protocol: safetyPromptProtocolResponses})
@@ -132,12 +143,12 @@ func TestRewriteSafetyPromptJSONChatAndAnthropic(t *testing.T) {
 	chat := []byte(`{"choices":[{"message":{"role":"assistant","content":"sp-chat"}}]}`)
 	next, matched := rewriteSafetyPromptJSON(chat, &safetyPromptRequestInfo{Marker: "sp-chat", Protocol: safetyPromptProtocolChat})
 	require.True(t, matched)
-	require.Equal(t, safetyPromptRefusal+"sp-chat", gjsonString(next, "choices.0.message.content"))
+	require.Equal(t, safetyPromptRefusal+"sp-chat", safetyPromptTestString(next, "choices.0.message.content"))
 
 	anth := []byte(`{"content":[{"type":"text","text":"sp-anth"}]}`)
 	next, matched = rewriteSafetyPromptJSON(anth, &safetyPromptRequestInfo{Marker: "sp-anth", Protocol: safetyPromptProtocolAnthropic})
 	require.True(t, matched)
-	require.Equal(t, safetyPromptRefusal+"sp-anth", gjsonString(next, "content.0.text"))
+	require.Equal(t, safetyPromptRefusal+"sp-anth", safetyPromptTestString(next, "content.0.text"))
 }
 
 func TestRewriteSafetyPromptJSONRejectsToolOutputs(t *testing.T) {
@@ -237,7 +248,7 @@ func TestSafetyPromptSSEExactMarkerIsRewritten(t *testing.T) {
 	require.Contains(t, text, safetyPromptRefusal+marker)
 	require.NotContains(t, text, `"delta":"sp-abc123"`)
 	require.Contains(t, text, `"delta":""`)
-	require.Equal(t, safetyPromptRefusal+marker, gjsonString(gjsonFramePayload(t, text, "response.completed"), "response.output.0.content.0.text"))
+	require.Equal(t, safetyPromptRefusal+marker, safetyPromptTestString(gjsonFramePayload(t, text, "response.completed"), "response.output.0.content.0.text"))
 	require.Len(t, store.List(time.Time{}, time.Time{}, "", 30), 1)
 }
 
@@ -340,7 +351,7 @@ func gjsonFramePayload(t *testing.T, text, eventType string) []byte {
 				continue
 			}
 			payload := []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-			if gjsonString(payload, "type") == eventType {
+			if safetyPromptTestString(payload, "type") == eventType {
 				return payload
 			}
 		}
@@ -349,7 +360,7 @@ func gjsonFramePayload(t *testing.T, text, eventType string) []byte {
 	return nil
 }
 
-func gjsonRaw(raw []byte, path string) []byte {
+func safetyPromptTestRaw(raw []byte, path string) []byte {
 	result := gjson.GetBytes(raw, path)
 	if result.Raw != "" {
 		return []byte(result.Raw)
@@ -357,6 +368,6 @@ func gjsonRaw(raw []byte, path string) []byte {
 	return []byte(result.String())
 }
 
-func gjsonString(raw []byte, path string) string {
+func safetyPromptTestString(raw []byte, path string) string {
 	return gjson.GetBytes(raw, path).String()
 }

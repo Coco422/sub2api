@@ -333,7 +333,7 @@ func injectSafetyPrompt(body []byte, protocol safetyPromptProtocol, signal bool,
 		if raw, ok := root["instructions"]; ok {
 			_ = json.Unmarshal(raw, &instructions)
 		}
-		root["instructions"] = mustJSON(safetyPromptInstructions(instructions))
+		root["instructions"] = safetyPromptJSON(safetyPromptInstructions(instructions))
 		if signal {
 			if err := appendSafetyPromptMarker(root, marker); err != nil {
 				return body, err
@@ -344,7 +344,7 @@ func injectSafetyPrompt(body []byte, protocol safetyPromptProtocol, signal bool,
 		if raw, ok := root["instructions"]; ok {
 			_ = json.Unmarshal(raw, &instructions)
 		}
-		root["instructions"] = mustJSON(safetyPromptInstructions(instructions))
+		root["instructions"] = safetyPromptJSON(safetyPromptInstructions(instructions))
 	case safetyPromptProtocolChat:
 		if err := injectSafetyPromptChat(root, signal, marker); err != nil {
 			return body, err
@@ -376,7 +376,7 @@ func appendSafetyPromptMarker(root map[string]json.RawMessage, marker string) er
 	}
 	raw, ok := root["input"]
 	if !ok || len(raw) == 0 || string(raw) == "null" {
-		root["input"] = mustJSON([]json.RawMessage{rawItem})
+		root["input"] = safetyPromptJSON([]json.RawMessage{rawItem})
 		return nil
 	}
 	var asString string
@@ -393,7 +393,7 @@ func appendSafetyPromptMarker(root map[string]json.RawMessage, marker string) er
 		if err != nil {
 			return err
 		}
-		root["input"] = mustJSON([]json.RawMessage{rawUser, rawItem})
+		root["input"] = safetyPromptJSON([]json.RawMessage{rawUser, rawItem})
 		return nil
 	}
 	var items []json.RawMessage
@@ -401,7 +401,7 @@ func appendSafetyPromptMarker(root map[string]json.RawMessage, marker string) er
 		return errors.New("safety prompt: unsupported input shape")
 	}
 	items = append(items, rawItem)
-	root["input"] = mustJSON(items)
+	root["input"] = safetyPromptJSON(items)
 	return nil
 }
 
@@ -413,7 +413,7 @@ func injectSafetyPromptChat(root map[string]json.RawMessage, signal bool, marker
 		if signal {
 			messages = append(messages, map[string]any{"role": "developer", "content": safetyPromptMarkerMessage(marker)})
 		}
-		root["messages"] = mustJSON(messages)
+		root["messages"] = safetyPromptJSON(messages)
 		return nil
 	}
 	var messages []map[string]any
@@ -424,7 +424,7 @@ func injectSafetyPromptChat(root map[string]json.RawMessage, signal bool, marker
 	if signal {
 		messages = append(messages, map[string]any{"role": "developer", "content": safetyPromptMarkerMessage(marker)})
 	}
-	root["messages"] = mustJSON(messages)
+	root["messages"] = safetyPromptJSON(messages)
 	return nil
 }
 
@@ -432,11 +432,11 @@ func injectSafetyPromptAnthropic(root map[string]json.RawMessage, signal bool, m
 	policy := safetyPromptPolicy + "\n\n" + safetyPromptConvention
 	raw, ok := root["system"]
 	if !ok || len(raw) == 0 || string(raw) == "null" {
-		root["system"] = mustJSON(policy)
+		root["system"] = safetyPromptJSON(policy)
 	} else {
 		var asString string
 		if err := json.Unmarshal(raw, &asString); err == nil {
-			root["system"] = mustJSON(policy + "\n\n" + asString)
+			root["system"] = safetyPromptJSON(policy + "\n\n" + asString)
 		} else {
 			var blocks []json.RawMessage
 			if err := json.Unmarshal(raw, &blocks); err != nil {
@@ -447,7 +447,7 @@ func injectSafetyPromptAnthropic(root map[string]json.RawMessage, signal bool, m
 			if err != nil {
 				return err
 			}
-			root["system"] = mustJSON(append([]json.RawMessage{rawBlock}, blocks...))
+			root["system"] = safetyPromptJSON(append([]json.RawMessage{rawBlock}, blocks...))
 		}
 	}
 	// Direct Anthropic transport has no developer slot compatible with the
@@ -456,7 +456,7 @@ func injectSafetyPromptAnthropic(root map[string]json.RawMessage, signal bool, m
 	return nil
 }
 
-func mustJSON(value any) json.RawMessage {
+func safetyPromptJSON(value any) json.RawMessage {
 	raw, _ := json.Marshal(value)
 	return raw
 }
