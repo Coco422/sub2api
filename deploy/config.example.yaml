@@ -8,6 +8,12 @@ runtime:
   # Keep exactly one full writer; gateway + writer is rejected.
   # See docs/multi-host-scheduler-snapshots.md before upgrading request replicas.
   scheduler_snapshot_mode: "auto"
+  # Opt in only after upgrading the full writer; see docs/multi-host-scheduler-snapshots.md.
+  # These scopes must cover the traffic assigned to a shared-Redis gateway.
+  scheduler_readiness:
+    enabled: false
+    buckets: [] # e.g. ["17:openai:single"] (synthetic group ID)
+    max_age_seconds: 900
 
 # Sub2API Configuration File
 # Sub2API 配置文件
