@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
-import { flushPromises, mount } from '@vue/test-utils'
+import { config, flushPromises, mount, RouterLinkStub } from '@vue/test-utils'
+import SecurityAuditNav from '@/components/admin/security/SecurityAuditNav.vue'
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 
 import RiskControlView from '../RiskControlView.vue'
@@ -16,6 +17,7 @@ const {
   testAPIKeys,
   showError,
   showSuccess,
+  listModerationUsers,
 } = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
@@ -26,6 +28,7 @@ const {
   testAPIKeys: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
+  listModerationUsers: vi.fn(),
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -49,8 +52,13 @@ vi.mock('@/api/admin', () => ({
   },
 }))
 
-// Keep these page tests offline; the summary owns an unrelated API request.
-vi.mock('@/components/admin/moderation/ModerationUsersSummary.vue', () => ({ default: { template: '<div />' } }))
+// Exercise the real summary while keeping its API calls offline.
+vi.mock('@/api/admin/riskControl', () => ({
+  listModerationUsers,
+  getModerationUser: vi.fn(),
+  manageModerationUser: vi.fn(),
+}))
+config.global.stubs.RouterLink = RouterLinkStub
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
@@ -197,6 +205,8 @@ function findButtonByText(wrapper: VueWrapper, text: string): DOMWrapper<HTMLBut
 
 describe('admin RiskControlView', () => {
   beforeEach(() => {
+    listModerationUsers.mockReset()
+    listModerationUsers.mockResolvedValue({ items: [], total: 0 })
     getConfig.mockReset()
     updateConfig.mockReset()
     getStatus.mockReset()
@@ -221,6 +231,43 @@ describe('admin RiskControlView', () => {
       api_key_masks: [],
       api_key_statuses: [],
     }))
+  })
+
+  it('delegates content moderation navigation with the current route highlighted', async () => {
+    const wrapper = mount(RiskControlView, { attachTo: document.body, global: { stubs: { AppLayout: AppLayoutStub, Icon: true } } })
+    await flushPromises()
+    expect(wrapper.getComponent(SecurityAuditNav).props('active')).toBe('/admin/risk-control')
+    wrapper.unmount()
+  })
+
+  it('mounts and queries the user list only on first expansion and retains drafts across repeated collapse', async () => {
+    const wrapper = mount(RiskControlView, { attachTo: document.body, global: { stubs: { AppLayout: AppLayoutStub, Icon: true } } })
+    await flushPromises()
+    const toggle = wrapper.get<HTMLButtonElement>('[data-test="moderation-users-toggle"]')
+    expect(toggle.element.tagName).toBe('BUTTON') // Native Enter/Space activation.
+    expect(toggle.attributes('type')).toBe('button')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('[data-test="moderation-user-summary"]').exists()).toBe(false)
+    expect(listModerationUsers).not.toHaveBeenCalled()
+    await toggle.trigger('click'); await flushPromises()
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    const region = wrapper.get(`#${toggle.attributes('aria-controls')}`)
+    expect(region.attributes('aria-labelledby')).toBe(toggle.attributes('id'))
+    const summary = wrapper.get('[data-test="moderation-user-summary"]')
+    const originalNode = summary.element
+    await summary.get('input').setValue('306') // Unsubmitted search draft.
+    for (let i = 0; i < 3; i++) {
+      await toggle.trigger('click')
+      expect(toggle.attributes('aria-expanded')).toBe('false')
+      expect(summary.isVisible()).toBe(false)
+      await toggle.trigger('click'); await flushPromises()
+      expect(summary.isVisible()).toBe(true)
+      expect(summary.element).toBe(originalNode)
+      expect(summary.get('input').element).toHaveProperty('value', '306')
+    }
+    expect(listModerationUsers).toHaveBeenCalledTimes(1)
+    expect(updateConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('saves each key URL inline with readback, cancellation, validation and errors', async () => {

@@ -1,6 +1,7 @@
 <template>
   <AppLayout>
     <div class="space-y-6">
+      <SecurityAuditNav active="/admin/risk-control" />
       <div v-if="loading" class="flex items-center justify-center py-16">
         <div class="h-8 w-8 animate-spin rounded-full border-b-2 border-primary-600"></div>
       </div>
@@ -23,7 +24,22 @@
           </div>
         </div>
 
-        <ModerationUsersSummary />
+        <section class="space-y-3">
+          <h2>
+            <button
+              id="moderation-users-toggle"
+              type="button"
+              class="btn btn-secondary"
+              data-test="moderation-users-toggle"
+              :aria-expanded="moderationUsersExpanded"
+              aria-controls="moderation-users-region"
+              @click="moderationUsersMounted = true; moderationUsersExpanded = !moderationUsersExpanded"
+            >{{ t('admin.moderationUsers.listTitle') }}</button>
+          </h2>
+          <div id="moderation-users-region" v-show="moderationUsersExpanded" role="region" aria-labelledby="moderation-users-toggle">
+            <ModerationUsersSummary v-if="moderationUsersMounted" />
+          </div>
+        </section>
         <p class="text-sm text-gray-600 dark:text-gray-300" data-test="active-audit-engine">
           {{ t('admin.riskControl.activeEngine', { engine: engineLabel(status?.engine ?? savedEngine) }) }}
         </p>
@@ -1178,6 +1194,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, toRaw } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import SecurityAuditNav from '@/components/admin/security/SecurityAuditNav.vue'
 import ModerationUsersSummary from '@/components/admin/moderation/ModerationUsersSummary.vue'
 import ModerationUserPanel from '@/components/admin/moderation/ModerationUserPanel.vue'
 import ModerationKeyURLEditor from '@/components/admin/ModerationKeyURLEditor.vue'
@@ -1258,6 +1275,9 @@ const riskThresholdDefaults: Record<string, number> = {
 const riskThresholdCategories = Object.keys(riskThresholdDefaults)
 
 const { t } = useI18n()
+// Mount on first use, then keep the list and any unsubmitted drafts alive.
+const moderationUsersMounted = ref(false)
+const moderationUsersExpanded = ref(false)
 const appStore = useAppStore()
 const defaultBlockMessage = () => t('admin.riskControl.defaultBlockMessage')
 

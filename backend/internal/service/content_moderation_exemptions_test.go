@@ -171,8 +171,8 @@ func TestModerationExemptionsLegacyDefaults(t *testing.T) {
 }
 
 func TestModerationExemptionsTypeSafeAdapter(t *testing.T) {
-	for mask := 0; mask < 4; mask++ {
-		svc, _, _ := exemptionService(t, ContentModerationModePreBlock, ContentModerationKeywordModeKeywordAndAPI, exemptionFixture(t, mask&1 != 0, mask&2 != 0, false))
+	for mask := 0; mask < 8; mask++ {
+		svc, _, _ := exemptionService(t, ContentModerationModePreBlock, ContentModerationKeywordModeKeywordAndAPI, exemptionFixture(t, mask&1 != 0, mask&2 != 0, mask&4 != 0))
 		snapshot, err := svc.loadRuntimeSnapshot(context.Background())
 		require.NoError(t, err)
 		cfg := cloneContentModerationConfig(snapshot.config)
@@ -182,12 +182,18 @@ func TestModerationExemptionsTypeSafeAdapter(t *testing.T) {
 		cfg.TypeSafe = moderationEngineDefaults(ContentModerationEngineTypeSafe)
 		cfg.TypeSafe.BaseURL = cfg.BaseURL
 		cfg.TypeSafe.APIKeys = append([]string(nil), cfg.APIKeys...)
+		// Exercise the merged exemption gates and persisted per-key URL routing
+		// through the real Check -> scheduler -> TypeSafe adapter path.
+		cfg.TypeSafe.APIKeyBaseURLs = map[string]string{
+			scopedModerationKeyHash(cfg.TypeSafe.APIKeys[0], ContentModerationEngineTypeSafe): "https://per-key.invalid/relay/v1",
+		}
 		raw, err := json.Marshal(cfg)
 		require.NoError(t, err)
 		svc.replaceRuntimeConfig(cfg, raw)
 		calls := 0
 		svc.httpClient = &http.Client{Transport: typeSafeURLRoundTripper(func(req *http.Request) (*http.Response, error) {
 			calls++
+			require.Equal(t, "https://per-key.invalid/relay/v1/systemone", req.URL.String())
 			var body struct {
 				State     string         `json:"state"`
 				Questions map[string]any `json:"questions"`
@@ -207,10 +213,10 @@ func TestModerationExemptionsTypeSafeAdapter(t *testing.T) {
 		decision, err := svc.Check(context.Background(), exemptionInput(true))
 		require.NoError(t, err)
 		wantCalls := 0
-		if mask == 1 {
+		if mask&3 == 1 {
 			wantCalls = 1
 		}
 		require.Equal(t, wantCalls, calls)
-		require.Equal(t, mask != 3, decision.Blocked)
+		require.Equal(t, mask&3 != 3, decision.Blocked)
 	}
 }
