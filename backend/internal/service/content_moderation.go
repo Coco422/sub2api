@@ -877,7 +877,10 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			"protocol", input.Protocol)
 		return allow, nil
 	}
-	input.moderationVersion = s.CaptureModerationUserVersion(ctx, input.UserID)
+	moderationState := s.captureModerationUserState(ctx, input.UserID)
+	if moderationState != nil {
+		input.moderationVersion = &moderationState.Version
+	}
 	_, input.riskControlLogOnly = runtimeSnapshot.allowlistedUsers[input.UserID]
 	// Keep audit evidence while ensuring all local rejection paths allow trusted users.
 	defer func() {
@@ -959,7 +962,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		return allow, nil
 	}
 	if cfg.Mode == ContentModerationModePreBlock {
-		if cfg.KeywordBlockingMode != ContentModerationKeywordModeAPIOnly && len(cfg.BlockedKeywords) > 0 {
+		if (moderationState == nil || !moderationState.KeywordExempt) && cfg.KeywordBlockingMode != ContentModerationKeywordModeAPIOnly && len(cfg.BlockedKeywords) > 0 {
 			keywordText := extractContentModerationKeywordText(input.Protocol, input.Body)
 			if keyword, hit := runtimeSnapshot.matchBlockedKeyword(keywordText); hit {
 				metricAction := ContentModerationActionKeywordBlock
@@ -1062,6 +1065,14 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			}, nil
 		}
 	}
+	// Preserve hash and other independent rejection paths before skipping only
+	// the external audit layer. Keyword-only already returned above.
+	if moderationState != nil && moderationState.APIAuditExempt {
+		if cfg.Mode == ContentModerationModePreBlock {
+			s.recordPreBlockSyncMetric(0, ContentModerationActionAllow)
+		}
+		return allow, nil
+	}
 	if !cfg.shouldSample(hashText) {
 		if cfg.Mode == ContentModerationModePreBlock {
 			s.recordPreBlockSyncMetric(0, ContentModerationActionAllow)
@@ -1104,6 +1115,13 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 
 func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
+	// Observe tasks may wait in the queue while an administrator grants an
+	// exemption. Recheck immediately before sending; never introduce keywords here.
+	if queueDelay != nil {
+		if state := s.captureModerationUserState(ctx, input.UserID); state != nil && state.APIAuditExempt {
+			return allow
+		}
+	}
 	trackPreBlock := queueDelay == nil && allowBlock && cfg != nil && cfg.Mode == ContentModerationModePreBlock
 	if trackPreBlock {
 		s.preBlockActive.Add(1)
