@@ -31,7 +31,10 @@ func restoreDiagnosticJSON(t *testing.T, plan *service.ScheduledTestPlan) map[st
 func TestQualityRestoreConflictRepeatedManualMembership(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+	}()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	plan := &service.ScheduledTestPlan{ID: 7, AccountID: 8, UpdatedAt: now,
 		PelicanConfig: &service.PelicanTestConfig{Quality: &service.QualityPolicy{Action: "remove_groups", AutoRestore: true}}}
@@ -77,7 +80,10 @@ func TestQualityRestoreDiagnosticsGroupEvidenceAndNoWrites(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() {
+				mock.ExpectClose()
+				require.NoError(t, db.Close())
+			}()
 			mock.ExpectBegin()
 			tx, err := db.Begin()
 			require.NoError(t, err)
@@ -112,7 +118,10 @@ func TestQualityRestoreDiagnosticsIgnoreUnrelatedAccountVersion(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() {
+				mock.ExpectClose()
+				require.NoError(t, db.Close())
+			}()
 			plan := &service.ScheduledTestPlan{ID: 7, AccountID: 8, UpdatedAt: time.Now(), PelicanConfig: &service.PelicanTestConfig{Quality: &service.QualityPolicy{Action: action, AutoRestore: true}}}
 			until := plan.UpdatedAt.Add(time.Minute)
 			state := qualityState{Action: action, AccountVersion: plan.UpdatedAt.Add(-time.Hour)}
@@ -146,7 +155,10 @@ func TestQualityRestoreDiagnosticsAccountGuards(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() {
+				mock.ExpectClose()
+				require.NoError(t, db.Close())
+			}()
 			plan := &service.ScheduledTestPlan{ID: 7, AccountID: 8, UpdatedAt: time.Now(), PelicanConfig: &service.PelicanTestConfig{Quality: &service.QualityPolicy{Action: "disable_scheduling", AutoRestore: true}}}
 			until := plan.UpdatedAt.Add(time.Minute)
 			expectQualityDiagnosticAccount(mock, plan, until, `{"action":"disable_scheduling"}`, status)
@@ -171,7 +183,10 @@ func TestQualityRestoreDiagnosticsAccountGuards(t *testing.T) {
 func TestQualityRestoreDiagnosticsStaleRunClearsPreviousEvidence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+	}()
 	plan := &service.ScheduledTestPlan{ID: 7, UpdatedAt: time.Now(), QualityRestoreDiagnostic: qualityRestoreConflict("group_missing")}
 	until := plan.UpdatedAt.Add(time.Minute)
 	mock.ExpectBegin()
@@ -189,7 +204,14 @@ func TestQualityRestoreDiagnosticsStaleRunClearsPreviousEvidence(t *testing.T) {
 func TestQualityRestoreDiagnosticsConcurrentRulesCannotTakeOwnership(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() {
+		// Concurrent transactions may open more than one driver connection.
+		for remaining := db.Stats().OpenConnections; remaining > 0; remaining-- {
+			mock.ExpectClose()
+		}
+		require.NoError(t, db.Close())
+		require.NoError(t, mock.ExpectationsWereMet())
+	}()
 	mock.MatchExpectationsInOrder(false)
 	now := time.Now()
 	until := now.Add(time.Minute)
@@ -226,7 +248,10 @@ func TestQualityRestoreDiagnosticsConcurrentRulesCannotTakeOwnership(t *testing.
 func TestQualityRestoreDiagnosticsMissingAccountIsNotRestoreConflict(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+	}()
 	plan := &service.ScheduledTestPlan{ID: 7, AccountID: 8, UpdatedAt: time.Now(), PelicanConfig: &service.PelicanTestConfig{Quality: &service.QualityPolicy{Action: "remove_groups", AutoRestore: true}}}
 	until := plan.UpdatedAt.Add(time.Minute)
 	mock.ExpectBegin()
@@ -246,7 +271,10 @@ func TestQualityRestoreDiagnosticsIsolationCannotClaimExternalGroups(t *testing.
 		t.Run(map[bool]string{false: "external group with model rollback", true: "foreign model entry"}[changedModel], func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() {
+				mock.ExpectClose()
+				require.NoError(t, db.Close())
+			}()
 			now := time.Now()
 			plan := &service.ScheduledTestPlan{ID: 7, AccountID: 8, ModelID: "sol", UpdatedAt: now,
 				QualityModelOutcomes: map[string]string{"sol": "passed", "astra": "passed"},
@@ -259,7 +287,8 @@ func TestQualityRestoreDiagnosticsIsolationCannotClaimExternalGroups(t *testing.
 				Groups:          &qualityState{Action: "remove_groups", Removed: []qualityGroup{{AccountID: 8, GroupID: 21}}},
 				IsolationModels: []string{"sol", "astra"}, IsolationGroupIDs: []int64{21}}
 			if changedModel {
-				entries := account.Extra[service.QualityModelIsolationKey].(map[string]any)
+				entries, ok := account.Extra[service.QualityModelIsolationKey].(map[string]any)
+				require.True(t, ok)
 				entries["sol"] = map[string]any{"reason": "external-policy"}
 			}
 			until := now.Add(time.Minute)
@@ -296,7 +325,9 @@ func TestQualityRestoreDiagnosticsNativeModelAndConcurrencyGuards(t *testing.T) 
 			_, err := transitionQualityModels(account, state, 7, []string{"sol"}, now.Add(time.Hour), "failed", true, now)
 			require.NoError(t, err)
 			if change == "entry" {
-				account.Extra["model_rate_limits"].(map[string]any)["sol"] = map[string]any{"reason": "external-policy"}
+				entries, ok := account.Extra["model_rate_limits"].(map[string]any)
+				require.True(t, ok)
+				entries["sol"] = map[string]any{"reason": "external-policy"}
 			} else {
 				account.Concurrency = 9
 			}
@@ -320,7 +351,10 @@ func TestQualityRestoreDiagnosticsNativeModelAndConcurrencyGuards(t *testing.T) 
 func TestQualityRestoreDiagnosticsBPSOnlyListsChangedManagedKeys(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+	}()
 	plan := &service.ScheduledTestPlan{ID: 7, AccountID: 8, UpdatedAt: time.Now(), PelicanConfig: &service.PelicanTestConfig{Quality: &service.QualityPolicy{Action: service.QualityActionEnableBPS, AutoRestore: true}}}
 	until := plan.UpdatedAt.Add(time.Minute)
 	expectQualityDiagnosticAccount(mock, plan, until, `{"action":"enable_bps","pass_streak":1,"bps_applied":{"openai_excel_bps":true}}`, "active")
