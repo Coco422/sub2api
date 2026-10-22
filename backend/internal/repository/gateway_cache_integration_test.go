@@ -22,6 +22,34 @@ func (s *GatewayCacheSuite) SetupTest() {
 	s.cache = NewGatewayCache(s.rdb)
 }
 
+func (s *GatewayCacheSuite) TestHTTPResponseOwnerSharedRecord() {
+	t := s.T()
+	// Two independent stores use the actual Redis adapter, not a local map.
+	writer := service.NewOpenAIWSStateStore(NewGatewayCache(s.rdb))
+	reader := service.NewOpenAIWSStateStore(NewGatewayCache(s.rdb))
+	require.NoError(t, writer.BindHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture", 101, 201, time.Minute))
+	user, key, found, err := reader.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.EqualValues(t, 101, user)
+	require.EqualValues(t, 201, key)
+	keys := httpResponseOwnerKeys(17, "resp_shared_fixture")
+	for _, ownerKey := range keys {
+		ttl, err := s.rdb.PTTL(s.ctx, ownerKey).Result()
+		require.NoError(t, err)
+		require.Greater(t, ttl, time.Duration(0))
+		require.LessOrEqual(t, ttl, time.Minute)
+	}
+	require.NoError(t, s.rdb.Set(s.ctx, keys[0], "v99:101:201", time.Minute).Err())
+	_, _, found, err = writer.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	require.ErrorIs(t, err, errHTTPResponseOwnerUnavailable)
+	require.False(t, found, "a warm writer must honor authoritative version rejection")
+	require.NoError(t, s.rdb.Del(s.ctx, keys...).Err())
+	_, _, found, err = writer.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
 func (s *GatewayCacheSuite) TestGetSessionAccountID_Missing() {
 	_, err := s.cache.GetSessionAccountID(s.ctx, 1, "nonexistent")
 	require.True(s.T(), errors.Is(err, service.ErrStickySessionNotFound), "expected ErrStickySessionNotFound for missing session")
