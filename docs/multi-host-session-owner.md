@@ -123,3 +123,11 @@ API Key鉴权的本机正/负L1缓存依赖共享Redis Pub/Sub失效通知。go-
 这与单适配器自动断线重连、service 模拟 ready 回调及共享并发 A1 是不同的验收范围。恢复步骤是显式重订阅，不是自动重连、历史重放或节点迁移；没有验证 `APIKeyService` 热 L1、数据库/outbox 和中间件授权的组合链路。Pub/Sub 通道在 Redis 内全局可见，因此该集成用例串行执行，不以更换 Redis DB 冒充通道隔离。
 
 此回归仅 `integration` 标签，本机未编译/执行，等待新精确 head 远端 CI；非 `-v` 包结果不能证明单项未 skip，不代表真实两机撤销或故障验收。没有运行行为、共享消息格式、TTL、配置或账本变更。
+
+## 公开鉴权与热L1：真实Pub/Sub组合回归
+
+`internal/integration/authcache/l1_pubsub_integration_test.go` 的 `TestIndependentAPIKeyServicesInvalidateHotL1ThroughRealPubSub` 连接两个独立 `APIKeyService`、真实 `APIKeyCache` 适配层及独立客户端，只使用临时私有 Unix socket Redis 和虚构查询源。它通过公开 `GetByKey` 及查询源计数确认正/负 L1 均已热命中；变更虚构源后先确认旧缓存结果仍在，再发布两个真实 hash 失效事件，要求两端重新读取并缓存新结果，同时不相关 Key 保持热命中。
+
+L2 显式关闭，正负 TTL 为 120 秒且大于 30 秒测试上下文，不靠 L2 回读或自然过期替代失效传播。测试不访问私有缓存字段、不增加生产测试接口；订阅在关闭客户端前停止并等待，临时 Redis 被终止并等待，有限 L1 缓存随独立测试 binary 退出释放。该目录仅在 `integration` 标签下参与 CI，使用既有 workflow 安装的 `redis-server`；缺工具在 CI 中失败。
+
+本机只做源码及非编译静态检查，**此组合回归未编译/运行**，等待新精确 head CI。它验证公开查询与缓存传播，不包含 HTTP 中间件准入、数据库/outbox、在途请求撤销、自动重连丢消息、真实两进程/主机、计费或模型；`GetByKey` 返回未知 Key 不能冒充完整业务撤销验收。没有产品策略、运行行为或媒体/透明重放语义修改。
