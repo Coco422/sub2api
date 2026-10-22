@@ -115,3 +115,11 @@ API Key鉴权的本机正/负L1缓存依赖共享Redis Pub/Sub失效通知。go-
 此测试不改 Lua、TTL、准入策略、配置或账本，区别于已有 API Key 竞争与同客户端串行启动清理回归。依赖现有 Docker Redis 集成 fixture，适用 `integration` build tag；测试本身不读取应用配置或生产数据，取消/等待和清理均有时间边界。
 
 本机是生产宿主，仅新增源码并做非编译静态检查，**此回归未编译/运行，等待新精确 head 远端 CI**。两个适配器在同一测试进程内，不能冒充真实两主机、进程崩溃、网络分区、跨请求计费或完整业务故障验收；不提供透明续接或媒体持久化。
+
+## 鉴权失效：独立订阅者传播回归
+
+`auth_invalidation_fanout_integration_test.go` 的 `TestAuthInvalidationFanoutPreservesIndependentSubscriberLifecycle` 使用隔离 Docker Redis、三个独立 go-redis 客户端和公开 `APIKeyCache` 发布/订阅方法。它检查同一虚构 hash 向两订阅者传播；显式取消并等待一端退出后，另一端继续接收；原客户端重新订阅后，两端均收到新事件。订阅数量取自真实 Redis，各订阅和客户端在测试结束时收尾；不接应用配置、数据库、模型或生产 Redis。
+
+这与单适配器自动断线重连、service 模拟 ready 回调及共享并发 A1 是不同的验收范围。恢复步骤是显式重订阅，不是自动重连、历史重放或节点迁移；没有验证 `APIKeyService` 热 L1、数据库/outbox 和中间件授权的组合链路。Pub/Sub 通道在 Redis 内全局可见，因此该集成用例串行执行，不以更换 Redis DB 冒充通道隔离。
+
+此回归仅 `integration` 标签，本机未编译/执行，等待新精确 head 远端 CI；非 `-v` 包结果不能证明单项未 skip，不代表真实两机撤销或故障验收。没有运行行为、共享消息格式、TTL、配置或账本变更。
