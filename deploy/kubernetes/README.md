@@ -85,7 +85,7 @@ Secret 的 config.yaml 使用 subPath，更新后需要重建 Pod。PVC 用于�
 
 ## 固定镜像与上线
 
-使用离线渲染器统一 namespace、所有容器的固定 digest 和副本数。需要 Python 3 与 Kustomize（或带 Kustomize 的 kubectl）；它只运行本地 `build`/`kustomize`，不读取集群配置、不访问 Kubernetes API、不拉镜像。仅接受 owner fork 的 sha256 镜像，缺省副本数为 0；输出不包含 Secret 内容。CI 的 `release-helpers` 对非法参数、namespace 显式补丁、固定 digest、默认副本数、离线命令与失败不输出半成品做 mock 回归；它不代替真实 Kustomize/集群 schema 验证。默认 0 副本只用于新建暂存；更新已经运行的同名 StatefulSet 时必须显式指定经批准的副本数，否则 apply 会把现有副本缩为 0。
+使用离线渲染器统一 namespace、所有容器的固定 digest 和副本数。需要 Python 3 与 Kustomize（或带 Kustomize 的 kubectl）；它只运行本地 `build`/`kustomize`，不读取集群配置、不访问 Kubernetes API、不拉镜像。仅接受 owner fork 的 sha256 镜像，缺省副本数为 0；输出不包含 Secret 内容。CI 的 `release-helpers` 对非法参数、namespace 显式补丁、固定 digest、默认副本数、离线命令与失败不输出半成品做 mock 回归；另用固定版本与校验摘要的真实 Kustomize 验证完整模板的默认/自定义 namespace、两类容器 digest 和副本配置；它不代替集群 schema 验证。默认 0 副本只用于新建暂存；更新已经运行的同名 StatefulSet 时必须显式指定经批准的副本数，否则 apply 会把现有副本缩为 0。
 
 ```bash
 python3 deploy/kubernetes/render.py \

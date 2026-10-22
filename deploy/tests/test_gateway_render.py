@@ -17,7 +17,7 @@ from pathlib import Path
 import sys
 command, directory = sys.argv[1:]
 assert command in ("build", "kustomize"), "unexpected cluster operation"
-overlay = json.loads(Path(directory, "kustomization.json").read_text())
+overlay = json.loads(Path(directory, "kustomization.yaml").read_text())
 Path(os.environ["CAPTURE"]).write_text(json.dumps({{"command": command, "overlay": overlay}}))
 print(os.environ.get("RENDER_OUTPUT", "apiVersion: v1\\nkind: List\\nitems: []"))
 if os.environ.get("RENDER_FAIL"):

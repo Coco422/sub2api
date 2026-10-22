@@ -44,7 +44,7 @@ def main():
         "replicas": [{"name": "sub2api-gateway", "count": args.replicas}],
     }
     with tempfile.TemporaryDirectory(prefix="sub2api-gateway-render-") as temp_dir:
-        Path(temp_dir, "kustomization.json").write_text(json.dumps(overlay), encoding="utf-8")
+        Path(temp_dir, "kustomization.yaml").write_text(json.dumps(overlay), encoding="utf-8")
         command = [standalone, "build", temp_dir] if standalone else [kubectl, "kustomize", temp_dir]
         result = subprocess.run(command, check=True, capture_output=True, text=True)
     if "build-with-k8s-runtime-required" in result.stdout:
