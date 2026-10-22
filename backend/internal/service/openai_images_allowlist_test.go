@@ -180,7 +180,10 @@ func TestExtraImageModelsForwardPreservesBodyAndOctetStreamJSON(t *testing.T) {
 				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"binary/octet-stream"}}, Body: io.NopCloser(strings.NewReader(response))}}
 				cfg := &config.Config{}
 				cfg.Security.ResponseHeaders.Enabled = filterHeaders
-				svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+				svc := &OpenAIGatewayService{
+					cfg: cfg, httpUpstream: upstream,
+					responseHeaderFilter: compileResponseHeaderFilter(cfg),
+				}
 				result, err := svc.ForwardImages(c.Request.Context(), c, &a, body, parsed, channelModel)
 				require.NoError(t, err)
 				require.Equal(t, extraImageTestModel, result.UpstreamModel)
