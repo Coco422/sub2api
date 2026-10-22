@@ -53,6 +53,7 @@ class GatewayRenderTests(unittest.TestCase):
         record = json.loads(self.capture.read_text())
         self.assertEqual(record["command"], "build")
         overlay = record["overlay"]
+        self.assertEqual(overlay["resources"], ["base"])
         self.assertEqual(overlay["namespace"], "gateway-canary")
         namespace_patch = next(p for p in overlay["patches"] if p["target"]["kind"] == "Namespace")
         self.assertIn({"op": "replace", "path": "/metadata/name", "value": "gateway-canary"},

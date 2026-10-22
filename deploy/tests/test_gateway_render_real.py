@@ -17,7 +17,8 @@ class RealGatewayRenderTests(unittest.TestCase):
         command = [sys.executable, str(RENDER), "--namespace", namespace, "--image", IMAGE]
         if replicas is not None:
             command.extend(["--replicas", str(replicas)])
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
         documents = list(yaml.safe_load_all(result.stdout))
         self.assertTrue(documents)
         self.assertNotIn("build-with-k8s-runtime-required", result.stdout)

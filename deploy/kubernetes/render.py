@@ -31,7 +31,7 @@ def main():
         "apiVersion": "kustomize.config.k8s.io/v1beta1",
         "kind": "Kustomization",
         "namespace": args.namespace,
-        "resources": [str(base)],
+        "resources": ["base"],
         # Namespace's metadata.name is cluster-scoped; set it explicitly rather
         # than relying on a particular Kustomize namespace-transformer version.
         "patches": [{
@@ -44,6 +44,13 @@ def main():
         "replicas": [{"name": "sub2api-gateway", "count": args.replicas}],
     }
     with tempfile.TemporaryDirectory(prefix="sub2api-gateway-render-") as temp_dir:
+        # Keep all resources under the build root. Absolute resource directories
+        # are rejected by Kustomize's default loader; never relax load security.
+        staged_base = Path(temp_dir, "base")
+        staged_base.mkdir()
+        for name in ("kustomization.yaml", "namespace.yaml", "gateway.yaml",
+                     "services.yaml", "disruption-budget.yaml"):
+            shutil.copyfile(base / name, staged_base / name)
         Path(temp_dir, "kustomization.yaml").write_text(json.dumps(overlay), encoding="utf-8")
         command = [standalone, "build", temp_dir] if standalone else [kubectl, "kustomize", temp_dir]
         result = subprocess.run(command, check=True, capture_output=True, text=True)
