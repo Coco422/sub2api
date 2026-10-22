@@ -293,6 +293,7 @@ type RateLimitCacheInvalidator interface {
 }
 
 type APIKeyService struct {
+	balanceRejectionNotifier  BalanceRejectionNotifier
 	localAuth                 *RegionalAuthReader
 	regionalAuthRuntime       *regionalSchedulerRuntime
 	apiKeyRepo                APIKeyRepository
