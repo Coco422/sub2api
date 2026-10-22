@@ -57,10 +57,19 @@ func TestCodexThreadDelegationPreservesContext(t *testing.T) {
 			if bridge.hasToolHistory || len(bridge.completedToolHistory) != 0 {
 				t.Fatal("handoff alone must not enter tool continuation recovery")
 			}
+			retry, _ := mustPrepare(t, source, "delegation", new(ReplayCache))
+			if !reflect.DeepEqual(retry, prepared) {
+				t.Fatal("retrying the same handoff request changed its body or identity")
+			}
 			source["input"] = history
-			again, _ := mustPrepare(t, source, "delegation", new(ReplayCache))
-			if !reflect.DeepEqual(again, prepared) {
+			again, replayBridge := mustPrepare(t, source, "delegation", new(ReplayCache))
+			// turn_id fingerprints the original input, whose representation now
+			// differs. Idempotence applies to the normalized history, not that ID.
+			if !reflect.DeepEqual(again["input"], prepared["input"]) {
 				t.Fatal("replaying converted context duplicated or changed the handoff")
+			}
+			if replayBridge.hasToolHistory || len(replayBridge.completedToolHistory) != 0 {
+				t.Fatal("replaying converted context entered tool continuation recovery")
 			}
 		})
 	}
