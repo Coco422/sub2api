@@ -3,6 +3,9 @@
 # Keep exactly one full instance until every enabled global job has a shared lease.
 runtime:
   role: "full"
+  # Optional direct origin for this process's temporary BPS image capabilities.
+  # Empty keeps the shared setting. Must resolve to this node, not a shared LB.
+  image_relay_owner_origin: ""
   # Opt-in native store=false WS safety gate; no node routing or replay.
   # Each process must use a unique, stable node_id; boot identity is generated.
   ws_node_owner:

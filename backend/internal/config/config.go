@@ -2270,6 +2270,7 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 func setDefaults() {
 	viper.SetDefault("gateway.upstream_routing.enabled", false)
 	viper.SetDefault("runtime.role", RuntimeRoleFull)
+	viper.SetDefault("runtime.image_relay_owner_origin", "")
 	viper.SetDefault("runtime.ws_node_owner.enabled", false)
 	viper.SetDefault("runtime.ws_node_owner.node_id", "")
 	viper.SetDefault("runtime.scheduler_snapshot_mode", SchedulerSnapshotModeAuto)

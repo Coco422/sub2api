@@ -64,3 +64,22 @@ runtime:
 新增config、仓储、service及原生WS假上游回归源码，覆盖相同boot继续两turn、未知owner在上游dial前拒绝、不同node/boot/Key/账号/group、marker过期及local conn丢失、失败脱敏、owner拒绝不进入failover/账号惩罚。**本轮均未运行，等待远端CI。** 仍未提供原节点发现、签名owner URL、跨节点转发/迁移、自动重建、生产网络故障或真实两机验收；此项是安全拒绝契约，不是“无损跨节点续接完成”。
 
 补充的真实ingress回归仍只连接本机httptest WS和假上游：默认关闭的原生两turn；同node/boot存活连接成功；foreign boot、本地绑定丢失、绑定尚在但池连接失效、cache错误均零上游发送且不产生成功AfterTurn；模型成功后marker发布失败只有一次生成和一次成功AfterTurn。额外的模式矩阵覆盖两种非目标模式×开关开/关×store=true/false：关闭时实际完成假上游响应，开启时零dial/零HTTP发送/零回调。这里验证的是调用与回调计数，不是实际账本/支付集成验收；无生产DB或真实模型。连接获取前已进入turn准入的失败允许一次用于释放槽位的失败AfterTurn，不能当作成功计费。
+
+## BPS临时图片/附件：本节点owner origin
+
+原生BPS附件上传返回上游file ID，不由本节点提供文件下载。异步生图任务已有共享Redis的UserID/APIKeyID授权记录及S3兼容存储；本轮保持这些路径。另一个可选relay模式把输入图片临时写入本机私有目录，并由本进程索引/HMAC生成不可猜测的下载capability。两个节点共用全局图片BaseURL时，链接可能落到没有该文件的节点；共享Redis本身不能解决这个问题。
+
+新增可信进程配置，默认空沿用既有全局图片BaseURL：
+
+```yaml
+runtime:
+  image_relay_owner_origin: "" # 可填 https://node-a.example.invalid，必须直达生成节点
+```
+
+环境变量`RUNTIME_IMAGE_RELAY_OWNER_ORIGIN`（Compose须自行显式传入service）只接受HTTPS origin，可带端口或末尾单个斜杠，不接受userinfo、路径、query或fragment。它不采用请求Host/Forwarded头，不做DNS探测/修改，不自动配置TLS或开防火墙。接入方需保证该origin的DNS/TLS和现有BPS图片GET/HEAD路由直达当前节点；配置同一个轮询域名无法保证owner。
+
+只有relay已启用且为relay模式时覆盖生成URL的origin；不改变全局设置或开启功能，不绕过现有全局settings有效性校验。全局relay BaseURL仍需是合法HTTPS origin，以兼容没有本节点覆盖的旧reader。新进程重复刷新共享配置时保留本节点origin。已有serverless的签名owner query装饰继续保留，不新建经旧节点转发正文的路径。
+
+图片字节、HMAC、capability作用域、下载上限及过期规则不改，API Key字符串/客户正文/节点凭据不加入URL。只有已鉴权的BPS请求可以创建临时图片；下载URL本身是bearer capability，外部上游不携带用户Key即可取图，不能把它当普通公开静态目录，也不应记录或传播完整链接。别的节点和进程重启后没有对应索引/密钥，旧capability返回404，不自动回流旧机、不迁移文件。修改进程配置涉及既有重启/排空流程，本轮未执行。
+
+新增离线源码回归覆盖两套独立relay分别生成各自origin、正确owner GET/HEAD及字节、外节点/篡改链接404、不同API Key作用域capability不同、共享设置刷新不覆盖本节点origin、重启旧链接404、默认空配置/禁用/native兼容。保留原有relay到期/存储上限回归。**新增测试未运行，待精确提交远端CI；本机只做非编译静态检查。** 此功能只提供临时relay直达owner URL，仍未统一所有图片/附件的存储、鉴权、生命周期或跨机恢复。
