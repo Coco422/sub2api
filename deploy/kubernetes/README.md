@@ -23,7 +23,7 @@ curl -fsSL "https://raw.githubusercontent.com/ranxi2001/sub2api/$release_tag/dep
 
 - 主实例使用 `runtime.role: full`（默认值），保留管理后台、支付、巡检、通知投递和全局维护任务。可以继续使用原来的 systemd / Compose；本示例不搬迁数据库或原主站。
 - 请求副本使用 `runtime.role: gateway`，暴露模型网关与健康检查路由，不注册后台、用户面板、支付或重登 Worker 的管理接口。需要通过主站修改配置。
-- 网关节点仍运行请求计费、审计、缓存同步、账号事件落库/自动配置、请求触发的 Ollama 检测以及本机连接池等必要工作。不能简单停掉所有 goroutine。
+- 网关节点仍运行请求计费、审计、缓存同步、账号事件落库/自动配置、请求触发的 Ollama 检测以及本机连接池等必要工作。不能简单停掉所有 goroutine。BPS warm pool 仍逐进程运行，PR #531 通过窄字段查询减少其周期读取，不是全局禁止 BPS 预热。
 - 定时扫描、主动监控、普通账号计划检测、备份、版本轮询、全局额度维护、批量图片消费者和 BPS 403 周期恢复只由 full 节点启动。账号运营事件由请求副本入库，通知由 full 节点投递。
 - 模板显式配置 `RUNTIME_SCHEDULER_SNAPSHOT_MODE=reader`；唯一 full 节点使用 `writer`（或对应版本的 `auto`），先确保其已发布完整调度快照。reader 缺失快照应拒绝调度，不回源重建。该配置不会消除请求鉴权、计费等必要的 PostgreSQL/Redis 往返。
 - 保持一个 full 实例。此开关没有将所有旧后台任务改造成带租约的多主调度器，不应横向扩容 full 实例。
@@ -85,7 +85,7 @@ Secret 的 config.yaml 使用 subPath，更新后需要重建 Pod。PVC 用于�
 
 ## 固定镜像与上线
 
-使用离线渲染器统一 namespace、所有容器的固定 digest 和副本数。需要 Python 3 与 Kustomize（或带 Kustomize 的 kubectl）；它只运行本地 `build`/`kustomize`，不读取集群配置、不访问 Kubernetes API、不拉镜像。仅接受 owner fork 的 sha256 镜像，缺省副本数为 0；输出不包含 Secret 内容。默认 0 副本只用于新建暂存；更新已经运行的同名 StatefulSet 时必须显式指定经批准的副本数，否则 apply 会把现有副本缩为 0。
+使用离线渲染器统一 namespace、所有容器的固定 digest 和副本数。需要 Python 3 与 Kustomize（或带 Kustomize 的 kubectl）；它只运行本地 `build`/`kustomize`，不读取集群配置、不访问 Kubernetes API、不拉镜像。仅接受 owner fork 的 sha256 镜像，缺省副本数为 0；输出不包含 Secret 内容。CI 的 `release-helpers` 对非法参数、namespace 显式补丁、固定 digest、默认副本数、离线命令与失败不输出半成品做 mock 回归；它不代替真实 Kustomize/集群 schema 验证。默认 0 副本只用于新建暂存；更新已经运行的同名 StatefulSet 时必须显式指定经批准的副本数，否则 apply 会把现有副本缩为 0。
 
 ```bash
 python3 deploy/kubernetes/render.py \
@@ -115,7 +115,7 @@ Service 都是 ClusterIP，不自动创建 Ingress、NodePort、TLS 证书或 DN
 | `sub2api-gateway-headless` | StatefulSet 稳定网络标识 | 不是对外入口或健康/流量控制器 |
 | `sub2api-gateway-0` | 专属入口固定第 0 个 Pod | 只选择 ready 的 gateway-0，失联返回不可用，不自动迁移到 gateway-1 |
 
-`readinessProbe.timeoutSeconds=5` 高于应用共享依赖探测预算 3 秒；startup/liveness 只访问 `/health`。readiness 成功不证明账号代理、SSE、图片链接或真实模型出口正常。
+`readinessProbe.timeoutSeconds=5` 高于应用共享依赖探测预算 3 秒；startup/liveness 只访问 `/health`。readiness 仍仅检查 PostgreSQL/Redis，不检查 scheduler snapshot 新鲜度；reader 无快照会 fail closed，必须由 full 先完成预热。readiness 成功不证明账号代理、SSE、图片链接或真实模型出口正常。
 
 ## 定向灰度与流量目标
 
@@ -124,6 +124,8 @@ Service 都是 ClusterIP，不自动创建 Ingress、NodePort、TLS 证书或 DN
 专属入口指向 gateway 并不限制其他持有效 Key 的客户端访问；它不是 Key 白名单或百分比路由。若必须在公共入口强制限制 Key 范围，应先实现经过鉴权的节点准入策略；不要靠可伪造的客户端路由头授权，也不要把原始 Authorization 放进 Nginx map、日志或 Git。未完成该策略前只给受控测试客户端交付入口。
 
 不得把 DNS 多 A、随机 Service、复制两份 gateway 配置当成 1%/5% 灰度。当前 Serverless 路由是主站接收正文后转发，可能保持会话但仍消耗主站公网流量；本次扩容目标是降低原机正文流量，应优先让测试客户端直接访问新机入口。既有地区绑定功能见 [Serverless 路由](../../docs/serverless-routing.md)，不能将它描述为通用百分比接流。
+
+共享 group 读取、账本、计费与全局并发仍实时依赖 SQL/Redis，本版本不是全离线本地 gateway。性能收益必须通过独立时间窗实测，不能从模板或窄查询推算“节省 95%”。
 
 开始前记录专属入口→Service→Pod→模型出口的路径，核对旧机 loopback 代理没有被复制成远程回流路径。按独立时间窗对照两机网卡/隧道字节增量、已完成请求数与失败数；入口 ready、TLS 握手耗时不能证明节省公网流量，也不能冒充模型 TTFT。
 

@@ -32,6 +32,14 @@ def main():
         "kind": "Kustomization",
         "namespace": args.namespace,
         "resources": [str(base)],
+        # Namespace's metadata.name is cluster-scoped; set it explicitly rather
+        # than relying on a particular Kustomize namespace-transformer version.
+        "patches": [{
+            "target": {"version": "v1", "kind": "Namespace", "name": "sub2api"},
+            "patch": json.dumps([{
+                "op": "replace", "path": "/metadata/name", "value": args.namespace,
+            }]),
+        }],
         "images": [{"name": image_match[1], "newName": image_match[1], "digest": image_match[2]}],
         "replicas": [{"name": "sub2api-gateway", "count": args.replicas}],
     }
