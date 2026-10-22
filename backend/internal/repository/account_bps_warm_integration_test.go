@@ -53,25 +53,29 @@ func TestBPSWarmProjectionPreservesEligibilityWithoutLargePayloads(t *testing.T)
 		a := service.Account{
 			Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
 			Status: service.StatusActive, Schedulable: true, Concurrency: 7,
-			Credentials: map[string]any{"plan_type": "plus", "irrelevant_large_field": large},
-			Extra:       map[string]any{"openai_excel_bps": true, "openai_excel_bps_mihomo": true, "irrelevant_large_field": large},
+			QuotaDimension: service.QuotaDimensionGlobal,
+			Credentials:    map[string]any{"plan_type": "plus", "irrelevant_large_field": large},
+			Extra:          map[string]any{"openai_excel_bps": true, "openai_excel_bps_mihomo": true, "irrelevant_large_field": large},
 		}
 		if tt.change != nil {
 			tt.change(&a)
 		}
 		if tt.name == "shadow" {
 			a.ParentAccountID = &ids[0]
+			a.QuotaDimension = service.QuotaDimensionSpark
 		}
 		credentials, err := json.Marshal(a.Credentials)
 		require.NoError(t, err)
 		extra, err := json.Marshal(a.Extra)
 		require.NoError(t, err)
+		var storedDimension string
 		require.NoError(t, integrationDB.QueryRowContext(ctx, `
-			INSERT INTO accounts(name,platform,type,status,schedulable,concurrency,credentials,extra,parent_account_id)
-			VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9) RETURNING id`,
+			INSERT INTO accounts(name,platform,type,status,schedulable,concurrency,credentials,extra,parent_account_id,quota_dimension)
+			VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10) RETURNING id,quota_dimension`,
 			"warm-projection-"+tt.name, a.Platform, a.Type, a.Status, a.Schedulable, a.Concurrency,
-			string(credentials), string(extra), a.ParentAccountID).Scan(&a.ID))
+			string(credentials), string(extra), a.ParentAccountID, a.QuotaDimension).Scan(&a.ID, &storedDimension))
 		ids = append(ids, a.ID)
+		require.Equal(t, a.QuotaDimension, storedDimension)
 		if tt.name == "deleted" {
 			_, err = integrationDB.ExecContext(ctx, `UPDATE accounts SET deleted_at=NOW() WHERE id=$1`, a.ID)
 			require.NoError(t, err)
@@ -97,6 +101,11 @@ func TestBPSWarmProjectionPreservesEligibilityWithoutLargePayloads(t *testing.T)
 		require.Equal(t, full.IsExcelBPSMihomoEnabled(), got.IsExcelBPSMihomoEnabled())
 		require.Equal(t, full.ExcelBPSProxySource(), got.ExcelBPSProxySource())
 		require.Equal(t, full.IsShadow(), got.IsShadow())
+		if full.IsShadow() {
+			require.True(t, got.IsShadow())
+			require.False(t, got.IsExcelBPSEnabled())
+			require.False(t, got.IsExcelBPS403RecoveryPending())
+		}
 		require.Equal(t, full.Schedulable, got.Schedulable)
 		require.Equal(t, full.Concurrency, got.Concurrency)
 		require.NotContains(t, got.Credentials, "irrelevant_large_field")
