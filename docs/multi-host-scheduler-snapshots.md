@@ -36,4 +36,23 @@ runtime:
 
 最大年龄应超过正常完整重建周期及其时长。默认完整重建300秒，门禁默认900秒；关闭完整重建且桶长期无事件时会按设计过期，需要部署者明确策略。这是**桶发布年龄**，不是outbox消费进度/账号即时撤销新鲜度；仍缺少outbox滞后、失效订阅状态、完整账号可解码性、本机上游依赖等健康契约。
 
-本轮只实现就绪门禁和隔离适配层验证。HTTP健康探针撤流不能撤回客户端缓存的DNS结果，已有业务请求也不会仅因readiness503被强制取消；DNS多A不自动解决WS/Responses续接或BPS图片归属。后续顺序是双节点故障/恢复验收，再定义会话与资源owner契约。
+就绪门禁及下文隔离故障回归不等于生产多主机验收。HTTP健康探针撤流不能撤回客户端缓存的DNS结果，已有业务请求也不会仅因readiness503被强制取消；DNS多A不自动解决WS/Responses续接或BPS图片归属。真实双节点故障/恢复仍需单独演练，会话与资源owner契约也尚未实现。
+
+## 离线双进程故障/恢复回归
+
+`backend/internal/server/scheduler_multinode_recovery_test.go` 使用两个独立的测试子进程模拟publisher与gateway reader，共享一个关闭TCP/持久化的临时真实Redis。publisher经实际仓储的epoch/token API发布虚构账号，reader经实际`SchedulerSnapshotService`和`ProvideLifecycle`提供HTTP。reader的数据库仅mock Ping，账号仓储为nil，不接SQL或上游；虚构业务仅检查候选与账号读取并返回固定标记。
+
+测试入口是仅用于验收的单目标HTTP代理：显式采样reader的`/readyz`，503时拒绝转发，200时再纳入；断言摘除后转发计数不增加，恢复后的请求到达原reader。它不交付入口产品、不提供第二健康目标的兜底，也不代表实际DNS健康摘除策略。探针采样与转发之间仍有真实系统普遍存在的竞态，测试按阶段串行故障注入，不宣称原子路由。
+
+覆盖链为：冷启动不纳入→发布后纳入→实际终止publisher进程并等待两秒发布窗口过期→摘除→新publisher进程重新发布→恢复；再逐项删除候选集合、metadata与完整账号缓存，验证摘除且reader不自行发布，publisher补齐后恢复；退休后旧token发布被拒绝，reopen未发布时仍不纳入，重新发布后恢复；最后reader drain立即摘除且health继续成功。退出会清理全部隔离子进程。
+
+单项执行（Linux/Unix，需要`redis-server`，CI已准备；无工具或Windows会明确skip）：
+
+```sh
+cd backend
+GOMAXPROCS=1 GOFLAGS=-p=1 GOMEMLIMIT=700MiB GOGC=20 \
+  go test -tags=unit ./internal/server \
+  -run '^TestGatewaySnapshot(MultiProcessFaultRecovery|NodeProcess)$' -count=1 -v
+```
+
+这是隔离进程间的契约回归，不是两台真实主机、生产PostgreSQL、真实模型、自动writer选主或生产流量分配验收。尚未覆盖跨主机网络隔离/抖动、DNS缓存、会话续接、图片owner、真实LB供应商策略、生产规模探针开销。真实环境演练仍须单独授权、限定流量并保留撤流回滚路径。
