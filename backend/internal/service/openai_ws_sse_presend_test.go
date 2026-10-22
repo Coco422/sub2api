@@ -456,7 +456,10 @@ func TestOpenAIWSSSEFallbackKeepsHTTPNamespaceContract(t *testing.T) {
 					if flatten {
 						item = `{"type":"function_call","name":"mcp__lookup","call_id":"fc_1","arguments":"{}"}`
 					}
-					h.resp.Body = io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","item":` + item + "}\n\n" + `data: {"type":"response.completed","response":{"id":"resp_namespace","output":[` + item + `],"usage":{"input_tokens":7,"output_tokens":2}}}` + "\n\n"))
+					// Both paths must see the same upstream timestamp. Omitting it
+					// makes the stamper fill wall-clock seconds independently, so a
+					// second boundary can break the exact namespace comparison.
+					h.resp.Body = io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","item":` + item + "}\n\n" + `data: {"type":"response.completed","response":{"id":"resp_namespace","created_at":1700000000,"output":[` + item + `],"usage":{"input_tokens":7,"output_tokens":2}}}` + "\n\n"))
 					s := wsSSETestService(t, d, h)
 					if bypass != "handshake" {
 						s.cfg.Gateway.OpenAIWS.SSEAccelerationMaxPayloadBytes = 64
@@ -473,6 +476,7 @@ func TestOpenAIWSSSEFallbackKeepsHTTPNamespaceContract(t *testing.T) {
 				normalHTTP, normalResponse := forward(false)
 				fallbackHTTP, fallbackResponse := forward(true)
 				require.Equal(t, normalResponse, fallbackResponse, "HTTP fallback must restore response namespaces as well")
+				require.Contains(t, fallbackResponse, `"created_at":1700000000`, "fallback must preserve the upstream timestamp")
 				if flatten {
 					require.NotContains(t, fallbackResponse, "mcp__lookup")
 				}
