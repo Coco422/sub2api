@@ -3,6 +3,11 @@
 # Keep exactly one full instance until every enabled global job has a shared lease.
 runtime:
   role: "full"
+  # Opt-in native store=false WS safety gate; no node routing or replay.
+  # Each process must use a unique, stable node_id; boot identity is generated.
+  ws_node_owner:
+    enabled: false
+    node_id: "" # e.g. node-a, safe lowercase identifier only
   # auto: full publishes scheduler snapshots; gateway only reads shared snapshots.
   # reader rejects account-cache misses without database fallback or rebuilding.
   # Keep exactly one full writer; gateway + writer is rejected.

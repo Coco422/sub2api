@@ -50,6 +50,24 @@ func (s *GatewayCacheSuite) TestHTTPResponseOwnerSharedRecord() {
 	require.False(t, found)
 }
 
+func (s *GatewayCacheSuite) TestWSNodeOwnerFencesForeignBoot() {
+	cache := &gatewayCache{rdb: s.rdb}
+	ref := service.WSNodeOwnerRef{GroupID: 17, APIKeyID: 101, AccountID: 201, ResponseID: "resp_ws_fixture"}
+	claimed, err := cache.ClaimWSNodeOwner(s.ctx, ref, "v1:node-a:boot-a:conn-digest-a", time.Minute)
+	require.NoError(s.T(), err)
+	require.True(s.T(), claimed)
+	claimed, err = cache.ClaimWSNodeOwner(s.ctx, ref, "v1:node-a:boot-b:conn-digest-a", time.Minute)
+	require.NoError(s.T(), err)
+	require.False(s.T(), claimed)
+	matched, err := cache.MatchesWSNodeOwner(s.ctx, ref, "v1:node-a:boot-a:conn-digest-a")
+	require.NoError(s.T(), err)
+	require.True(s.T(), matched)
+	require.NoError(s.T(), s.rdb.Del(s.ctx, wsNodeOwnerKey(ref)).Err())
+	matched, err = cache.MatchesWSNodeOwner(s.ctx, ref, "v1:node-a:boot-a:conn-digest-a")
+	require.NoError(s.T(), err)
+	require.False(s.T(), matched)
+}
+
 func (s *GatewayCacheSuite) TestGetSessionAccountID_Missing() {
 	_, err := s.cache.GetSessionAccountID(s.ctx, 1, "nonexistent")
 	require.True(s.T(), errors.Is(err, service.ErrStickySessionNotFound), "expected ErrStickySessionNotFound for missing session")
