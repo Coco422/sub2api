@@ -83,3 +83,5 @@ runtime:
 图片字节、HMAC、capability作用域、下载上限及过期规则不改，API Key字符串/客户正文/节点凭据不加入URL。只有已鉴权的BPS请求可以创建临时图片；下载URL本身是bearer capability，外部上游不携带用户Key即可取图，不能把它当普通公开静态目录，也不应记录或传播完整链接。别的节点和进程重启后没有对应索引/密钥，旧capability返回404，不自动回流旧机、不迁移文件。修改进程配置涉及既有重启/排空流程，本轮未执行。
 
 新增离线源码回归覆盖两套独立relay分别生成各自origin、正确owner GET/HEAD及字节、外节点/篡改链接404、不同API Key作用域capability不同、共享设置刷新不覆盖本节点origin、重启旧链接404、默认空配置/禁用/native兼容。保留原有relay到期/存储上限回归。**新增测试未运行，待精确提交远端CI；本机只做非编译静态检查。** 此功能只提供临时relay直达owner URL，仍未统一所有图片/附件的存储、鉴权、生命周期或跨机恢复。
+
+runtime覆盖与既有relay设置复用同一纯语法HTTPS origin校验，不做DNS解析或网络探测；两者均拒绝编码路径。另有双relay到期源码回归：通过锁内调整实际owner条目的到期时间，断言清理worker尚未运行时GET/HEAD已404且释放存储，另一relay的有效capability仍200，无sleep或生产请求。此补充同样未运行，不能计作实测通过。

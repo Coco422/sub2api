@@ -2,8 +2,8 @@ package config
 
 import (
 	"fmt"
-	"net/url"
-	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 // Empty keeps the shared legacy setting. An override is trusted per-process
@@ -12,9 +12,7 @@ func ValidateImageRelayOwnerOrigin(raw string) error {
 	if raw == "" {
 		return nil
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Opaque != "" ||
-		u.RawQuery != "" || u.ForceQuery || strings.Contains(raw, "#") || u.RawPath != "" || (u.Path != "" && u.Path != "/") {
+	if err := urlvalidator.ValidateHTTPSOrigin(raw); err != nil {
 		return fmt.Errorf("runtime.image_relay_owner_origin requires an HTTPS origin without credentials, path, query or fragment")
 	}
 	return nil
