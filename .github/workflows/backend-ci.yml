@@ -116,6 +116,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/sub2api-kustomize/kustomize.tar.gz" -C "$RUNNER_TEMP/sub2api-kustomize" kustomize
           echo "$RUNNER_TEMP/sub2api-kustomize" >> "$GITHUB_PATH"
       - run: python -m unittest discover -s deploy/tests -p 'test_gateway_render*.py'
+      - name: Offline multi-host contract checks
+        run: python -m unittest discover -s deploy/tests -p 'test_multihost_preflight.py'
       - run: python -m unittest discover -s deploy/tests -p 'test_migrate_reauth_managed.py'
       - run: python -m unittest discover -s deploy/connection-diagnostics -p 'test_collect.py'
 
