@@ -87,3 +87,13 @@ runtime:
 runtime覆盖与既有relay设置复用同一纯语法HTTPS origin校验，不做DNS解析或网络探测；两者均拒绝编码路径。另有双relay到期源码回归：通过锁内调整实际owner条目的到期时间，断言清理worker尚未运行时GET/HEAD已404且释放存储，另一relay的有效capability仍200，无sleep或生产请求。此补充同样未运行，不能计作实测通过。
 
 owner origin的端口必须处于1–65535，显式空端口与控制字符拒绝；Go复用既有无网络URL格式校验，错误不回显输入。应用与Python离线清单读取同一组脱敏origin样例回归，防止一边接受、另一边拒绝这些已知边界。此收紧可能令此前错误端口配置在启动时失败，应先修正脱敏部署清单，不能用预检成功证明地址可达。
+
+## 可选运行日志节点归属
+
+普通双机可以配置`runtime.node_id`（`RUNTIME_NODE_ID`），默认空保留现有日志格式。该值是1–64个小写字母/数字/-/_的opaque标识，不要用域名、地址、账号或凭据；开启WS node-owner时两处node_id须相同，避免诊断和安全归属相互矛盾。
+
+正常启动读取配置后，结构化日志添加`runtime_node_id`、`runtime_role`和本进程随机UUID `runtime_boot_id`，同进程重配日志保持boot不变，进程重启则改变。bootstrap尚未取得配置时不加字段；zap/slog/stdlog/legacy的共用logger链和直接Ops sink事件都沿用进程归属。默认不加，不修改HTTP/SSE响应或公开health内容，不增加网络请求/磁盘状态文件。
+
+这些是诊断标签，boot与WS owner签名代次独立，不能用日志字段授权会话或证明真实出口/流量比例。它们只帮助区分哪个配置节点/进程产生事件；共享日志查询仍应结合现有request ID、时间和终态。没有为账本增加计费字段，也未改变日志正文或现有采样规则。额外字段开销未测。
+
+新增配置/env、logger adapter、JSON/slog默认兼容/boot稳定与direct sink标签回归源码，运行交精确head CI。本机仅静态检查，不把回归源码当执行结果。启用该进程配置需按既有变更/排空流程执行，本轮没有修改生产配置或重启。清空node_id或回滚恢复旧日志标签；不涉及DB迁移、媒体存储或透明重放语义。
