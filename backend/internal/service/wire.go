@@ -1032,6 +1032,7 @@ var ProviderSet = wire.NewSet(
 	NewAdminService,
 	NewGatewayService,
 	ProvideOpenAIGatewayService,
+	NewSafetyPromptStore,
 	wire.Struct(new(OpenAIGatewayDependencies), "*"),
 	ProvideCodexHarvestService,
 	ProvideImageStorageSettingService,
