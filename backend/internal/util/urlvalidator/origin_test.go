@@ -1,6 +1,8 @@
 package urlvalidator
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,5 +16,26 @@ func TestValidateHTTPSOrigin(t *testing.T) {
 		err := ValidateHTTPSOrigin(value)
 		require.Error(t, err)
 		require.NotContains(t, err.Error(), "private")
+	}
+}
+
+func TestHTTPSOriginSharedContract(t *testing.T) {
+	raw, err := os.ReadFile("testdata/https-origin-contract.json")
+	require.NoError(t, err)
+	var cases []struct {
+		Name  string `json:"name"`
+		URL   string `json:"url"`
+		Valid bool   `json:"valid"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &cases))
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			err := ValidateHTTPSOrigin(tc.URL)
+			require.Equal(t, tc.Valid, err == nil)
+			if err != nil {
+				require.NotContains(t, err.Error(), "private")
+				require.NotContains(t, err.Error(), "node-a")
+			}
+		})
 	}
 }

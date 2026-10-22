@@ -42,6 +42,12 @@ class MultiHostPreflightTests(unittest.TestCase):
                 node["runtime"].pop("image_relay_owner_origin")
             self.assertEqual(preflight.validate(http_only), [])
 
+    def test_owner_origins_match_application_shared_contract(self):
+        cases = Path(__file__).parents[2] / "backend/internal/util/urlvalidator/testdata/https-origin-contract.json"
+        for case in json.loads(cases.read_text()):
+            with self.subTest(name=case["name"]):
+                self.assertEqual(preflight.https_origin(case["url"]) is not None, case["valid"])
+
     def test_writer_and_bucket_contracts(self):
         changes = [
             (lambda d: d["nodes"][1]["runtime"].update(role="full", scheduler_snapshot_mode="writer"), "exactly_one_writer_required"),

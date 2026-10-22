@@ -16,6 +16,8 @@ python3 deploy/traffic/preflight.py deploy/traffic/multi-host.example.json
 - 声明native-ws须开启node-owner门禁并提供唯一node_id；这提供安全拒绝，不迁移socket、不自动重放。仍需要实际WS模式配置和运行路径验收。HTTP tenant-owner与node owner不是同一种授权。
 - 声明bps-relay须显式提供本节点HTTPS origin，所有非空owner origin必须不同；默认443/大小写/末尾斜杠作同一origin处理。域名不同仍可能指向相同LB，工具无法识别，不作网络健康保证。原生附件file ID、异步S3输出不在此能力里。
 
+应用Go校验与Python预检共享`backend/internal/util/urlvalidator/testdata/https-origin-contract.json`样例，由各自CI测试入口校验。空/零/越界端口及控制字符不得被当作可用owner；不会为了校验解析DNS或发请求。样例对齐不是对所有URL字符串的形式化等价证明。
+
 示例`runtime`字段与应用对应，但这是独立部署清单的有限投影，不自动生成或更新应用配置；尤其不会把清单中的字段传入Compose/systemd。更换模板、节点规模或业务承接范围后，应再次维护清单，并单独核对运行配置一致。
 
 ## 验收与不覆盖范围

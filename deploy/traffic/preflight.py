@@ -16,7 +16,8 @@ CAPABILITIES = {"http-responses", "native-ws", "bps-relay"}
 
 
 def https_origin(value):
-    if not isinstance(value, str) or not value or "\\" in value or any(c.isspace() for c in value):
+    if (not isinstance(value, str) or not value or "\\" in value
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)):
         return None
     try:
         u = urlsplit(value)
