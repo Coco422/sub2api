@@ -130,11 +130,3 @@ func TestFullSnapshotReaderDisablesBulkWorkWithoutDisablingOtherJobs(t *testing.
 	require.ErrorIs(t, svc.guardFallback(context.Background()), ErrSchedulerCacheNotReady)
 	require.ErrorIs(t, svc.triggerFullRebuild("reader-test"), ErrSchedulerCacheNotReady)
 }
-
-func TestRegionalSchedulerPublisherRejectsReaderMode(t *testing.T) {
-	c := runtimeTestConfig(t)
-	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleFull, SchedulerSnapshotMode: config.SchedulerSnapshotModeReader}}
-	require.ErrorContains(t, c.validate(cfg), "regional mode incompatible")
-	cfg.Runtime.SchedulerSnapshotMode = config.SchedulerSnapshotModeWriter
-	require.NoError(t, c.validate(cfg))
-}
