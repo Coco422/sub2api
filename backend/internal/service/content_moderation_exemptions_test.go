@@ -95,7 +95,7 @@ func TestModerationExemptionsObserveHasNoKeywordLayer(t *testing.T) {
 }
 
 func TestModerationExemptionsRevocationAndQueuedGrant(t *testing.T) {
-	svc, repo, calls := exemptionService(t, ContentModerationModePreBlock, ContentModerationKeywordModeAPIOnly, exemptionFixture(t, false, true, false))
+	svc, _, calls := exemptionService(t, ContentModerationModePreBlock, ContentModerationKeywordModeAPIOnly, exemptionFixture(t, false, true, false))
 	cache := &contentModerationTestAuthCacheInvalidator{}
 	svc.authCacheInvalidator = cache
 	decision, err := svc.Check(context.Background(), exemptionInput(false))
@@ -114,7 +114,7 @@ func TestModerationExemptionsRevocationAndQueuedGrant(t *testing.T) {
 	require.True(t, decision.Blocked)
 	require.Equal(t, 1, *calls)
 	// An observe job queued before a grant must respect the grant before sending.
-	svc, repo, calls = exemptionService(t, ContentModerationModeObserve, ContentModerationKeywordModeKeywordAndAPI, exemptionFixture(t, false, false, false))
+	svc, repo, calls := exemptionService(t, ContentModerationModeObserve, ContentModerationKeywordModeKeywordAndAPI, exemptionFixture(t, false, false, false))
 	_, err = svc.Check(context.Background(), exemptionInput(true))
 	require.NoError(t, err)
 	task := <-svc.asyncQueue

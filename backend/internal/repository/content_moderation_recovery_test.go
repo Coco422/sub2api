@@ -211,7 +211,6 @@ func TestModerationExemptionsListReadbackAndFilters(t *testing.T) {
 func TestModerationExemptionsAuditFailureRollsBack(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
 	r := &contentModerationRepository{db: db}
 	expectModerationLock(m, "active", "user", 10, 2, 1, false, nil)
 	keyword := true
@@ -221,4 +220,6 @@ func TestModerationExemptionsAuditFailureRollsBack(t *testing.T) {
 	m.ExpectRollback()
 	require.ErrorIs(t, r.ManageModerationUser(context.Background(), 306, in), context.DeadlineExceeded)
 	require.NoError(t, m.ExpectationsWereMet())
+	m.ExpectClose()
+	require.NoError(t, db.Close())
 }
