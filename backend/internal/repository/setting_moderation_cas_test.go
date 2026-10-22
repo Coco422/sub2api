@@ -11,6 +11,7 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/ent"
+	_ "github.com/Wei-Shaw/sub2api/ent/runtime" // Initialize Ent defaults when this regression runs in isolation.
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
