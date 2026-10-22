@@ -150,8 +150,10 @@ type ContentModerationConfig struct {
 	BaseURL  string                         `json:"base_url"`
 	Model    string                         `json:"model"`
 	// ProxyID 指定审计请求使用的代理服务器（IP管理-代理服务器），nil 表示直连。
-	ProxyID              *int64                       `json:"proxy_id,omitempty"`
-	APIKey               string                       `json:"api_key,omitempty"`
+	ProxyID *int64 `json:"proxy_id,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
+	// APIKeyBaseURLs is populated from the selected profile for runtime use only.
+	APIKeyBaseURLs       map[string]string            `json:"-"`
 	APIKeys              []string                     `json:"api_keys,omitempty"`
 	TimeoutMS            int                          `json:"timeout_ms"`
 	SampleRate           int                          `json:"sample_rate"`
@@ -218,6 +220,7 @@ type ContentModerationConfigView struct {
 }
 
 type ContentModerationAPIKeyStatus struct {
+	BaseURL        string     `json:"base_url,omitempty"`
 	Index          int        `json:"index"`
 	KeyHash        string     `json:"key_hash"`
 	Masked         string     `json:"masked"`
@@ -531,6 +534,7 @@ type ContentModerationService struct {
 	moderationProxyCache     atomic.Pointer[moderationProxyURLCacheEntry]
 	asyncQueue               chan contentModerationTask
 	workerCount              int
+	configUpdateMu           sync.Mutex
 	apiKeyCursor             atomic.Uint64
 	asyncActive              atomic.Int64
 	asyncEnqueued            atomic.Int64
@@ -634,7 +638,13 @@ func (s *ContentModerationService) GetConfig(ctx context.Context) (*ContentModer
 }
 
 func (s *ContentModerationService) UpdateConfig(ctx context.Context, input UpdateContentModerationConfigInput) (*ContentModerationConfigView, error) {
-	cfg, err := s.loadConfig(ctx)
+	s.configUpdateMu.Lock()
+	defer s.configUpdateMu.Unlock()
+	previous, err := s.settingRepo.GetValue(ctx, SettingKeyContentModerationConfig)
+	if err != nil && !errors.Is(err, ErrSettingNotFound) {
+		return nil, err
+	}
+	cfg, err := parseContentModerationConfig(previous)
 	if err != nil {
 		return nil, err
 	}
@@ -730,14 +740,18 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	}
 	var saveErr error
 	if writer, ok := s.settingRepo.(interface {
+		CompareAndSetContentModerationConfig(context.Context, string, string, []int64) error
+	}); ok {
+		saveErr = writer.CompareAndSetContentModerationConfig(ctx, string(raw), previous, cfg.GroupIDs)
+	} else if writer, ok := s.settingRepo.(interface {
 		SetContentModerationConfig(context.Context, string, []int64) error
 	}); ok {
 		saveErr = writer.SetContentModerationConfig(ctx, string(raw), cfg.GroupIDs)
-		if errors.Is(saveErr, ErrGroupNotFound) {
-			return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_GROUP", "审计分组不存在")
-		}
 	} else {
 		saveErr = s.settingRepo.Set(ctx, SettingKeyContentModerationConfig, string(raw))
+	}
+	if errors.Is(saveErr, ErrGroupNotFound) {
+		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_GROUP", "审计分组不存在")
 	}
 	if err := saveErr; err != nil {
 		return nil, fmt.Errorf("save content moderation config: %w", err)
@@ -823,6 +837,9 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 			}
 		}
 		status := s.apiKeyStatusForHash(idx, keyHash, maskSecretTail(key), configured)
+		if configured && cfg.Engine == ContentModerationEngineTypeSafe {
+			status.BaseURL = cfg.keyBaseURL(key)
+		}
 		status.LastTested = true
 		items = append(items, status)
 	}
@@ -1471,7 +1488,7 @@ func (s *ContentModerationService) GetStatus(ctx context.Context) (*ContentModer
 		PreBlockAPIKeyAvailableCount: s.preBlockAPIKeyAvailableCount(cfg.apiKeys(), cfg.Engine),
 		PreBlockAPIKeyTotalCalls:     s.preBlockAPIKeyTotalCalls(cfg.apiKeys(), cfg.Engine),
 		PreBlockAPIKeyLoads:          s.preBlockAPIKeyLoads(cfg.apiKeys(), cfg.Engine),
-		APIKeyStatuses:               s.apiKeyStatuses(cfg.apiKeys(), cfg.Engine),
+		APIKeyStatuses:               s.configAPIKeyStatuses(cfg),
 		FlaggedHashCount:             flaggedHashCount,
 		LastCleanupAt:                lastCleanupAt,
 		LastCleanupDeletedHit:        s.lastCleanupDeletedHit.Load(),
@@ -2192,6 +2209,7 @@ func cloneContentModerationConfig(cfg *ContentModerationConfig) *ContentModerati
 	}
 	clone.ProxyID = cloneInt64Ptr(cfg.ProxyID)
 	clone.APIKeys = append([]string(nil), cfg.APIKeys...)
+	clone.APIKeyBaseURLs = cloneModerationKeyURLs(cfg.APIKeyBaseURLs)
 	clone.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
 	clone.BlockedKeywords = append([]string(nil), cfg.BlockedKeywords...)
 	clone.Thresholds = cloneFloatMap(cfg.Thresholds)
@@ -2493,7 +2511,7 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		APIKeyMasked:                   apiKeyMasked,
 		APIKeyCount:                    len(keys),
 		APIKeyMasks:                    masks,
-		APIKeyStatuses:                 s.apiKeyStatuses(keys, cfg.Engine),
+		APIKeyStatuses:                 s.configAPIKeyStatuses(cfg),
 		TimeoutMS:                      cfg.TimeoutMS,
 		SampleRate:                     cfg.SampleRate,
 		AllGroups:                      cfg.AllGroups,

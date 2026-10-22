@@ -56,6 +56,7 @@ export interface ContentModerationConfig {
 export type ContentModerationAPIKeyStatusValue = 'unknown' | 'ok' | 'error' | 'frozen'
 
 export interface ContentModerationAPIKeyStatus {
+  base_url?: string
   index: number
   key_hash: string
   masked: string
@@ -220,7 +221,7 @@ export interface ContentModerationLog {
 
 export type UpdateModerationEngineConfig = Pick<UpdateContentModerationConfig,
   'base_url' | 'model' | 'proxy_id' | 'api_keys' | 'api_keys_mode' | 'delete_api_key_hashes' |
-  'clear_api_key' | 'timeout_ms' | 'retry_count' | 'thresholds'>
+  'clear_api_key' | 'timeout_ms' | 'retry_count' | 'thresholds'> & { key_url_updates?: Array<{ key_hash: string; base_url: string; expected_base_url: string }> }
 
 export interface ListContentModerationLogsParams {
   page?: number

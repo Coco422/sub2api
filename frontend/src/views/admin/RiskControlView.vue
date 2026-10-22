@@ -418,7 +418,7 @@
                 {{ t('admin.riskControl.typeSafeNotice') }}
               </div>
               <div>
-                <label class="input-label">{{ t('admin.riskControl.baseUrl') }}</label>
+                <label class="input-label">{{ t(configForm.engine === 'typesafe' ? 'admin.riskControl.defaultKeyUrl' : 'admin.riskControl.baseUrl') }}</label>
                 <input ref="baseUrlInput" v-model.trim="configForm.base_url" data-test="audit-base-url" type="url" class="input" :placeholder="configForm.engine === 'typesafe' ? 'https://api.typesafe.ai' : 'https://api.openai.com'" />
                 <p v-if="configForm.engine === 'typesafe'" data-test="audit-base-url-hint" class="input-hint">{{ t('admin.riskControl.typeSafeBaseUrlHint') }}</p>
               </div>
@@ -667,6 +667,12 @@
                             </button>
                           </div>
                         </div>
+                        <ModerationKeyURLEditor
+                          v-if="configForm.engine === 'typesafe' && row.configured && row.key_hash && row.base_url"
+                          :row="row"
+                          :disabled="saving || configForm.clear_api_key || isStoredApiKeyPendingDelete(row)"
+                          :persist="saveKeyURL"
+                        />
                         <p v-if="row.last_error" class="mt-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs leading-5 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
                           {{ row.last_error }}
                         </p>
@@ -1174,6 +1180,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ModerationUsersSummary from '@/components/admin/moderation/ModerationUsersSummary.vue'
 import ModerationUserPanel from '@/components/admin/moderation/ModerationUserPanel.vue'
+import ModerationKeyURLEditor from '@/components/admin/ModerationKeyURLEditor.vue'
 import CyberEvidencePanel from '@/components/admin/CyberEvidencePanel.vue'
 import CyberEvidenceSettings from '@/components/admin/CyberEvidenceSettings.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -1856,6 +1863,22 @@ function applyConfig(config: ContentModerationConfig) {
   const { pendingDeletes, ...fields } = structuredClone(toRaw(engineDrafts.value[configForm.engine]!))
   Object.assign(configForm, fields)
   pendingDeleteApiKeyHashes.value = [...pendingDeletes]
+}
+
+async function saveKeyURL(hash: string, baseURL: string, expected: string) {
+  const updated = await adminAPI.riskControl.updateConfig({ engine_configs: { typesafe: {
+    key_url_updates: [{ key_hash: hash, base_url: baseURL, expected_base_url: expected }],
+  } } })
+  const persisted = await adminAPI.riskControl.getConfig()
+  const profile = persisted.engine_configs?.typesafe ?? (persisted.engine === 'typesafe' ? persisted : undefined)
+  const saved = profile?.api_key_statuses.find(row => row.key_hash === hash)
+  const writtenProfile = updated.engine_configs?.typesafe ?? (updated.engine === 'typesafe' ? updated : undefined)
+  const written = writtenProfile?.api_key_statuses.find(row => row.key_hash === hash)
+  if (!saved?.base_url || saved.base_url !== written?.base_url) throw new Error(t('admin.riskControl.keyUrlReadbackFailed'))
+  const merge = (rows: ContentModerationAPIKeyStatus[]) => rows.map(row => row.key_hash === hash ? { ...row, base_url: saved.base_url } : row)
+  if (configForm.engine === 'typesafe') configForm.api_key_statuses = merge(configForm.api_key_statuses)
+  if (engineDrafts.value.typesafe) engineDrafts.value.typesafe.api_key_statuses = merge(engineDrafts.value.typesafe.api_key_statuses)
+  if (status.value?.engine === 'typesafe') status.value.api_key_statuses = merge(status.value.api_key_statuses)
 }
 
 async function loadAll() {
