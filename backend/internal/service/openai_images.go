@@ -1007,6 +1007,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 			contentType = upstreamType
 		}
 	}
+	// Gin's Data renderer only fills an absent Content-Type. Override the
+	// copied upstream value so the response-header policy above takes effect.
+	c.Header("Content-Type", contentType)
 	c.Data(resp.StatusCode, contentType, body)
 
 	usage, _ := extractOpenAIUsageFromJSONBytes(body)
