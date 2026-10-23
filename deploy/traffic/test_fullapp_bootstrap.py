@@ -153,7 +153,9 @@ class RealApplicationBootstrapTest(unittest.TestCase):
         self.redis = self.run_container("redis", REDIS_IMAGE, "96m", "0.5", [],
                                         ["redis-server", "--save", "", "--appendonly", "no",
                                          "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"])
-        eventually(lambda: docker("exec", self.pg, "pg_isready", "-U", "postgres",
+        # The image's initdb helper temporarily serves Unix sockets only; that
+        # does not mean a second container can connect to PostgreSQL over TCP.
+        eventually(lambda: docker("exec", self.pg, "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "postgres",
                                   "-d", "bootstrap_fixture", timeout=3, check=False).returncode == 0,
                    30, "PostgreSQL ready")
         eventually(lambda: docker("exec", self.redis, "redis-cli", "ping", timeout=3,
@@ -226,7 +228,9 @@ class RealApplicationBootstrapTest(unittest.TestCase):
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m",
             "--mount", "type=bind,src=" + str(self.root / "bin") + ",dst=/fixture/bin,readonly",
             "--mount", "type=bind,src=" + str(caddyfile) + ",dst=/fixture/Caddyfile,readonly",
-            "--env", "SUB2API_LB_LISTEN=0.0.0.0:9080",
+            # A Caddy site IP is also a Host matcher, not just a bind address.
+            # This fixture receives Host api.fixture.invalid on a private bridge.
+            "--env", "SUB2API_LB_LISTEN=:9080",
             "--env", "SUB2API_LB_UPSTREAM_A=" + self.apps[0] + ":8080",
             "--env", "SUB2API_LB_UPSTREAM_B=" + self.apps[1] + ":8080",
             "--env", "SUB2API_LB_ORIGIN_HOST=api.fixture.invalid",
@@ -235,6 +239,24 @@ class RealApplicationBootstrapTest(unittest.TestCase):
             "--entrypoint", "/fixture/bin/caddy"],
             ["run", "--config", "/fixture/Caddyfile", "--adapter", "caddyfile"])
         self.edge_port = self.internal_endpoint(self.edge, 9080)
+        adapted = json.loads(docker("exec", self.edge, "/fixture/bin/caddy", "adapt",
+                                    "--config", "/fixture/Caddyfile", "--adapter", "caddyfile",
+                                    timeout=5).stdout)
+        servers = adapted["apps"]["http"]["servers"]
+        self.assertEqual(len(servers), 1)
+        self.assertEqual(next(iter(servers.values()))["listen"], [":9080"])
+
+        def host_matchers(value):
+            if isinstance(value, dict):
+                return (1 if "host" in value else 0) + sum(host_matchers(v) for v in value.values())
+            if isinstance(value, list):
+                return sum(host_matchers(v) for v in value)
+            return 0
+
+        # Actual adapted route must have no site-Host matcher excluding the
+        # synthetic Host. Never print adapted JSON with internal dial targets.
+        self.assertEqual(sum(host_matchers(server["routes"]) for server in servers.values()), 0)
+        self.phase("caddy-fixture-catchall-host-contract-validated")
 
     def run_container(self, suffix, image, memory, cpus, options, command):
         name = self.prefix + "-" + suffix

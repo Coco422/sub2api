@@ -41,6 +41,10 @@ Docker CLI 非零退出和本轮容器的 `State.Error` 只通过固定分类布
 
 `7dd383a8b` 新双事件已经越过旧宿主映射失败：push真实app在ready前Exit1且非OOM，旧固定应用分类全unknown；PR事件到达`two-full-applications-ready`，但Caddy双401目标观察超时。两者不能当同一根因，PR成功初始化也不能抵push失败。现在仅修补上述日志级别/HTTP固定观察证据缺口，不猜改模型/鉴权/入口配置，不将新诊断写成应用启动或路由已修。
 
+`18d8e8a86` 新事实进一步区分问题：PR早退分类命中 application_init_failed/database_unavailable、非OOM；push两 app ready且直接 POST 均401，但 edge 50次均200/目标missing。夹具修复两处明确契约错误：PG `pg_isready` 指定 `-h 127.0.0.1 -p 5432`，避免命中官方 image 在 initdb 阶段的 socket-only 临时服务；Caddy fixture站点从 `http://0.0.0.0:9080` 改为 `http://:9080`，避免 IP 站点隐含 Host matcher 拒绝 `api.fixture.invalid`。Docker internal 网络和无宿主端口限制保持，无增加生产回退/重试。CI 还以实际固定 Caddy adapt检查唯一listen为 `:9080`、路由没有host matcher，只保存固定通过phase，不导出适配JSON。直接401/代理双401及原全部阶段、时间预算、资源/清理断言不变；此修复未在本机运行，下一精确head双事件CI仍须证明实际启动/路由通过。
+
+对应官方契约：[PostgreSQL image初始化脚本](https://github.com/docker-library/postgres/blob/master/18/alpine3.23/docker-entrypoint.sh)的临时server明确 `listen_addresses=''`；[Caddy site地址](https://caddyserver.com/docs/caddyfile/concepts#addresses)中带host/IP的地址限制Host，省略host才是catch-all。网络仍只在本轮internal容器内，不公开入口。
+
 job 35 分钟上限含单槽 Go 编译、镜像下载；动态步骤 15 分钟；单应用启动 120 秒，Docker 操作、健康等待及退出都有有界超时。工具/镜像/启动失败直接失败，不 skip、不回退成假应用。所有动态操作仅 CI。本机只 AST/YAML/diff 静态检查，未编译或运行；下一精确提交双事件 CI 才能证明本前置实际通过，旧 26c 七/十项成功不能覆盖。
 
 ## 明确未覆盖及下一前置
