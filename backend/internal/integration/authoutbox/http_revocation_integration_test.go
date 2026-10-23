@@ -116,18 +116,37 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 	require.False(t, scenario.crashClaim && (scenario.rejectDelete || scenario.rejectPublish), "keep claim crash and Redis command failure checkpoints separate")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	// The CI daemon can briefly stall while other isolated packages start
-	// containers. Retry only this side-effect-free readiness query, with both
-	// a total budget and a deadline on every attempt. Missing Docker still
-	// fails in CI; no application request or fixture assertion is retried here.
+	// A failed one-shot Docker query cannot identify a transient daemon issue.
+	// Retry only this read-only query within fixed deadlines, recording safe
+	// failure classes without daemon output, environment or endpoint details.
 	checkCtx, stopCheck := context.WithTimeout(ctx, 30*time.Second)
+	checkStarted := time.Now()
+	attempts, timedOut, nonzero := 0, 0, 0
+	lastExitCode := 0
+	missingCommand := false
 	dockerReady := func() bool {
 		for {
+			attempts++
 			attemptCtx, stopAttempt := context.WithTimeout(checkCtx, 3*time.Second)
 			err := exec.CommandContext(attemptCtx, "docker", "info").Run()
+			deadlineExceeded := errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
 			stopAttempt()
 			if err == nil {
 				return true
+			}
+			if errors.Is(err, exec.ErrNotFound) {
+				missingCommand = true
+				return false
+			}
+			if deadlineExceeded {
+				timedOut++
+			} else {
+				nonzero++
+				lastExitCode = -1
+				var exitError *exec.ExitError
+				if errors.As(err, &exitError) {
+					lastExitCode = exitError.ExitCode()
+				}
 			}
 			timer := time.NewTimer(200 * time.Millisecond)
 			select {
@@ -139,6 +158,9 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 		}
 	}()
 	stopCheck()
+	if !dockerReady || attempts > 1 {
+		t.Logf("isolated Docker readiness: ready=%t attempts=%d timed_out=%d nonzero=%d last_exit=%d missing_command=%t elapsed=%s", dockerReady, attempts, timedOut, nonzero, lastExitCode, missingCommand, time.Since(checkStarted).Round(time.Millisecond))
+	}
 	if !dockerReady {
 		if os.Getenv("CI") != "" {
 			t.Fatal("Docker is required for the isolated auth outbox fixture in CI")
