@@ -298,12 +298,78 @@ class FullApplicationPartialEOFTest(FullApplicationModelSSETest):
         self.phase("new-peer-model-after-partial-eof-settled-once-no-hidden-replay")
 
 
+class FullApplicationAcceptedEOFTest(FullApplicationModelSSETest):
+    def post_model(self, marker, request_id):
+        connection = http.client.HTTPConnection(*self.edge_port, timeout=8)
+        self.addCleanup(connection.close)
+        connection.request("POST", "/v1/responses", body=json.dumps({
+            "model": "gpt-6.1-sol", "input": marker, "stream": True}), headers={
+                "Host": "api.fixture.invalid", "Content-Type": "application/json",
+                "Authorization": "Bearer " + self.key, "X-Client-Request-ID": request_id,
+                "Idempotency-Key": request_id})
+        response = connection.getresponse()
+        self.addCleanup(response.close)
+        try:
+            payload = response.read(65536)
+        except http.client.IncompleteRead as error:
+            payload = error.partial
+        result = response.status, response.getheader("X-Fixture-Target"), payload
+        response.close()
+        connection.close()
+        return result
+
+    def test_accepted_model_request_eof_is_not_replayed_or_settled_as_success(self):
+        # A separate normal control first; exactly two explicit model POSTs.
+        # Never warm or recover an endpoint by replaying a model request.
+        code, control_target, payload = self.post_model("synthetic control", "accepted-eof-control")
+        expected_targets = {app + ":8080" for app in self.apps}
+        self.assertEqual(code, 200)
+        self.assertIn(control_target, expected_targets)
+        self.assertIn(b'"response.completed"', payload)
+
+        def control_settled():
+            status = self.fixture_command("status")
+            return (self.model_stats() == {"accepted": 1, "completed": 1, "active": 0}
+                    and status["usage_rows"] == status["dedup_rows"] == 1
+                    and status["input_tokens"] == 7 and status["output_tokens"] == 2
+                    and 9 < status["balance"] < 10
+                    and status["user_slots"] == status["account_slots"] == status["api_key_slots"] == 0)
+
+        bootstrap.eventually(control_settled, 12, "normal control settled before accepted EOF")
+        baseline = self.fixture_command("status")
+        self.phase("accepted-eof-control-completed-and-settled-once")
+        code, failed_target, payload = self.post_model("fixture-accepted-before-response-eof", "accepted-eof-request")
+        self.assertIn(code, (502, 503), "accepted transport failure must be an error, not synthetic success")
+        self.assertIn(failed_target, expected_targets)
+        self.assertNotEqual(failed_target, control_target)
+        self.assertNotIn(b'"response.completed"', payload)
+        self.assertNotIn(b"data: [DONE]", payload)
+
+        def failure_settled():
+            status = self.fixture_command("status")
+            return (self.model_stats() == {"accepted": 2, "completed": 1, "active": 0}
+                    and status["usage_rows"] == status["dedup_rows"] == 1
+                    and status["input_tokens"] == 7 and status["output_tokens"] == 2
+                    and status["balance"] == baseline["balance"]
+                    and status["user_slots"] == status["account_slots"] == status["api_key_slots"] == 0)
+
+        bootstrap.eventually(failure_settled, 12, "accepted EOF not regenerated/billed, shared slots released")
+        self.report["accepted_eof_verification"] = {"authenticated_posts": 2, "accepted": 2,
+                                                     "completed": 1, "usage_rows": 1, "dedup_rows": 1,
+                                                     "failed_request_replayed": False,
+                                                     "failed_request_billed": False, "slots": 0,
+                                                     "eligible_upstream_accounts": 1,
+                                                     "scope": "existing single-account pool; no account failover policy change"}
+        self.phase("accepted-before-response-eof-once-no-success-billing-slots-clean")
+
+
 if __name__ == "__main__":
     # The original bootstrap suite still runs as its existing CI step. This
     # targeted entry adds only the new model case, not inherited duplicates.
     suite = unittest.TestSuite([
         FullApplicationModelSSETest("test_two_real_applications_complete_sse_once_and_settle_shared_state"),
         FullApplicationInflightDrainTest("test_inflight_sse_finishes_on_draining_owner_and_new_model_reaches_peer_once"),
-        FullApplicationPartialEOFTest("test_partial_model_sse_eof_is_not_replayed_or_billed_and_peer_can_continue")])
+        FullApplicationPartialEOFTest("test_partial_model_sse_eof_is_not_replayed_or_billed_and_peer_can_continue"),
+        FullApplicationAcceptedEOFTest("test_accepted_model_request_eof_is_not_replayed_or_settled_as_success")])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(0 if result.wasSuccessful() else 1)

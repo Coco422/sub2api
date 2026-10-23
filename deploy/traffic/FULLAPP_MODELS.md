@@ -66,3 +66,13 @@ normal4 和在途 drain2 已在基线 `2da2bf9ae` 双事件 CI 成功，之后�
 然后仅发一个**新的**显式客户端control POST（独立request ID/幂等提示），正常轮转peer完成SSE，最终accepted2/completed1/active0、usage/dedup各1、tokens7/2、非零合成扣费、三slots0；总计数仍包含失败请求，可识别中途或后台隐藏重放。新用例精确两模型POST不重试，不复用失败请求身份实现自动恢复。原normal/drain两个用例AST和所有旧断言保持，真实生产应用/账本/模板/超时/硬资源/隔离均未改。
 
 本轮仅gofmt/AST/YAML/diff静态检查，尚无新动态结果；新精确head双事件模型步骤须执行normal、drain、partial三个独立case及全部phase/固定计数/清理和原CI才可通过。acceptedEOF（收到请求但尚无下游语义输出）、客户端取消/失败账本收尾与并发争抢仍单独未完成，不能以本partial case或旧drain替代。
+
+## 后续最小边界：接收后、任何响应前 EOF
+
+基线 `6bcbe7438` 的 normal/drain/partial 三用例已在双事件 CI 通过。新独立 case `test_accepted_model_request_eof_is_not_replayed_or_settled_as_success` 保留现有**单个合法上游账号池**和全部生产 failover 策略，不为断言关闭重试。先一条正常control请求真实结算一次；第二条独立鉴权POST由另一个完整应用收到，合成模型已完整读取请求体、校验认证与模型、增加accepted后，在任何HTTP响应/语义SSE输出前hijack断开连接。
+
+真实入口必须报502/503错误，不伪造completed/DONE；总上游accepted2/completed1/active0，只有control有usage/dedup各1、tokens7/2及既有扣费，失败后余额与control基线相等，三slots0。这不同于partial语义输出后EOF；精确两条模型POST，不以重发或换请求身份预热/恢复。原normal/drain/partial三个caseAST和所有预算/硬限制/清理保持。
+
+**边界限制**：当前应用在transport错误或尚无语义输出EOF时允许既有账户failover；本用例只有一个合法上游账号，验证两个应用入口及Caddy不复制该请求，不证明多个上游账户的全部切换/重试都禁止重复生成。不能据此宣称端到端所有ambiguous-send状态都可安全重试或已禁重放；多账号备用路径需要另一个明确检查点/契约审查，不能靠测试关闭或改生产策略隐瞒。本场景通过也不代表client cancel/失败结算或共享并发争抢完成。
+
+新源码仅静态未本机编译运行；精确新head双事件必须bootstrap+四模型case实际PASS/计数/结算/slots/cleanup及全部原CI。若错误被既有策略重放、返回成功或扣费，必须保留失败并按实际调用链定位，不skip/弱化，也不擅定透明恢复/重放产品语义。

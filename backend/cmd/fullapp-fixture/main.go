@@ -248,6 +248,16 @@ func serve() error {
 		s.active++
 		s.mu.Unlock()
 		defer func() { s.mu.Lock(); s.active--; s.mu.Unlock() }()
+		if bytes.Contains(body.Input, []byte("fixture-accepted-before-response-eof")) {
+			// Body is fully read, authenticated and counted, but no response has
+			// been written. This is distinct from EOF after semantic output.
+			connection, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				panic(http.ErrAbortHandler)
+			}
+			_ = connection.Close()
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("x-request-id", fmt.Sprintf("fixture-model-%d", id))
 		event := func(name string, payload any) error {
