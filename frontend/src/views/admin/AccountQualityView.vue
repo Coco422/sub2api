@@ -905,7 +905,7 @@ async function save() {
       })) throw new Error(t('qualityOps.probeAccountUnsupported'))
     }
     const body = payload()
-    if (editing.value) { await scheduledTests.update(editing.value, body); changed = true }
+    if (editing.value) { await scheduledTests.update(editing.value, reuseSourceLabel.value ? { ...body, preserve_quality_state: true } : body); changed = true }
     else {
       for (const id of [...selectedAccounts.value]) {
         await scheduledTests.create({ ...body, account_id: id }); changed = true
@@ -949,7 +949,7 @@ async function saveBulkRules() {
     for (const { id, body } of requests) {
       if (!alive || scope !== identity()) return
       try {
-        await scheduledTests.update(id, body)
+        await scheduledTests.update(id, reuseSourceLabel.value ? { ...body, preserve_quality_state: true } : body)
         if (!alive || scope !== identity()) return
         selectedRuleIds.value = selectedRuleIds.value.filter(value => value !== id)
         bulkRuleIds.value = bulkRuleIds.value.filter(value => value !== id)

@@ -27,7 +27,7 @@ export default {
   "savedPresets": "Saved test templates",
   "selectPreset": "Select a test template",
   "applyPreset": "Use template configuration",
-  "reuseHint": "Selection prefills business settings and keeps your current targets. Changes take effect only when you save the rule. Accounts, credentials, test history and penalty state are not copied.",
+  "reuseHint": "Selection prefills business settings and keeps your current targets. Changes take effect only when you save the rule. Accounts, credentials, test history and penalty state are not copied. Saving reused settings retains existing target restrictions and ownership; a policy switch incompatible with existing model isolation is rejected.",
   "reusePreview": "Pending configuration preview",
   "reuseTarget": "Target rule",
   "reuseField": "Configuration scope",

@@ -147,12 +147,13 @@ describe('quality operations', () => {
       const [id, body] = vi.mocked(scheduledTests.update).mock.calls[0]
       expect(id).toBe(1)
       expect(body).toMatchObject({ model_id: source.model_id, cron_expression: source.cron_expression, enabled: false,
+        preserve_quality_state: true,
         pelican_config: { rule_name: 'Target rule 1', quality: { action: 'observe_only' } } })
       for (const key of ['account_id', 'id', 'running_until', 'last_run_at', 'created_at']) expect(body).not.toHaveProperty(key)
       for (const key of ['trigger_source', 'quality_model_actions', 'quality_model_outcomes', 'quality_restore_diagnostic', 'credentials', 'quality_round_id', 'statistics']) expect(body.pelican_config).not.toHaveProperty(key)
     } else {
       expect(scheduledTests.create).not.toHaveBeenCalled()
-      expect(vi.mocked(scheduledTests.update).mock.calls).toEqual([1, 2].map(id => [id, { model_id: source.model_id, cron_expression: source.cron_expression, enabled: false }]))
+      expect(vi.mocked(scheduledTests.update).mock.calls).toEqual([1, 2].map(id => [id, { model_id: source.model_id, cron_expression: source.cron_expression, enabled: false, preserve_quality_state: true }]))
     }
     expect(vm.showForm).toBe(false)
     expect(runQualityPlan).not.toHaveBeenCalled(); expect(createQualityPreset).not.toHaveBeenCalled(); expect(createQualityTemplate).not.toHaveBeenCalled()
@@ -261,7 +262,7 @@ describe('quality operations', () => {
     assertNoWrite()
     await wrapper.get('[data-testid="quality-reuse-confirm"]').setValue(true)
     await wrapper.get('#quality-rule-form').trigger('submit'); await flushPromises()
-    expect(vi.mocked(scheduledTests.update).mock.calls).toEqual([1, 2].map(id => [id, { model_id: source.model_id, enabled: false }]))
+    expect(vi.mocked(scheduledTests.update).mock.calls).toEqual([1, 2].map(id => [id, { model_id: source.model_id, enabled: false, preserve_quality_state: true }]))
     assertUnchanged(); wrapper.unmount()
   })
 
