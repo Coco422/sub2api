@@ -56,3 +56,13 @@ CGO_ENABLED=0 GOMAXPROCS=1 GOFLAGS=-p=1 go build -tags=fullappfixture -trimpath 
 原生产graceful_shutdown_timeout=5、shutdown_drain_delay=4及Caddy健康/零重试配置不改；新夹具hold最多12秒、读流12秒、readiness撤离2秒/Caddy新流收敛3秒、只读最终结算12秒，Docker wait20秒和原硬内存/internal隔离均保持有界。若deadline触发或原流被提前取消/重发必须失败，不能加长生产停机预算或客户端自动重放来迁就测试。
 
 本轮新切片仅源码/静态检查，尚未编译或动态执行；新精确head push/PR须显示两个独立模型用例实际执行、normal4及inflight2请求报告、所有phase/PASS/cleanup与全部原CI。acceptedEOF、partialEOF、客户端cancel后的失败结算/槽清理、并发争抢和真实两机仍未覆盖，不把此drain切片写成所有故障模式已完成。
+
+## 后续最小故障切片：部分语义输出后 EOF
+
+normal4 和在途 drain2 已在基线 `2da2bf9ae` 双事件 CI 成功，之后新增独立 fresh fixture 用例 `test_partial_model_sse_eof_is_not_replayed_or_billed_and_peer_can_continue`。模型工具只对固定合成 input marker 在 `response.created` 和真实文本 delta 已 flush 后返回，无 `response.completed`、usage 或 `[DONE]`；这是 HTTP 响应结束/协议缺终态 EOF，不冒充 TCP reset、上游发响应前 EOF 或所有错误类型。
+
+真实 Caddy/两个未修改完整 app 必须把已经开始的流留在原请求：客户端得到文本 delta，但没有 completed/DONE；合成上游accepted1/completed0/active0，真实usage/dedup均0、tokens0、用户余额仍10，三类slots均0。该零结算契约来自当前passthrough已输出后缺terminal返回普通错误/nil ForwardResult，而不是新增账本策略。若真实路径行为不同，须据原日志定位，不能删断言/将错误流记成完成。
+
+然后仅发一个**新的**显式客户端control POST（独立request ID/幂等提示），正常轮转peer完成SSE，最终accepted2/completed1/active0、usage/dedup各1、tokens7/2、非零合成扣费、三slots0；总计数仍包含失败请求，可识别中途或后台隐藏重放。新用例精确两模型POST不重试，不复用失败请求身份实现自动恢复。原normal/drain两个用例AST和所有旧断言保持，真实生产应用/账本/模板/超时/硬资源/隔离均未改。
+
+本轮仅gofmt/AST/YAML/diff静态检查，尚无新动态结果；新精确head双事件模型步骤须执行normal、drain、partial三个独立case及全部phase/固定计数/清理和原CI才可通过。acceptedEOF（收到请求但尚无下游语义输出）、客户端取消/失败账本收尾与并发争抢仍单独未完成，不能以本partial case或旧drain替代。

@@ -234,11 +234,76 @@ class FullApplicationInflightDrainTest(FullApplicationModelSSETest):
         self.phase("old-model-completed-on-original-owner-once-and-drain-settlement-clean")
 
 
+class FullApplicationPartialEOFTest(FullApplicationModelSSETest):
+    def send_model(self, marker, request_id):
+        connection = http.client.HTTPConnection(*self.edge_port, timeout=8)
+        self.addCleanup(connection.close)
+        connection.request("POST", "/v1/responses", body=json.dumps({
+            "model": "gpt-6.1-sol", "input": marker, "stream": True}), headers={
+                "Host": "api.fixture.invalid", "Content-Type": "application/json",
+                "Authorization": "Bearer " + self.key, "X-Client-Request-ID": request_id,
+                "Idempotency-Key": request_id})
+        response = connection.getresponse()
+        self.addCleanup(response.close)
+        self.assertEqual(response.status, 200)
+        self.assertIn("text/event-stream", response.getheader("Content-Type", ""))
+        target = response.getheader("X-Fixture-Target")
+        self.assertIn(target, {app + ":8080" for app in self.apps})
+        try:
+            body = response.read(65536)
+        except http.client.IncompleteRead as error:
+            body = error.partial
+        response.close()
+        connection.close()
+        return target, body
+
+    def test_partial_model_sse_eof_is_not_replayed_or_billed_and_peer_can_continue(self):
+        failed_target, partial = self.send_model("fixture-partial-sse-eof", "partial-eof-fixture")
+        self.assertIn(b'"response.output_text.delta"', partial)
+        self.assertIn(b"OK", partial)
+        self.assertNotIn(b'"response.completed"', partial)
+        self.assertNotIn(b"data: [DONE]", partial)
+
+        def failed_settled():
+            if self.model_stats() != {"accepted": 1, "completed": 0, "active": 0}:
+                return False
+            status = self.fixture_command("status")
+            return (status["usage_rows"] == status["dedup_rows"] == 0
+                    and status["input_tokens"] == status["output_tokens"] == 0
+                    and status["balance"] == 10
+                    and status["user_slots"] == status["account_slots"] == status["api_key_slots"] == 0)
+
+        bootstrap.eventually(failed_settled, 12, "partial EOF has one generation, no usage/debit, slots released")
+        self.phase("partial-model-eof-one-generation-no-terminal-no-billing-slots-clean")
+        # A separate explicit client request, not replay/recovery of the old
+        # request; this is exactly the second and last model POST in the case.
+        control_target, complete = self.send_model("synthetic control", "partial-eof-control")
+        self.assertNotEqual(control_target, failed_target, "healthy round-robin peer must serve the new request")
+        self.assertIn(b'"response.completed"', complete)
+
+        def control_settled():
+            if self.model_stats() != {"accepted": 2, "completed": 1, "active": 0}:
+                return False
+            status = self.fixture_command("status")
+            return (status["usage_rows"] == status["dedup_rows"] == 1
+                    and status["input_tokens"] == 7 and status["output_tokens"] == 2
+                    and 9 < status["balance"] < 10
+                    and status["user_slots"] == status["account_slots"] == status["api_key_slots"] == 0)
+
+        bootstrap.eventually(control_settled, 12, "peer control settles once, failed partial remains unbilled")
+        self.report["partial_eof_verification"] = {"authenticated_posts": 2, "accepted": 2,
+                                                    "completed": 1, "failed_request_replayed": False,
+                                                    "failed_request_billed": False, "usage_rows": 1,
+                                                    "dedup_rows": 1, "slots": 0, "peer_control_completed": True}
+        self.phase("new-peer-model-after-partial-eof-settled-once-no-hidden-replay")
+
+
 if __name__ == "__main__":
     # The original bootstrap suite still runs as its existing CI step. This
     # targeted entry adds only the new model case, not inherited duplicates.
     suite = unittest.TestSuite([
         FullApplicationModelSSETest("test_two_real_applications_complete_sse_once_and_settle_shared_state"),
-        FullApplicationInflightDrainTest("test_inflight_sse_finishes_on_draining_owner_and_new_model_reaches_peer_once")])
+        FullApplicationInflightDrainTest("test_inflight_sse_finishes_on_draining_owner_and_new_model_reaches_peer_once"),
+        FullApplicationPartialEOFTest("test_partial_model_sse_eof_is_not_replayed_or_billed_and_peer_can_continue")])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(0 if result.wasSuccessful() else 1)

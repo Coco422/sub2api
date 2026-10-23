@@ -268,6 +268,12 @@ func serve() error {
 		if event("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": "msg_fixture", "output_index": 0, "content_index": 0, "delta": "OK"}) != nil {
 			return
 		}
+		if bytes.Contains(body.Input, []byte("fixture-partial-sse-eof")) {
+			// Deliberately finish the HTTP response after real semantic output,
+			// without terminal usage/completion. The application must not turn
+			// this accepted/partly emitted request into another generation.
+			return
+		}
 		if bytes.Contains(body.Input, []byte("fixture-hold-until-release")) {
 			// Synthetic control only, not a gateway replay/recovery mechanism.
 			select {
