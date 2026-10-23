@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 
 PG_IMAGE = "postgres:18.1-alpine3.23"
@@ -48,6 +49,27 @@ def docker_failure_flags(text):
     }
     flags = {name: any(signature in text for signature in needles)
              for name, needles in signatures.items()}
+    flags["unclassified"] = not any(flags.values())
+    return flags
+
+
+def application_failure_flags(text):
+    """Case-independent, fixed application classifications; never return text."""
+    text = text.lower()
+    signatures = {
+        "config_load_failed": ("failed to load config",),
+        "application_init_failed": ("failed to initialize application",),
+        "migration_failed": ("migration failed", "migrations failed"),
+        "read_only_failure": ("read-only file system",),
+        "permission_denied": ("permission denied",),
+        "database_unavailable": ("connection refused", "failed to connect to database",),
+        "config_validation_failed": ("validate config", "config validation",),
+        "process_panic": ("panic:", "fatal error:"),
+        "server_started": ("server started",),
+        "server_exited": ("server exited",),
+    }
+    flags = {name: any(marker in text for marker in markers)
+             for name, markers in signatures.items()}
     flags["unclassified"] = not any(flags.values())
     return flags
 
@@ -99,7 +121,7 @@ class RealApplicationBootstrapTest(unittest.TestCase):
         self.report = {"compiled_commit": self.expected_commit,
                        "binary_sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest(),
                        "scope": "full cmd/server initialization; no authenticated model request",
-                       "images": [], "phases": [], "containers": []}
+                       "images": [], "phases": [], "containers": [], "port_checks": []}
         self.addCleanup(self.save_report)
         docker("info", timeout=15)
         # Pull before creating the network; application containers have no
@@ -231,8 +253,33 @@ class RealApplicationBootstrapTest(unittest.TestCase):
         return name
 
     def published_port(self, name, port):
-        bindings = json.loads(docker("inspect", "--format", "{{json .NetworkSettings.Ports}}",
-                                     name).stdout)[port]
+        # One snapshot separates process exit, missing network attachment,
+        # requested mapping and realized mapping. Never echo names/IPs/errors.
+        result = json.loads(docker("inspect", "--format",
+            '{"state":{{json .State}},"ports":{{json .NetworkSettings.Ports}},'
+            '"requested":{{json .HostConfig.PortBindings}},'
+            '"networks":{{json .NetworkSettings.Networks}}}', name).stdout)
+        state = result["state"]
+        bindings = (result["ports"] or {}).get(port)
+        requested = (result["requested"] or {}).get(port)
+        networks = result["networks"] or {}
+        facts = {"role": "app" if name in self.apps else "edge",
+                 "running": state["Running"], "paused": state["Paused"],
+                 "OOMKilled": state["OOMKilled"], "ExitCode": state["ExitCode"],
+                 "started": state.get("StartedAt", "").startswith("20"),
+                 "requested_mapping": bool(requested), "realized_mapping": bool(bindings),
+                 "only_fixture_network": set(networks) == {self.network},
+                 "fixture_address_assigned": bool(networks.get(self.network, {}).get("IPAddress")),
+                 "start_error_flags": docker_failure_flags(state.get("Error", ""))}
+        self.report["port_checks"].append(facts)
+        if not state["Running"] or not bindings:
+            logs = docker("logs", "--tail", "60", name, timeout=5, check=False)
+            facts["application_flags"] = application_failure_flags(logs.stdout + logs.stderr)
+            # This is NOT a retry, direct-IP fallback or successful readiness.
+            # An exited app must fail even if its old mapping still exists.
+            category = "process_exited" if not state["Running"] else "host_mapping_absent"
+            raise FixtureFailure("fixture published-port unavailable: " + category
+                                 + " facts=" + json.dumps(facts, sort_keys=True))
         self.assertEqual(len(bindings), 1)
         self.assertEqual(bindings[0]["HostIp"], "127.0.0.1")
         return int(bindings[0]["HostPort"])
@@ -283,14 +330,7 @@ class RealApplicationBootstrapTest(unittest.TestCase):
                     # Export fixed booleans, never raw errors/config/SQL/URLs.
                     logs = docker("logs", "--tail", "60", name, timeout=5, check=False)
                     text = logs.stdout + logs.stderr
-                    self.report["containers"][-1]["diagnostic_flags"] = {
-                        code: marker in text for code, marker in (
-                            ("config_load_failed", "Failed to load config"),
-                            ("application_init_failed", "Failed to initialize application"),
-                            ("migration_failed", "migration failed"),
-                            ("read_only_failure", "read-only file system"),
-                            ("server_started", "Server started"),
-                            ("server_exited", "Server exited"))}
+                    self.report["containers"][-1]["diagnostic_flags"] = application_failure_flags(text)
                 if state["Paused"]:
                     docker("unpause", name, timeout=5, check=False)
             except (FixtureFailure, json.JSONDecodeError):
@@ -361,6 +401,42 @@ class RealApplicationBootstrapTest(unittest.TestCase):
 
 
 class DockerFailureClassificationTest(unittest.TestCase):
+    def test_port_diagnostics_fail_without_fallback_or_echo(self):
+        fixture = RealApplicationBootstrapTest()
+        fixture.apps = ["private-app-name"]
+        fixture.network = "private-network-name"
+        fixture.report = {"port_checks": []}
+        for running, bindings, category in (
+                (False, [{"HostIp": "127.0.0.1", "HostPort": "12345"}], "process_exited"),
+                (True, None, "host_mapping_absent")):
+            snapshot = {"state": {"Running": running, "Paused": False, "OOMKilled": False,
+                                  "ExitCode": 0 if running else 1, "Error": "private-secret",
+                                  "StartedAt": "2026-01-01T00:00:00Z"},
+                        "ports": {"8080/tcp": bindings},
+                        "requested": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]},
+                        "networks": {fixture.network: {"IPAddress": "192.0.2.7"}}}
+            replies = [subprocess.CompletedProcess([], 0, json.dumps(snapshot), ""),
+                       subprocess.CompletedProcess([], 0, "FAILED TO LOAD CONFIG private-secret", "")]
+            with self.subTest(category=category), patch(__name__ + ".docker", side_effect=replies) as invoke:
+                with self.assertRaises(FixtureFailure) as failure:
+                    fixture.published_port(fixture.apps[0], "8080/tcp")
+                self.assertIn(category, str(failure.exception))
+                for value in ("private-app-name", "private-network-name", "private-secret", "192.0.2.7"):
+                    self.assertNotIn(value, str(failure.exception))
+                self.assertEqual(invoke.call_count, 2, "one snapshot and bounded log read only; no retry")
+                self.assertTrue(fixture.report["port_checks"][-1]["application_flags"]["config_load_failed"])
+
+    def test_application_flags_are_case_independent_and_fixed(self):
+        secret = "fixture-secret /private/fixture-path 192.0.2.7"
+        flags = application_failure_flags("FAILED TO LOAD CONFIG " + secret)
+        self.assertTrue(flags["config_load_failed"])
+        self.assertFalse(flags["unclassified"])
+        self.assertTrue(application_failure_flags(secret)["unclassified"])
+        encoded = json.dumps(flags)
+        for value in ("fixture-secret", "/private/fixture-path", "192.0.2.7"):
+            self.assertNotIn(value, encoded)
+        self.assertTrue(all(isinstance(value, bool) for value in flags.values()))
+
     def test_fixed_diagnostics_do_not_echo_sensitive_input(self):
         sensitive = "token=fixture-secret /private/fixture-path 192.0.2.7"
         for message, expected in (

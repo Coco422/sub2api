@@ -32,6 +32,8 @@ Docker CLI 非零退出和本轮容器的 `State.Error` 只通过固定分类布
 
 后续 `6b93f2eea` 双事件仍在首个 PG 启动失败，真实固定分类一致为 `logging_options=true`、`runtime_start=true`，其余分类 false。复核 Moby `daemon/logger/local/config.go` 与 `local.go`：local driver 默认启用压缩，而 `max-file=1` 与压缩同时启用会被拒绝。因此夹具显式增加 `--log-opt compress=false`，保留原 1MiB/单文件上限、所有内存/swap/CPU/pids、网络和安全限制。这是与实际分类吻合且源码可确认的日志选项冲突修复，不将布尔分类冒充原始 daemon 完整错误；应用是否能初始化仍须新精确 head CI。原 bootstrap 和脱敏回归均保留，不 skip、不改成假应用。
 
+`8060db08e` 双事件编译成功并越过旧首 PG 启动失败，但在读取首个应用的宿主端口时 `KeyError: 8080/tcp`。报告无 phase，push app ExitCode 为 0、PR 为 1，均非 OOM，未记录端口读取时的 Running/网络/映射，旧应用日志分类也均未命中。不能据此断定是早退、启动配置、端口发布语义或 inspect 时序。本轮只补单次 inspect 固定数值/布尔状态：运行/暂停/退出/OOM、请求映射与实际映射是否存在、是否仅连接本轮网络及是否分配地址；应用日志最多末 60 行只作大小写无关固定分类，不输出原文。发现早退即 `process_exited`、运行但映射缺失即 `host_mapping_absent`，明确失败，不重试、不返回替代端口、不以直连地址兜底或KeyError消失冒充成功。原全部资源、网络、映射和业务断言保持，新精确 CI 才能给出下一层证据。
+
 job 35 分钟上限含单槽 Go 编译、镜像下载；动态步骤 15 分钟；单应用启动 120 秒，Docker 操作、健康等待及退出都有有界超时。工具/镜像/启动失败直接失败，不 skip、不回退成假应用。所有动态操作仅 CI。本机只 AST/YAML/diff 静态检查，未编译或运行；下一精确提交双事件 CI 才能证明本前置实际通过，旧 26c 七/十项成功不能覆盖。
 
 ## 明确未覆盖及下一前置
