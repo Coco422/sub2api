@@ -126,3 +126,13 @@ tagged工具的显式 `seed-multi` 沿真实 repository 能力接口原子创建
 ## PR549整合范围
 
 本次在已验99bf双成功切片上仅整合243f多账号无响应EOF，双成功用例及原七类AST完整保留，suite明确8项。上述两个单片各自suite7/待验描述为历史开发检查点；最终整合head必须新双事件bootstrap6+模型8及全部CI/security/Caddy重新验证，不能沿99bf旧绿。未包含后续partial多账号对照或HTTP attempt增量，生产策略、原资源/隔离/预算不改。
+
+### 同双eligible账号的语义输出后 partial EOF 对照
+
+后续追加 `test_existing_multi_account_policy_stops_after_partial_semantic_output_eof`，沿用完全相同的双账号合法种子和默认策略，但固定marker在真实文本delta flush后EOF，不执行前响应hijack。一个客户端POST必须得到delta、没有completed/DONE；总上游accepted1/completed0、两账号各自计数之和1，第二账号没有被接受；两账号本地usage/tokens、dedup均0，余额10、共享及两account槽位全0。当前语义输出后的缺终态返回普通错误而非换账号，测试不为得到此结果调整配置或新禁failover。
+
+无响应EOF与partial EOF两项分别用fresh fixture，仅改变故障检查点：前者现有策略可造成双账号重新接受，后者在已输出语义时停止。报告区分入口客户端POST与所选app内的账号attempt；两项均不根据本地usage推断首次供应商没有执行或收费。首次外部费用仍未建模，其他错误/pool/供应商幂等与通用最多一次保证仍未覆盖。
+
+原六case及先前accepted多账号case AST不变，显式suite8；新base仍固定5e9，原硬资源/internal网络/8秒读流和12秒只读收尾/cleanup/CI预算不变。新增对照同样只有1客户端模型POST，未混入独立99bf双成功切片。最终组合源码本机仅静态，须新精确head远端双事件bootstrap6+模型8及全部CI/security/Caddy实际验收，失败据原joblog最小定位，不改生产policy或弱化断言。
+
+本次PR549最终整合同时保留双成功，模型suite为9项（原七项加两项多账号），本章节单片suite8为历史开发检查点；最终精确head须双事件bootstrap6+models9重新验证。

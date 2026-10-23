@@ -303,7 +303,9 @@ func serve() error {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		multi := bytes.Contains(body.Input, []byte("fixture-multi-account-accepted-eof"))
+		multiAcceptedEOF := bytes.Contains(body.Input, []byte("fixture-multi-account-accepted-eof"))
+		multiPartialEOF := bytes.Contains(body.Input, []byte("fixture-multi-account-partial-eof"))
+		multi := multiAcceptedEOF || multiPartialEOF
 		peer := r.Header.Get("Authorization") == "Bearer synthetic-upstream-peer"
 		if r.Header.Get("Authorization") != "Bearer synthetic-upstream-only" && !(multi && peer) {
 			w.WriteHeader(http.StatusBadRequest)
@@ -324,7 +326,7 @@ func serve() error {
 		}
 		s.mu.Unlock()
 		defer func() { s.mu.Lock(); s.active--; s.mu.Unlock() }()
-		if firstMulti || bytes.Contains(body.Input, []byte("fixture-accepted-before-response-eof")) {
+		if (multiAcceptedEOF && firstMulti) || bytes.Contains(body.Input, []byte("fixture-accepted-before-response-eof")) {
 			// Body is fully read, authenticated and counted, but no response has
 			// been written. This is distinct from EOF after semantic output.
 			connection, _, err := w.(http.Hijacker).Hijack()
@@ -354,7 +356,7 @@ func serve() error {
 		if event("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": "msg_fixture", "output_index": 0, "content_index": 0, "delta": "OK"}) != nil {
 			return
 		}
-		if bytes.Contains(body.Input, []byte("fixture-partial-sse-eof")) {
+		if multiPartialEOF || bytes.Contains(body.Input, []byte("fixture-partial-sse-eof")) {
 			// Deliberately finish the HTTP response after real semantic output,
 			// without terminal usage/completion. The application must not turn
 			// this accepted/partly emitted request into another generation.

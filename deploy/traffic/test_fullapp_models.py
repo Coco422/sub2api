@@ -670,6 +670,54 @@ class FullApplicationMultiAccountEOFTest(FullApplicationAcceptedEOFTest):
 
 
 
+class FullApplicationMultiAccountPartialEOFTest(FullApplicationMultiAccountEOFTest):
+    def test_existing_multi_account_policy_stops_after_partial_semantic_output_eof(self):
+        self.assertEqual(self.multi_stats(), {"primary_accepted": 0, "peer_accepted": 0,
+                                             "primary_completed": 0, "peer_completed": 0})
+        # The same two eligible account pool as the pre-response EOF case, but
+        # this upstream flushes semantic output first. No policy is toggled to
+        # manufacture a no-failover result; one client POST is the whole case.
+        code, target, partial = self.post_model("fixture-multi-account-partial-eof", "multi-account-partial-once")
+        self.assertEqual(code, 200)
+        self.assertIn(target, {app + ":8080" for app in self.apps})
+        self.assertIn(b'"response.output_text.delta"', partial)
+        self.assertIn(b"OK", partial)
+        self.assertNotIn(b'"response.completed"', partial)
+        self.assertNotIn(b"data: [DONE]", partial)
+        self.phase("multi-account-partial-eof-client-received-real-delta-without-terminal")
+
+        def settled():
+            counts = self.multi_stats()
+            status = self.fixture_command("status")
+            return (self.model_stats() == {"accepted": 1, "completed": 0, "active": 0}
+                    and counts["primary_accepted"] + counts["peer_accepted"] == 1
+                    and counts["primary_completed"] == counts["peer_completed"] == 0
+                    and status["usage_rows"] == status["peer_usage_rows"] == status["dedup_rows"] == 0
+                    and status["input_tokens"] == status["output_tokens"] == 0
+                    and status["peer_input_tokens"] == status["peer_output_tokens"] == 0
+                    and status["balance"] == 10
+                    and status["user_slots"] == status["api_key_slots"] == 0
+                    and status["account_slots"] == status["peer_account_slots"] == 0)
+
+        bootstrap.eventually(settled, 12, "semantic partial EOF does not switch to second eligible account or settle success")
+        self.assertTrue(all(self.state(app)["Running"] for app in self.apps))
+        counts = self.multi_stats()
+        self.report["multi_account_partial_eof_verification"] = {"authenticated_client_posts": 1,
+                                                                "eligible_upstream_accounts": 2,
+                                                                "upstream_acceptances": 1, "observed_completions": 0,
+                                                                "primary_accepted": counts["primary_accepted"],
+                                                                "peer_accepted": counts["peer_accepted"],
+                                                                "primary_usage_rows": 0, "peer_usage_rows": 0,
+                                                                "dedup_rows": 0, "input_tokens": 0, "output_tokens": 0,
+                                                                "balance_final": self.fixture_command("status")["balance"],
+                                                                "all_slots_final": 0,
+                                                                "automatic_account_reacceptance_observed": False,
+                                                                "first_attempt_external_billing": "not modeled; cannot infer from local usage",
+                                                                "scope": "existing semantic-output boundary; not a universal at-most-once guarantee"}
+        self.phase("partial-semantic-output-eof-one-account-accepted-no-local-success-settlement-slots-clean")
+
+
+
 if __name__ == "__main__":
     # The original bootstrap suite still runs as its existing CI step. This
     # Explicit cases avoid rerunning inherited tests as accidental duplicates.
@@ -681,6 +729,7 @@ if __name__ == "__main__":
         FullApplicationClientCancelTest("test_client_cancel_drains_existing_upstream_usage_once_and_peer_can_continue"),
         FullApplicationConcurrentFailureTest("test_failed_concurrent_stream_releases_only_its_lease_and_peer_settles_once"),
         FullApplicationConcurrentSuccessTest("test_two_held_successes_release_together_and_preserve_both_settlements"),
-        FullApplicationMultiAccountEOFTest("test_existing_multi_account_failover_can_accept_again_after_ambiguous_eof")])
+        FullApplicationMultiAccountEOFTest("test_existing_multi_account_failover_can_accept_again_after_ambiguous_eof"),
+        FullApplicationMultiAccountPartialEOFTest("test_existing_multi_account_policy_stops_after_partial_semantic_output_eof")])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(0 if result.wasSuccessful() else 1)
