@@ -100,7 +100,7 @@ func imageDownloadDialControl(_, address string, _ syscall.RawConn) error {
 	if err != nil {
 		return err
 	}
-	if ip := net.ParseIP(stripIPv6Zone(host)); ip == nil || isPrivateIP(ip) {
+	if ip := net.ParseIP(stripIPv6Zone(host)); ip == nil || !ip.IsGlobalUnicast() || isPrivateIP(ip) {
 		return &net.AddrError{Err: "address not allowed for image download", Addr: address}
 	}
 	return nil
@@ -165,7 +165,7 @@ func isBlockedImageDownloadHost(host string) bool {
 		return true
 	}
 	if ip := net.ParseIP(stripIPv6Zone(host)); ip != nil {
-		return isPrivateIP(ip)
+		return !ip.IsGlobalUnicast() || isPrivateIP(ip)
 	}
 	return false
 }
@@ -337,11 +337,15 @@ func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]by
 		return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
-	if !strings.HasPrefix(contentType, "image/") {
-		// 声明与嗅探都不是图片时拒绝，避免把任意响应体（内部接口的 JSON/HTML 等）转存给租户。
-		if contentType = detectedImageContentType(data); contentType == "" {
-			return nil, "", errors.New("download image: content is not an image")
-		}
+	// Trust detected image bytes over an upstream header: a JSON/HTML response
+	// labelled image/png must not be uploaded. AVIF has an ISO BMFF signature
+	// that net/http does not currently recognize as an image.
+	if detected := detectedImageContentType(data); detected != "" {
+		contentType = detected
+	} else if contentType == "image/avif" && len(data) >= 12 && string(data[4:8]) == "ftyp" && (string(data[8:12]) == "avif" || string(data[8:12]) == "avis") {
+		// Keep the declared AVIF media type after validating its container signature.
+	} else {
+		return nil, "", errors.New("download image: content is not an image")
 	}
 	return data, contentType, nil
 }

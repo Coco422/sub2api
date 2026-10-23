@@ -300,3 +300,21 @@ func TestIsHTMLResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestCloudflare1010AcrossForkPlatformsDoesNotPenalize(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformAntigravity, PlatformDeepseek, PlatformKimi, PlatformZhipu, PlatformMinimax, PlatformCline, PlatformGrok} {
+		t.Run(platform, func(t *testing.T) {
+			repo := &rateLimitAccountRepoStub{}
+			counter := &countingOpenAI403CounterCache{}
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+			svc.SetOpenAI403CounterCache(counter)
+			account := &Account{ID: 972, Platform: platform, Type: AccountTypeAPIKey}
+			for _, body := range []string{"error code: 1010", `{"cloudflare_error":true,"error_code":1010}`} {
+				require.False(t, svc.HandleUpstreamError(context.Background(), account, http.StatusForbidden, http.Header{}, []byte(body)))
+			}
+			require.Zero(t, repo.setErrorCalls)
+			require.Zero(t, repo.tempCalls)
+			require.Zero(t, counter.increments)
+		})
+	}
+}
