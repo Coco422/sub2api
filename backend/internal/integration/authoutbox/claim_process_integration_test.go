@@ -113,7 +113,7 @@ func (child *outboxClaimProcess) crash(t *testing.T) {
 	err := child.command.Wait()
 	child.waited = true
 	require.Error(t, err, "the claiming process must actually terminate abnormally")
-	require.NoError(t, child.input.Close())
+	// Wait closes StdinPipe itself; a second Close reports os.ErrClosed.
 }
 
 func TestDatabaseOutboxReclaimsCrashedClaimAfterOriginalLease(t *testing.T) {
