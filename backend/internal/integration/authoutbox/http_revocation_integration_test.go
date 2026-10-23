@@ -60,10 +60,14 @@ type observedWorkerCache struct {
 	target    string
 	deleted   atomic.Bool
 	published atomic.Bool
+	denied    atomic.Bool
 }
 
 func (c *observedWorkerCache) DeleteAuthCache(ctx context.Context, key string) error {
 	err := c.APIKeyCache.DeleteAuthCache(ctx, key)
+	if err != nil && key == c.target && strings.Contains(err.Error(), "NOPERM") {
+		c.denied.Store(true)
+	}
 	if err == nil && key == c.target {
 		_, readErr := c.APIKeyCache.GetAuthCache(ctx, key)
 		c.deleted.Store(errors.Is(readErr, redis.Nil))
@@ -80,14 +84,23 @@ func (c *observedWorkerCache) PublishAuthCacheInvalidation(ctx context.Context, 
 }
 
 func TestDatabaseOutboxFirstPassRevokesTwoHotHTTPReaders(t *testing.T) {
-	testDatabaseOutboxHTTPRevocation(t, false)
+	testDatabaseOutboxHTTPRevocation(t, outboxHTTPScenario{})
 }
 
 func TestDatabaseOutboxSafetyPassClearsLateSnapshotFromTwoHotHTTPReaders(t *testing.T) {
-	testDatabaseOutboxHTTPRevocation(t, true)
+	testDatabaseOutboxHTTPRevocation(t, outboxHTTPScenario{safetyPass: true})
 }
 
-func testDatabaseOutboxHTTPRevocation(t *testing.T, verifySafetyPass bool) {
+func TestDatabaseOutboxRealRedisDeleteFailureRecoversThroughSafetyPass(t *testing.T) {
+	testDatabaseOutboxHTTPRevocation(t, outboxHTTPScenario{safetyPass: true, rejectDelete: true})
+}
+
+type outboxHTTPScenario struct {
+	safetyPass   bool
+	rejectDelete bool
+}
+
+func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -240,20 +253,99 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, verifySafetyPass bool) {
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Snapshot)
 	require.Equal(t, service.StatusActive, entry.Snapshot.Status, "shared L2 is also stale before the worker starts")
-	observed := &observedWorkerCache{APIKeyCache: sharedCache, target: cacheKey}
+	workerCache := sharedCache
+	const (
+		workerUser     = "auth-fixture-worker"
+		workerPassword = "fixture-only-del-rejection" // Dedicated temporary container, never a deployment credential.
+	)
+	if scenario.rejectDelete {
+		// Only this test owns the Redis container. Deny one real command for
+		// the worker alone; default/controller/readers keep their own access.
+		require.NoError(t, controller.ACLSetUser(ctx, workerUser, "reset", "on", ">"+workerPassword, "~*", "&*", "+@all", "-del").Err())
+		t.Cleanup(func() {
+			cleanupCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+			defer stop()
+			require.NoError(t, controller.ACLDelUser(cleanupCtx, workerUser).Err())
+		})
+		opts := *controller.Options()
+		opts.Username = workerUser
+		opts.Password = workerPassword
+		workerClient := redis.NewClient(&opts)
+		t.Cleanup(func() { require.NoError(t, workerClient.Close()) })
+		require.NoError(t, workerClient.Ping(ctx).Err(), "the fixture identity is healthy; only DEL is denied")
+		identity, err := workerClient.ACLWhoAmI(ctx).Result()
+		require.NoError(t, err)
+		require.Equal(t, workerUser, identity, "the real command must run as the denied fixture identity")
+		workerCache = repository.NewAPIKeyCache(workerClient)
+	}
+	observed := &observedWorkerCache{APIKeyCache: workerCache, target: cacheKey}
 	worker := service.NewAuthCacheInvalidationWorker(repository.NewAuthCacheInvalidationOutboxRepository(db), observed)
 	t.Cleanup(worker.Stop)
 	worker.Start() // No local-service shortcut: both readers require Pub/Sub.
+	var retryAt time.Time
+	var retryAttempts int
+	firstPassBudget := 5 * time.Second
+	if scenario.rejectDelete {
+		require.Eventually(t, func() bool {
+			return worker.Health(ctx).Failures > 0 && observed.denied.Load()
+		}, 5*time.Second, 10*time.Millisecond)
+		worker.Stop() // Join RetryClaimed before inspecting the real lease state.
+		require.Zero(t, worker.Health(ctx).Processed)
+		require.False(t, observed.deleted.Load())
+		require.False(t, observed.published.Load(), "DEL failure must not reach Publish or ack")
+		var claimedAt sql.NullTime
+		var claimedBy, lastError sql.NullString
+		var createdAt time.Time
+		require.NoError(t, db.QueryRowContext(ctx,
+			"SELECT delivery_stage, attempts, available_at, claimed_at, claimed_by, last_error, created_at FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).
+			Scan(&stage, &retryAttempts, &retryAt, &claimedAt, &claimedBy, &lastError, &createdAt))
+		require.Zero(t, stage, "failed first pass must not become a safety pass or disappear")
+		require.Positive(t, retryAttempts)
+		require.False(t, claimedAt.Valid)
+		require.False(t, claimedBy.Valid)
+		require.Contains(t, lastError.String, "NOPERM")
+		require.True(t, retryAt.After(createdAt), "the real RetryClaimed must schedule backoff")
+		entry, err = sharedCache.GetAuthCache(ctx, cacheKey)
+		require.NoError(t, err)
+		require.NotNil(t, entry)
+		require.NotNil(t, entry.Snapshot)
+		require.Equal(t, service.StatusActive, entry.Snapshot.Status)
+		for node := range nodes {
+			dbReads, l2Reads := repositories[node].reads.Load(), caches[node].reads.Load()
+			require.Equal(t, http.StatusNoContent, probe(node, target.Key).Code)
+			require.Equal(t, http.StatusNoContent, probe(node, control.Key).Code)
+			require.Equal(t, dbReads, repositories[node].reads.Load())
+			require.Equal(t, l2Reads, caches[node].reads.Load())
+		}
+		// Restore the exact denied capability, not an artificial cache result or
+		// an outbox timestamp. A new worker must reclaim using the real retryAt.
+		require.NoError(t, controller.ACLSetUser(ctx, workerUser, "+del").Err())
+		observed = &observedWorkerCache{APIKeyCache: workerCache, target: cacheKey}
+		worker = service.NewAuthCacheInvalidationWorker(repository.NewAuthCacheInvalidationOutboxRepository(db), observed)
+		t.Cleanup(worker.Stop)
+		worker.Start()
+		firstPassBudget = 15 * time.Second
+	}
 	require.Eventually(t, func() bool {
 		health := worker.Health(ctx)
 		return health.Processed == 1 && health.Failures == 0 && observed.deleted.Load() && observed.published.Load()
-	}, 5*time.Second, 10*time.Millisecond)
+	}, firstPassBudget, 10*time.Millisecond)
 	worker.Stop()
 	var future bool
 	require.NoError(t, db.QueryRowContext(ctx,
 		"SELECT delivery_stage, available_at > NOW() FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).Scan(&stage, &future))
 	require.Equal(t, 1, stage)
 	require.True(t, future, "keep the existing delayed second pass; do not accelerate or claim final ack")
+	if scenario.rejectDelete {
+		var attempts int
+		var lastError sql.NullString
+		var retryDue bool
+		require.NoError(t, db.QueryRowContext(ctx,
+			"SELECT attempts, last_error, NOW() >= $2 FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey, retryAt).Scan(&attempts, &lastError, &retryDue))
+		require.Equal(t, retryAttempts, attempts, "recovery must retain the real failure attempt history")
+		require.False(t, lastError.Valid, "successful first pass must clear the failure before its safety pass")
+		require.True(t, retryDue, "recovery must not complete before the original retry deadline")
+	}
 	for node := range nodes {
 		require.Eventually(t, func() bool {
 			before := admitted[node].Load()
@@ -273,7 +365,7 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, verifySafetyPass bool) {
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Snapshot)
 	require.Equal(t, service.StatusAPIKeyDisabled, entry.Snapshot.Status)
-	if !verifySafetyPass {
+	if !scenario.safetyPass {
 		return
 	}
 
@@ -307,7 +399,7 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, verifySafetyPass bool) {
 		"SELECT available_at, available_at > NOW() FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).Scan(&unchangedSchedule, &future))
 	require.Equal(t, scheduledAt, unchangedSchedule, "do not change available_at or accelerate the real second pass")
 	require.True(t, future, "both stale readers must be hot before the real second-pass deadline")
-	secondObservation := &observedWorkerCache{APIKeyCache: sharedCache, target: cacheKey}
+	secondObservation := &observedWorkerCache{APIKeyCache: workerCache, target: cacheKey}
 	secondWorker := service.NewAuthCacheInvalidationWorker(repository.NewAuthCacheInvalidationOutboxRepository(db), secondObservation)
 	t.Cleanup(secondWorker.Stop)
 	secondWorker.Start()

@@ -145,3 +145,7 @@ L2 显式关闭，正负 TTL 为 120 秒且大于 30 秒测试上下文，不靠
 测试核对原 `available_at` 完全未变、两端在截止前已热，然后启动真实 worker，等待既有 30 秒第二遍调度；不更新 `available_at`、不改时钟/延迟或手工 claim。第二遍实际删除 L2 并广播后，两端新请求最终 `401/API_KEY_DISABLED` 且未进入下游，数据库重新读取为停用快照，无关 Key 继续热命中；真实 stage 1 行最终 ack 删除，完成时间不得早于原数据库截止。
 
 第二遍场景复用原 fixture helper，原第一遍测试仍独立保留。新增场景至少增加约 30 秒等待及独占容器成本；45 秒有界条件等待用于观察第二遍，整体仍为 120 秒上下文，TTL 300 秒，不依赖自然过期。新回归本机未编译/运行，只做非编译静态检查，结果待新精确 head CI。新旧 service 均在同一测试进程；不证明在途授权线性化、迟于第二遍的再次旧回填、故障重试或真实双机恢复。
+
+`TestDatabaseOutboxRealRedisDeleteFailureRecoversThroughSafetyPass` 另在独占 Redis 创建仅供该场景 worker 使用的 ACL 身份，真实服务器拒绝其 `DEL`；controller、reader 及订阅使用其他连接且继续正常。测试校验实际 worker adapter 收到 `NOPERM`，事件仍处于 stage 0、attempts 增加、claim 已释放、错误保留，L2 和双 HTTP 热缓存仍为旧 active；不是 fake cache 返回故障。随后只恢复该 fixture 身份的 DEL 许可，新真实 worker 按原退避及数据库重试时间重领，保留 attempt 历史并清理错误，再走既有第二遍场景至双 HTTP 401、control 保持热和最终 ack。
+
+故障只作用于测试专属 Redis 的 worker 用户，不修改默认用户、不停 Redis、不访问生产，也不改 `available_at`、原退避或 30 秒安全调度。新增场景只测 DEL 权限拒绝及恢复，不代表 Publish 失败、网络超时或所有 Redis 故障。复用独占 fixture 及清理顺序，worker 停止后关闭专用客户端并删除测试 ACL 用户；整体 120 秒上下文，故障观察 5 秒、恢复第一遍 15 秒、第二遍 45 秒。此 `integration` 回归本机未编译/运行，动态证据待新精确 head CI，不变更运行策略、schema、账本或产品行为。
