@@ -33,7 +33,7 @@ type PelicanTestConfig struct {
 // ScheduledTestPlan represents a scheduled test plan domain model.
 type ScheduledTestPlan struct {
 	// Request-only: importing configuration preserves this target's ownership.
-	PreserveQualityState bool `json:"-"`
+	PreserveQualityState     bool                      `json:"-"`
 	QualityRestoreDiagnostic *QualityRestoreDiagnostic `json:"-"`
 	QualityModelActions      map[string]string         `json:"-"`
 	QualityModelOutcomes     map[string]string         `json:"-"`
