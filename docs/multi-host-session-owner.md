@@ -139,3 +139,9 @@ L2 显式关闭，正负 TTL 为 120 秒且大于 30 秒测试上下文，不靠
 测试启用 L1/L2、TTL 长于测试时限，并用真实仓储及 L2 读取计数同时证明两端 HTTP 查询命中热 L1。数据库停用 Key 后、worker 启动前，HTTP 和共享 L2 仍明确保留旧状态；第一遍实际删除 L2 并广播后，两端新请求返回 `401/API_KEY_DISABLED` 且不进入固定下游 handler，共享 L2 回读为停用状态，无关 Key 仍热命中。HTTP fixture 只在本进程注册现有只需认证的 `GET /v1/sub2api/billing` 路径和固定 204 handler，不调用真实倍率、模型、账本或运营接口。
 
 本次只验证第一遍及真实 stage 1 延迟调度，随后停止 worker；不加速默认安全第二遍，也不声称最终 ack、故障重试、在途撤销或真实两机验收。没有 schema、权限、TTL 默认值、worker 策略或生产配置变更。仅 `integration` 回归源码，本机未编译/运行，等待新精确 head 远端 CI；有限 L1 随专用测试 binary 退出，worker/订阅、客户端和独占容器按序清理。
+
+同一独占 fixture 另有 `TestDatabaseOutboxSafetyPassClearsLateSnapshotFromTwoHotHTTPReaders`：保留第一遍全部断言，再明确将变更前保存的 active 快照回填共享 L2，模拟旧查询延迟完成。这是测试故障注入，不是真实并发 SQL 竞态或新运行行为。停止旧订阅后创建两个新 service/连接；两端必须从旧 L2 读取并真正热缓存为 HTTP 204，真实数据库查询计数保持零，且无关 Key 也保持热。
+
+测试核对原 `available_at` 完全未变、两端在截止前已热，然后启动真实 worker，等待既有 30 秒第二遍调度；不更新 `available_at`、不改时钟/延迟或手工 claim。第二遍实际删除 L2 并广播后，两端新请求最终 `401/API_KEY_DISABLED` 且未进入下游，数据库重新读取为停用快照，无关 Key 继续热命中；真实 stage 1 行最终 ack 删除，完成时间不得早于原数据库截止。
+
+第二遍场景复用原 fixture helper，原第一遍测试仍独立保留。新增场景至少增加约 30 秒等待及独占容器成本；45 秒有界条件等待用于观察第二遍，整体仍为 120 秒上下文，TTL 300 秒，不依赖自然过期。新回归本机未编译/运行，只做非编译静态检查，结果待新精确 head CI。新旧 service 均在同一测试进程；不证明在途授权线性化、迟于第二遍的再次旧回填、故障重试或真实双机恢复。

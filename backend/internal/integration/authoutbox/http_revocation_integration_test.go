@@ -80,6 +80,15 @@ func (c *observedWorkerCache) PublishAuthCacheInvalidation(ctx context.Context, 
 }
 
 func TestDatabaseOutboxFirstPassRevokesTwoHotHTTPReaders(t *testing.T) {
+	testDatabaseOutboxHTTPRevocation(t, false)
+}
+
+func TestDatabaseOutboxSafetyPassClearsLateSnapshotFromTwoHotHTTPReaders(t *testing.T) {
+	testDatabaseOutboxHTTPRevocation(t, true)
+}
+
+func testDatabaseOutboxHTTPRevocation(t *testing.T, verifySafetyPass bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	checkCtx, stopCheck := context.WithTimeout(ctx, 10*time.Second)
@@ -162,30 +171,34 @@ func TestDatabaseOutboxFirstPassRevokesTwoHotHTTPReaders(t *testing.T) {
 	var routes [2]*gin.Engine
 	var admitted [2]atomic.Int64
 	var connectionIDs [2]int64
-	for node := range nodes {
-		client := newClient()
-		connectionIDs[node], err = client.ClientID(ctx).Result()
-		require.NoError(t, err)
-		repositories[node] = &countedKeyRepository{APIKeyRepository: keyRepo}
-		caches[node] = &countedAuthCache{APIKeyCache: repository.NewAPIKeyCache(client)}
-		nodes[node] = service.NewAPIKeyService(repositories[node], nil, nil, nil, nil, caches[node], cfg)
-		// Bounded L1 workers live only in this dedicated test binary; no new
-		// production destruction/test hook is needed for the fixture.
-		t.Cleanup(nodes[node].StopAuthCacheInvalidationSubscriber)
-		nodes[node].StartAuthCacheInvalidationSubscriber(ctx)
-		routes[node] = gin.New()
-		routes[node].Use(gin.HandlerFunc(middleware.NewAPIKeyAuthMiddleware(nodes[node], nil, cfg)))
-		routes[node].GET("/v1/sub2api/billing", func(c *gin.Context) {
-			admitted[node].Add(1)
-			c.Status(http.StatusNoContent)
-		})
+	startReaders := func() {
+		t.Helper()
+		for node := range nodes {
+			client := newClient()
+			connectionIDs[node], err = client.ClientID(ctx).Result()
+			require.NoError(t, err)
+			repositories[node] = &countedKeyRepository{APIKeyRepository: keyRepo}
+			caches[node] = &countedAuthCache{APIKeyCache: repository.NewAPIKeyCache(client)}
+			nodes[node] = service.NewAPIKeyService(repositories[node], nil, nil, nil, nil, caches[node], cfg)
+			// Bounded L1 workers live only in this dedicated test binary; no new
+			// production destruction/test hook is needed for the fixture.
+			t.Cleanup(nodes[node].StopAuthCacheInvalidationSubscriber)
+			nodes[node].StartAuthCacheInvalidationSubscriber(ctx)
+			routes[node] = gin.New()
+			routes[node].Use(gin.HandlerFunc(middleware.NewAPIKeyAuthMiddleware(nodes[node], nil, cfg)))
+			routes[node].GET("/v1/sub2api/billing", func(c *gin.Context) {
+				admitted[node].Add(1)
+				c.Status(http.StatusNoContent)
+			})
+		}
+		require.NotEqual(t, connectionIDs[0], connectionIDs[1])
+		require.Eventually(t, func() bool {
+			counts, err := controller.PubSubNumSub(ctx, "auth:cache:invalidate").Result()
+			return err == nil && counts["auth:cache:invalidate"] == 2 &&
+				nodes[0].AuthCacheInvalidationSubscriberHealth().Connected && nodes[1].AuthCacheInvalidationSubscriberHealth().Connected
+		}, 5*time.Second, 10*time.Millisecond)
 	}
-	require.NotEqual(t, connectionIDs[0], connectionIDs[1])
-	require.Eventually(t, func() bool {
-		counts, err := controller.PubSubNumSub(ctx, "auth:cache:invalidate").Result()
-		return err == nil && counts["auth:cache:invalidate"] == 2 &&
-			nodes[0].AuthCacheInvalidationSubscriberHealth().Connected && nodes[1].AuthCacheInvalidationSubscriberHealth().Connected
-	}, 5*time.Second, 10*time.Millisecond)
+	startReaders()
 	probe := func(node int, key string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, "/v1/sub2api/billing", nil).WithContext(ctx)
 		request.Header.Set("Authorization", "Bearer "+key)
@@ -209,6 +222,7 @@ func TestDatabaseOutboxFirstPassRevokesTwoHotHTTPReaders(t *testing.T) {
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Snapshot)
 	require.Equal(t, service.StatusActive, entry.Snapshot.Status)
+	lateSnapshot := entry // Serialized active state captured before the DB mutation.
 	beforeDB := repositories[0].reads.Load() + repositories[1].reads.Load()
 	_, err = db.ExecContext(ctx, "UPDATE api_keys SET status = 'disabled' WHERE id = $1", target.ID)
 	require.NoError(t, err)
@@ -254,6 +268,76 @@ func TestDatabaseOutboxFirstPassRevokesTwoHotHTTPReaders(t *testing.T) {
 		require.Equal(t, l2Reads, caches[node].reads.Load())
 	}
 	require.Greater(t, repositories[0].reads.Load()+repositories[1].reads.Load(), beforeDB, "revocation must force a fresh DB lookup after deleting L2")
+	entry, err = sharedCache.GetAuthCache(ctx, cacheKey)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	require.NotNil(t, entry.Snapshot)
+	require.Equal(t, service.StatusAPIKeyDisabled, entry.Snapshot.Status)
+	if !verifySafetyPass {
+		return
+	}
+
+	var scheduledAt time.Time
+	require.NoError(t, db.QueryRowContext(ctx,
+		"SELECT available_at FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).Scan(&scheduledAt))
+	// Explicit fault injection: model an old query completing after the first
+	// pass. This is not a real concurrent SQL race or a new production policy.
+	require.Equal(t, service.StatusActive, lateSnapshot.Snapshot.Status)
+	require.NoError(t, sharedCache.SetAuthCache(ctx, cacheKey, lateSnapshot, 300*time.Second))
+	oldConnectionIDs := connectionIDs
+	for _, node := range nodes {
+		node.StopAuthCacheInvalidationSubscriber()
+	}
+	startReaders() // Fresh processes are not implied: these are new service instances.
+	for _, id := range connectionIDs {
+		for _, oldID := range oldConnectionIDs {
+			require.NotEqual(t, oldID, id)
+		}
+	}
+	var l2ReadsBeforeSecond [2]int64
+	for node := range nodes {
+		assertHot(node, target.Key, http.StatusNoContent)
+		assertHot(node, control.Key, http.StatusNoContent)
+		require.Zero(t, repositories[node].reads.Load(), "both fresh readers must load the injected snapshot from L2, not the disabled DB row")
+		require.Positive(t, caches[node].reads.Load())
+		l2ReadsBeforeSecond[node] = caches[node].reads.Load()
+	}
+	var unchangedSchedule time.Time
+	require.NoError(t, db.QueryRowContext(ctx,
+		"SELECT available_at, available_at > NOW() FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).Scan(&unchangedSchedule, &future))
+	require.Equal(t, scheduledAt, unchangedSchedule, "do not change available_at or accelerate the real second pass")
+	require.True(t, future, "both stale readers must be hot before the real second-pass deadline")
+	secondObservation := &observedWorkerCache{APIKeyCache: sharedCache, target: cacheKey}
+	secondWorker := service.NewAuthCacheInvalidationWorker(repository.NewAuthCacheInvalidationOutboxRepository(db), secondObservation)
+	t.Cleanup(secondWorker.Stop)
+	secondWorker.Start()
+	// Wait for the actual database deadline and unchanged 30-second worker
+	// schedule. No fake clock, manual event claim or available_at UPDATE.
+	require.Eventually(t, func() bool {
+		health := secondWorker.Health(ctx)
+		return health.Processed == 1 && health.Failures == 0 && secondObservation.deleted.Load() && secondObservation.published.Load()
+	}, 45*time.Second, 100*time.Millisecond)
+	secondWorker.Stop()
+	var eventCount int
+	var deadlineReached bool
+	require.NoError(t, db.QueryRowContext(ctx,
+		"SELECT (SELECT COUNT(*) FROM auth_cache_invalidation_outbox WHERE cache_key = $1), NOW() >= $2", cacheKey, scheduledAt).Scan(&eventCount, &deadlineReached))
+	require.Zero(t, eventCount, "the real stage-1 event must be acknowledged and removed")
+	require.True(t, deadlineReached, "a completed second pass must not precede the original database deadline")
+	for node := range nodes {
+		require.Eventually(t, func() bool {
+			before := admitted[node].Load()
+			response := probe(node, target.Key)
+			return response.Code == http.StatusUnauthorized && strings.Contains(response.Body.String(), "API_KEY_DISABLED") && admitted[node].Load() == before
+		}, 5*time.Second, 10*time.Millisecond)
+		require.Greater(t, caches[node].reads.Load(), l2ReadsBeforeSecond[node], "each hot reader must consume invalidation and leave its old L1")
+		assertHot(node, target.Key, http.StatusUnauthorized)
+		dbReads, l2Reads := repositories[node].reads.Load(), caches[node].reads.Load()
+		require.Equal(t, http.StatusNoContent, probe(node, control.Key).Code)
+		require.Equal(t, dbReads, repositories[node].reads.Load())
+		require.Equal(t, l2Reads, caches[node].reads.Load())
+	}
+	require.Positive(t, repositories[0].reads.Load()+repositories[1].reads.Load(), "the second pass must force a fresh disabled snapshot from the database")
 	entry, err = sharedCache.GetAuthCache(ctx, cacheKey)
 	require.NoError(t, err)
 	require.NotNil(t, entry)
