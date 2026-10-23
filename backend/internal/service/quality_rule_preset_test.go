@@ -67,3 +67,35 @@ func TestQualityPresetValidatesNameAndPlanConfiguration(t *testing.T) {
 		require.Empty(t, repo.presets)
 	}
 }
+
+func TestQualityPresetKeepsBPSOptionsAndDropsGeneratedQuestionData(t *testing.T) {
+	repo := newFakeTemplateRepo(newTemplatePlanRepo())
+	svc := ProvideScheduledTestService(nil, nil, repo, nil)
+	input := presetInput()
+	input.Name = strings.Repeat("模", 100)
+	input.PelicanConfig.QuestionKind = OpenAICodexStateProbeQuestionKind
+	input.PelicanConfig.ParallelCount = 1
+	interval := 95
+	input.PelicanConfig.Quality.Action = QualityActionEnableBPS
+	input.PelicanConfig.Quality.BPS = &QualityBPSPolicy{FailureThreshold: 4, UsagePercent: 85, RequireAll: true,
+		Models: []string{"bps-model"}, PassThreshold: 6, HoldOnUsage: true, AutoDisableOn403: true,
+		AutoRecoverOn403: true, RecoveryIntervalMinutes: &interval, AutoMoveOn403: true, TargetGroupID: 21,
+		SessionProxy: true, ProxySource: "ip_pool", CacheCreationAsInput: true}
+	saved, err := svc.CreateQualityPreset(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, input.PelicanConfig.Quality.BPS, saved.PelicanConfig.Quality.BPS)
+	saved.PelicanConfig.Quality.BPS.Models[0] = "changed-model"
+	*saved.PelicanConfig.Quality.BPS.RecoveryIntervalMinutes = 60
+	require.Equal(t, "bps-model", input.PelicanConfig.Quality.BPS.Models[0])
+	require.Equal(t, 95, interval)
+
+	input = presetInput()
+	input.PelicanConfig.QuestionKind = QualityRandomQuestionKind
+	input.PelicanConfig.RandomQuestion = &QualityRandomQuestion{}
+	saved, err = svc.CreateQualityPreset(context.Background(), input)
+	require.NoError(t, err)
+	require.Nil(t, saved.PelicanConfig.RandomQuestion)
+	require.Empty(t, saved.PelicanConfig.Prompt)
+	require.Empty(t, saved.PelicanConfig.Quality.ExpectedAnswer)
+	require.Equal(t, "Configured question", input.PelicanConfig.Prompt)
+}
