@@ -75,7 +75,7 @@ func newImageDownloadHTTPClient(proxy func(*http.Request) (*url.URL, error)) *ht
 	proxied.Proxy = proxy
 	return &http.Client{
 		Timeout:   60 * time.Second,
-		Transport: &imageDownloadTransport{direct: direct, proxied: proxied, proxy: proxy, resolvesPrivate: isPrivateOrLoopbackHost},
+		Transport: &imageDownloadTransport{direct: direct, proxied: proxied, proxy: proxy, resolvesPrivate: imageDownloadHostResolvesNonPublic},
 	}
 }
 
@@ -155,6 +155,27 @@ func (t *imageDownloadTransport) route(req *http.Request) (http.RoundTripper, er
 		return nil, fmt.Errorf("image url host is not allowed: %s", host)
 	}
 	return t.proxied, nil
+}
+
+// Proxy transports cannot inspect the proxy's remote resolution; fail closed
+// on every non-public address returned by the local resolver before each hop.
+func imageDownloadHostResolvesNonPublic(ctx context.Context, host string) (bool, error) {
+	if isBlockedImageDownloadHost(host) {
+		return true, nil
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return false, err
+	}
+	if len(addresses) == 0 {
+		return true, nil
+	}
+	for _, address := range addresses {
+		if !address.IP.IsGlobalUnicast() || isPrivateIP(address.IP) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // isBlockedImageDownloadHost 报告 host 是否为空、被拒绝的主机名，或非公网 IP 字面量。
