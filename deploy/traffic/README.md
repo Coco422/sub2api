@@ -29,3 +29,5 @@ CI `release-helpers`执行`test_multihost_preflight.py`，覆盖合法双节点�
 透明迁移仍需单独选择“客户端显式重建”或“服务器保存可重放状态”的产品语义；前者会终止旧链，后者涉及正文保留、有效期、重放幂等和费用归属。本工具不替用户作该选择。媒体长期持久化同样需明确capability有效期、用户撤销及对象删除规则，不能把临时relay变为无限生命周期。
 
 可选的独立 L7 样例与真实代理回归见 [Caddy HTTP Responses 多目标入口](CADDY_RESPONSES.md)。它与此静态预检分开，不修改应用或默认单机站点，不配置 DNS/生产；新增行为测试结果需精确 head CI，不能用预检成功替代。
+
+两个完整 `cmd/server` 应用的独占 DB/Redis、网络与资源隔离初始化前置见 [完整应用隔离 bootstrap](FULLAPP_BOOTSTRAP.md)。它实际启动应用二进制和真实 Caddy，只先验证初始化/readiness/未鉴权路由/空闲 SIGTERM drain；模型 SSE、已接收请求不重放及取消组合仍待合法隔离种子和假模型通道，不能把部件进程或 HTTP401 冒充完成。
