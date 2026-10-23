@@ -153,3 +153,9 @@ L2 显式关闭，正负 TTL 为 120 秒且大于 30 秒测试上下文，不靠
 `TestDatabaseOutboxRealRedisPublishFailureAfterDeleteRecoversThroughSafetyPass` 另以同一隔离机制仅拒绝 worker 的真实 `PUBLISH`。它必须先证明真实 DEL 已成功、共享 L2 已不存在，而两端热 L1 仍返回旧 HTTP 204；真实发布收到 `NOPERM` 后事件不能 ack，attempt/claim/错误状态仍可重试。恢复该身份的 publish 权限后，新 worker 沿原退避、原 30 秒第二遍完成双端 401、control 热命中和最终 ack。此部分成功状态不同于 DEL 被拒绝，也不同于 fake publishErr 分支；旧正常、第二遍及 DEL 场景全部保留。
 
 此新场景仅新增测试与文档，本机未编译/运行，动态结果交新精确 head CI；预算与独占 fixture 清理沿前述故障场景，不改数据库调度时间、运行策略或账本。它只覆盖 Redis 权限拒绝型 PUBLISH 失败，不证明网络中断/超时、claim 后进程崩溃/租约接管、透明会话恢复、媒体生命周期或真实双机验收。
+
+`TestDatabaseOutboxReclaimsCrashedClaimAfterOriginalLease` 另以同一测试 binary 的隔离子进程调用真实 outbox 仓储 `Claim`，在事务已提交领取、尚无 Redis 副作用的检查点阻塞。父端核对数据库 event/owner/claimed_at，确认原 30 秒租约内另一真实 Claim 为空后，实际终止并等待子进程；claim 不会被优雅释放或改时间。fixture 连接信息只经匿名 stdin 管道传入，不放 argv、环境变量或普通日志，回执只含虚构事件身份和固定错误。
+
+新的真实 worker 必须等原租约到期才处理同一事件；接管后的 attempts 保持 0、旧 owner 不能 ack，新 stage 1 继续按原 30 秒安全调度，最终双 HTTP401、control 热命中和真实 ack。场景复用原第二遍故障注入与全部断言，额外租约等待上界 45 秒、第二遍上界 45 秒，整体仍为 120 秒上下文；不缩短 lease 或修改 `claimed_at`/`available_at`。缺 Docker 在 CI 失败，Windows 因继承描述符限制明确 skip；子进程在失败路径也会终止、等待并关闭管道。
+
+此新增 `integration` 场景本机未编译/运行，结果待新精确 head CI。子进程只负责真实领取检查点，并非完整生产 worker，也不证明未提交 Claim、发布后/ack 前崩溃、网络分区、全部租约竞态、授权线性化或真实双机。没有运行策略/schema/账本、透明会话或媒体语义变化。

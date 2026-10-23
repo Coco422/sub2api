@@ -107,11 +107,13 @@ type outboxHTTPScenario struct {
 	safetyPass    bool
 	rejectDelete  bool
 	rejectPublish bool
+	crashClaim    bool
 }
 
 func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario) {
 	t.Helper()
 	require.False(t, scenario.rejectDelete && scenario.rejectPublish, "inject exactly one Redis command failure per scenario")
+	require.False(t, scenario.crashClaim && (scenario.rejectDelete || scenario.rejectPublish), "keep claim crash and Redis command failure checkpoints separate")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	checkCtx, stopCheck := context.WithTimeout(ctx, 10*time.Second)
@@ -263,6 +265,45 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Snapshot)
 	require.Equal(t, service.StatusActive, entry.Snapshot.Status, "shared L2 is also stale before the worker starts")
+	const abandonedOwner = "fixture-crashed-owner"
+	var abandonedEventID int64
+	var abandonedUntil time.Time
+	if scenario.crashClaim {
+		child := startOutboxClaimProcess(t, dsn, abandonedOwner)
+		var owner string
+		var claimedAt time.Time
+		var attempts int
+		require.NoError(t, db.QueryRowContext(ctx,
+			"SELECT id, claimed_by, claimed_at, attempts FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).
+			Scan(&abandonedEventID, &owner, &claimedAt, &attempts))
+		require.Equal(t, abandonedEventID, child.reply.ID)
+		require.Zero(t, child.reply.Stage)
+		require.Equal(t, abandonedOwner, owner)
+		require.Zero(t, attempts)
+		abandonedUntil = claimedAt.Add(30 * time.Second)
+		early, err := repository.NewAuthCacheInvalidationOutboxRepository(db).Claim(ctx, "fixture-too-early", 1, 30*time.Second)
+		require.NoError(t, err)
+		require.Empty(t, early, "a committed live lease must exclude a second real claimant")
+		child.crash(t) // Actual kill+wait; no graceful claim release or timestamp edit.
+		var sameClaim time.Time
+		var leaseStillLive bool
+		require.NoError(t, db.QueryRowContext(ctx,
+			"SELECT claimed_by, claimed_at, NOW() < $2 FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey, abandonedUntil).
+			Scan(&owner, &sameClaim, &leaseStillLive))
+		require.Equal(t, abandonedOwner, owner)
+		require.Equal(t, claimedAt, sameClaim)
+		require.True(t, leaseStillLive, "the fixture must crash before the unchanged lease expires")
+		early, err = repository.NewAuthCacheInvalidationOutboxRepository(db).Claim(ctx, "fixture-after-crash", 1, 30*time.Second)
+		require.NoError(t, err)
+		require.Empty(t, early, "process death must not bypass the original committed lease")
+		for node := range nodes {
+			dbReads, l2Reads := repositories[node].reads.Load(), caches[node].reads.Load()
+			require.Equal(t, http.StatusNoContent, probe(node, target.Key).Code)
+			require.Equal(t, http.StatusNoContent, probe(node, control.Key).Code)
+			require.Equal(t, dbReads, repositories[node].reads.Load())
+			require.Equal(t, l2Reads, caches[node].reads.Load())
+		}
+	}
 	workerCache := sharedCache
 	const (
 		workerUser     = "auth-fixture-worker"
@@ -300,6 +341,9 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 	var retryAt time.Time
 	var retryAttempts int
 	firstPassBudget := 5 * time.Second
+	if scenario.crashClaim {
+		firstPassBudget = 45 * time.Second // The worker retains its original 30-second claim lease.
+	}
 	if rejectCommand {
 		require.Eventually(t, func() bool {
 			denied := observed.denied.Load()
@@ -361,6 +405,20 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 		"SELECT delivery_stage, available_at > NOW() FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).Scan(&stage, &future))
 	require.Equal(t, 1, stage)
 	require.True(t, future, "keep the existing delayed second pass; do not accelerate or claim final ack")
+	if scenario.crashClaim {
+		var recoveredID int64
+		var attempts int
+		var owner sql.NullString
+		var leaseExpired bool
+		require.NoError(t, db.QueryRowContext(ctx,
+			"SELECT id, attempts, claimed_by, NOW() >= $2 FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey, abandonedUntil).
+			Scan(&recoveredID, &attempts, &owner, &leaseExpired))
+		require.Equal(t, abandonedEventID, recoveredID, "take over the existing event instead of replacing it")
+		require.Zero(t, attempts, "lease expiry is not an explicit Redis failure retry")
+		require.False(t, owner.Valid)
+		require.True(t, leaseExpired, "the new worker cannot complete before the original lease expires")
+		require.ErrorContains(t, repository.NewAuthCacheInvalidationOutboxRepository(db).DeleteClaimed(ctx, abandonedEventID, abandonedOwner), "no longer owned")
+	}
 	if rejectCommand {
 		var attempts int
 		var lastError sql.NullString
