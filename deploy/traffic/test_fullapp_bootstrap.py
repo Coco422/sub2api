@@ -218,6 +218,9 @@ class RealApplicationBootstrapTest(unittest.TestCase):
                "--label", "sub2api.fixture=" + self.prefix, "--memory", memory,
                "--memory-swap", memory, "--cpus", cpus, "--pids-limit", "128",
                "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=1",
+               # Local driver defaults compression on, but a single retained
+               # file cannot be compressed. Keep the 1MiB/one-file cap intact.
+               "--log-opt", "compress=false",
                *options, image, *command)
         actual = json.loads(docker("inspect", "--format",
                                    '{"memory":{{.HostConfig.Memory}},"swap":{{.HostConfig.MemorySwap}},'
