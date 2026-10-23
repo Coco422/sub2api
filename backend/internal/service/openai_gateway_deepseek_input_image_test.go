@@ -200,6 +200,7 @@ func TestForwardResponsesDeepSeekExplicitImageSchema(t *testing.T) {
 				result, err := svc.Forward(context.Background(), c, account, body)
 				require.NoError(t, err)
 				require.NotNil(t, result)
+				require.Len(t, upstream.requests, 1, "schema selection must not probe or replay")
 				image := gjson.GetBytes(upstream.lastBody, "input.0.content.1")
 				require.Equal(t, deepSeekInputImageDataURI, image.Get(field).String())
 				other := "url"

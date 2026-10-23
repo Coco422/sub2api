@@ -15,6 +15,7 @@ func TestSchedulerMemoForkNestedWritesStayRequestLocal(t *testing.T) {
 	cache, _, _ := newSchedulerCacheMemoUnit(t, 16)
 	bucket := memoTestBucket(970)
 	account := memoTestAccount(971, "a")
+	account.Credentials[service.DeepSeekResponsesImageFieldCredential] = "url"
 	account.Extra["model_rate_limits"] = map[string]any{"scope": map[string]any{"reason": "original"}}
 	account.AccountGroups = []service.AccountGroup{{AccountID: account.ID, GroupID: bucket.GroupID, AllowedModels: []string{"claude-sonnet"}}}
 	memoPublish(t, cache, bucket, account)
@@ -38,6 +39,7 @@ func TestSchedulerMemoForkNestedWritesStayRequestLocal(t *testing.T) {
 	wg.Wait()
 	actual := memoRead(t, cache, bucket)[0]
 	require.Equal(t, "sonnet-a", actual.GetMappedModel("claude-sonnet"))
+	require.Equal(t, "url", actual.GetCredential(service.DeepSeekResponsesImageFieldCredential))
 	require.Equal(t, "original", actual.Extra["model_rate_limits"].(map[string]any)["scope"].(map[string]any)["reason"])
 	require.Equal(t, []string{"claude-sonnet"}, actual.AccountGroups[0].AllowedModels)
 }
