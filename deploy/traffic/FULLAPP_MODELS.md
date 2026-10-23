@@ -108,3 +108,21 @@ normal4 和在途 drain2 已在基线 `2da2bf9ae` 双事件 CI 成功，之后�
 这验证两条已重叠在途请求共同释放后两个app的完整结算保留，不声称强制两个SQL事务物理同时，也不证明同billing身份去重竞争、第三请求上限或所有race。原六个case AST/全部断言、tagged Go工具/生产代码/账本、硬资源/internal网/超时/清理均不改；suite显式7项。每条hold仍最多12秒，最终只读结算12秒，恰好两模型POST。
 
 本轮固定production `5e9bbe994`，保留已合并其他改动；本机仅源码静态，新动态必须后续精确head双push/PR真实bootstrap6+模型7和全部适用CI/security/Caddy通过。多账号、同billing身份争抢、真实双机、透明续接/长期媒体语义仍未验，不借本测试新增生产策略。
+
+## 后续最小边界：现有多账号策略在无响应 EOF 后重新接受请求
+
+#547 head `c7b519b40` 的双事件 bootstrap6+模型6及全部适用 CI 已通过并合并。本轮固定production `5e9bbe994`，新增独立 fresh fixture `test_existing_multi_account_failover_can_accept_again_after_ambiguous_eof`，只记录当前普通 apikey 的策略，不将单账号无重放结论扩大到多账号，也不新增更保守或更积极的重试行为。
+
+tagged工具的显式 `seed-multi` 沿真实 repository 能力接口原子创建两个合法、可调度的 root/global账号，各自使用不同合成凭据、绑定同一group，并写入同一真实调度快照。两者同优先级，不假定随机/负载选择顺序。工具 `status-multi` 只读观察两个账号各自的usage/tokens和槽位、共享Key dedup和用户余额；旧单账号seed/status与原六case保持兼容。
+
+客户端通过真实 Caddy/完整应用只发**一次**合法模型 POST。合成上游第一次已读完body/认证并增加accepted，在任何响应前hijack EOF；之后接受的另一个账号按现有策略正常完成。原应用没有获得“首次已被接受”的额外信号，既有普通EOF→failover路径不改。用例要求总upstream accepted=2、completed=1、两个不同账号各accepted=1；有终态的账号usage=1/tokens7+2，没终态的账号本地usage=0，Key dedup=1、合成余额9.999989，user/key/两account槽位均0、应用存活且cleanup成功。固定报告明确标记自动改选账号后重新接受已观察到，**不能标为零重放/最多一次保证**。
+
+这是同一个入口请求在所选完整app内部的账号failover；不能冒充客户端跨节点自动重放或两个入口app都收到该POST。计数证明首次接受，不声称首次已完成生成，更不能因本地没有usage就断言真实供应商不会执行或收费。真实供应商的第一次费用不在本fixture模型内，报告标为未建模/未知。
+
+原有客户端取消/插件RequestSent/Copilot特殊保护、普通EOF的failover、切换预算和账本策略均保留。是否在普通HTTP已发且结果不明时停止重放，仍需独立选择可用性/重复风险和兼容范围；供应商幂等也不是通用能力，本用例不作选择。恰好1条客户端POST、2次上游接受，读流8秒/只读结算12秒沿旧预算，不扩大硬资源/internal网/CI/cleanup，原六个case AST不变、显式suite7。
+
+新增源码本机仅静态；新精确head必须远端双push/PR实际bootstrap6+模型7和全部CI/security/Caddy通过。多账号本场景仅为当前策略的有界现状证据，其他pool重试/全部故障类型/同billing身份并发、真实两机、透明续接和长期媒体仍未覆盖。不将旧547或其他未推切片的绿色套到这里。
+
+## PR549整合范围
+
+本次在已验99bf双成功切片上仅整合243f多账号无响应EOF，双成功用例及原七类AST完整保留，suite明确8项。上述两个单片各自suite7/待验描述为历史开发检查点；最终整合head必须新双事件bootstrap6+模型8及全部CI/security/Caddy重新验证，不能沿99bf旧绿。未包含后续partial多账号对照或HTTP attempt增量，生产策略、原资源/隔离/预算不改。

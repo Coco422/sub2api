@@ -595,6 +595,81 @@ class FullApplicationConcurrentSuccessTest(FullApplicationConcurrentFailureTest)
         self.phase("both-successful-app-requests-settled-once-exact-debit-all-slots-clean")
 
 
+class FullApplicationMultiAccountEOFTest(FullApplicationAcceptedEOFTest):
+    def fixture_command(self, operation):
+        mapped = {"seed": "seed-multi", "status": "status-multi"}.get(operation, operation)
+        value = super().fixture_command(mapped)
+        if operation == "seed":
+            self.assertGreater(value["peer_account_id"], 0)
+            self.assertNotEqual(value["peer_account_id"], value["account_id"])
+            self.fixture_input["peer_account_id"] = value["peer_account_id"]
+        return value
+
+    def multi_stats(self):
+        connection = http.client.HTTPConnection(*self.model_endpoint, timeout=2)
+        try:
+            connection.request("GET", "/fixture/multi-stats")
+            response = connection.getresponse()
+            self.addCleanup(response.close)
+            self.assertEqual(response.status, 200)
+            result = json.loads(response.read(4096))
+            response.close()
+            return result
+        finally:
+            connection.close()
+
+    def test_existing_multi_account_failover_can_accept_again_after_ambiguous_eof(self):
+        self.assertEqual(self.multi_stats(), {"primary_accepted": 0, "peer_accepted": 0,
+                                             "primary_completed": 0, "peer_completed": 0})
+        # Exactly ONE client POST. Whichever legal account is selected first
+        # fully accepts it then closes before any response. The next distinct
+        # account completes under the existing unmodified application policy.
+        # This characterizes reacceptance; it must never be labeled no replay.
+        code, target, payload = self.post_model("fixture-multi-account-accepted-eof", "multi-account-eof-once")
+        self.assertEqual(code, 200)
+        self.assertIn(target, {app + ":8080" for app in self.apps})
+        self.assertIn(b'"response.completed"', payload)
+        self.phase("one-client-post-existing-failover-completes-after-first-accepted-response-eof")
+
+        def settled():
+            counts = self.multi_stats()
+            status = self.fixture_command("status")
+            return (self.model_stats() == {"accepted": 2, "completed": 1, "active": 0}
+                    and counts["primary_accepted"] == counts["peer_accepted"] == 1
+                    and counts["primary_completed"] + counts["peer_completed"] == 1
+                    and status["usage_rows"] == counts["primary_completed"]
+                    and status["peer_usage_rows"] == counts["peer_completed"]
+                    and status["dedup_rows"] == 1
+                    and status["input_tokens"] == 7 * counts["primary_completed"]
+                    and status["output_tokens"] == 2 * counts["primary_completed"]
+                    and status["peer_input_tokens"] == 7 * counts["peer_completed"]
+                    and status["peer_output_tokens"] == 2 * counts["peer_completed"]
+                    and status["balance"] == 9.999989
+                    and status["user_slots"] == status["api_key_slots"] == 0
+                    and status["account_slots"] == status["peer_account_slots"] == 0)
+
+        bootstrap.eventually(settled, 12, "existing two-account failover reaccepts once and settles observed usage only")
+        self.assertTrue(all(self.state(app)["Running"] for app in self.apps))
+        counts = self.multi_stats()
+        status = self.fixture_command("status")
+        self.report["multi_account_eof_verification"] = {"authenticated_client_posts": 1,
+                                                        "eligible_upstream_accounts": 2,
+                                                        "upstream_acceptances": 2, "observed_completions": 1,
+                                                        "primary_accepted": counts["primary_accepted"],
+                                                        "peer_accepted": counts["peer_accepted"],
+                                                        "primary_completed": counts["primary_completed"],
+                                                        "peer_completed": counts["peer_completed"],
+                                                        "primary_usage_rows": status["usage_rows"],
+                                                        "peer_usage_rows": status["peer_usage_rows"],
+                                                        "dedup_rows": 1, "input_tokens": 7, "output_tokens": 2,
+                                                        "balance_final": status["balance"], "all_slots_final": 0,
+                                                        "automatic_account_reacceptance_observed": True,
+                                                        "first_attempt_external_billing": "not modeled; cannot infer from local usage",
+                                                        "scope": "existing failover characterization; not an at-most-once guarantee"}
+        self.phase("two-distinct-accounts-accepted-one-client-post-observed-local-settlement-slots-clean")
+
+
+
 if __name__ == "__main__":
     # The original bootstrap suite still runs as its existing CI step. This
     # Explicit cases avoid rerunning inherited tests as accidental duplicates.
@@ -605,6 +680,7 @@ if __name__ == "__main__":
         FullApplicationAcceptedEOFTest("test_accepted_model_request_eof_is_not_replayed_or_settled_as_success"),
         FullApplicationClientCancelTest("test_client_cancel_drains_existing_upstream_usage_once_and_peer_can_continue"),
         FullApplicationConcurrentFailureTest("test_failed_concurrent_stream_releases_only_its_lease_and_peer_settles_once"),
-        FullApplicationConcurrentSuccessTest("test_two_held_successes_release_together_and_preserve_both_settlements")])
+        FullApplicationConcurrentSuccessTest("test_two_held_successes_release_together_and_preserve_both_settlements"),
+        FullApplicationMultiAccountEOFTest("test_existing_multi_account_failover_can_accept_again_after_ambiguous_eof")])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(0 if result.wasSuccessful() else 1)
