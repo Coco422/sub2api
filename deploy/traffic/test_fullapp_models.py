@@ -614,6 +614,18 @@ class FullApplicationMultiAccountEOFTest(FullApplicationAcceptedEOFTest):
             self.assertEqual(response.status, 200)
             result = json.loads(response.read(4096))
             response.close()
+            attempts = {"primary_http_attempts": result.pop("primary_http_attempts"),
+                        "peer_http_attempts": result.pop("peer_http_attempts")}
+            self.assertEqual(attempts["primary_http_attempts"], result["primary_accepted"],
+                             "all observed primary HTTP attempts in this fixture must be accounted for")
+            self.assertEqual(attempts["peer_http_attempts"], result["peer_accepted"],
+                             "all observed peer HTTP attempts in this fixture must be accounted for")
+            observation = {**attempts, **result,
+                           "scope": "synthetic upstream HTTP arrivals; excludes pre-arrival network failures"}
+            self.report["observed_multi_account_http_attempts"] = observation
+            if getattr(self, "last_attempt_observation", None) != observation:
+                print("isolated multi-account attempt observation: " + json.dumps(observation), flush=True)
+                self.last_attempt_observation = observation
             return result
         finally:
             connection.close()

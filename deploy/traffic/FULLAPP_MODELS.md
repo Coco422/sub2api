@@ -136,3 +136,5 @@ tagged工具的显式 `seed-multi` 沿真实 repository 能力接口原子创建
 原六case及先前accepted多账号case AST不变，显式suite8；新base仍固定5e9，原硬资源/internal网络/8秒读流和12秒只读收尾/cleanup/CI预算不变。新增对照同样只有1客户端模型POST，未混入独立99bf双成功切片。最终组合源码本机仅静态，须新精确head远端双事件bootstrap6+模型8及全部CI/security/Caddy实际验收，失败据原joblog最小定位，不改生产policy或弱化断言。
 
 本次PR549最终整合同时保留双成功，模型suite为9项（原七项加两项多账号），本章节单片suite8为历史开发检查点；最终精确head须双事件bootstrap6+models9重新验证。
+
+随后补齐按账号的 HTTP-observed attempt 计数：在合成模型 `/v1/responses` 到达、按固定合成凭据识别角色后、body解析前增加；body读完且认证/模型合法后才计accepted，终态写出后计completed。它不代表未到达上游的DNS/TCP/TLS失败或全部应用网络尝试。新多账号观察helper要求本fixture每账号observed attempts=accepted，保留两个场景原有所有断言；固定日志与报告同时列出每账号attempt/accepted/completed。无响应EOF最终各账号attempt1/accepted1、合计completion1；partial场景两账号attempt之和1/accepted之和1、completion0。原六类及两个新case测试方法AST不变，仅新多账号helper增加观察/断言，不改变生产策略或资源预算。此增补也尚未动态验证。

@@ -253,14 +253,15 @@ func run(op string) error {
 }
 
 type modelState struct {
-	mu                              sync.Mutex
-	accepted, completed, active     int
-	release                         chan struct{}
-	releaseOnce                     sync.Once
-	failureRelease                  chan struct{}
-	failureReleaseOnce              sync.Once
-	primaryAccepted, peerAccepted   int
-	primaryCompleted, peerCompleted int
+	mu                                    sync.Mutex
+	accepted, completed, active           int
+	release                               chan struct{}
+	releaseOnce                           sync.Once
+	failureRelease                        chan struct{}
+	failureReleaseOnce                    sync.Once
+	primaryAccepted, peerAccepted         int
+	primaryCompleted, peerCompleted       int
+	primaryHTTPAttempts, peerHTTPAttempts int
 }
 
 func serve() error {
@@ -291,9 +292,21 @@ func serve() error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]int{"primary_accepted": s.primaryAccepted,
-			"peer_accepted": s.peerAccepted, "primary_completed": s.primaryCompleted, "peer_completed": s.peerCompleted})
+			"peer_accepted": s.peerAccepted, "primary_completed": s.primaryCompleted, "peer_completed": s.peerCompleted,
+			"primary_http_attempts": s.primaryHTTPAttempts, "peer_http_attempts": s.peerHTTPAttempts})
 	})
 	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
+		primary := r.Header.Get("Authorization") == "Bearer synthetic-upstream-only"
+		peer := r.Header.Get("Authorization") == "Bearer synthetic-upstream-peer"
+		// Observed HTTP arrivals, before body parsing/acceptance. These do not
+		// count application attempts that fail DNS/TCP/TLS before reaching us.
+		s.mu.Lock()
+		if primary {
+			s.primaryHTTPAttempts++
+		} else if peer {
+			s.peerHTTPAttempts++
+		}
+		s.mu.Unlock()
 		var body struct {
 			Model string          `json:"model"`
 			Input json.RawMessage `json:"input"`
@@ -306,8 +319,7 @@ func serve() error {
 		multiAcceptedEOF := bytes.Contains(body.Input, []byte("fixture-multi-account-accepted-eof"))
 		multiPartialEOF := bytes.Contains(body.Input, []byte("fixture-multi-account-partial-eof"))
 		multi := multiAcceptedEOF || multiPartialEOF
-		peer := r.Header.Get("Authorization") == "Bearer synthetic-upstream-peer"
-		if r.Header.Get("Authorization") != "Bearer synthetic-upstream-only" && !(multi && peer) {
+		if !primary && !(multi && peer) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
