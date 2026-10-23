@@ -31,3 +31,5 @@ jobs:
           echo "CADDY_BIN=$proxy_fixture_dir/caddy" >> "$GITHUB_ENV"
       - name: Real proxy and two synthetic HTTP SSE origins
         run: python3 deploy/traffic/test_caddy_responses.py
+      - name: Verified HTTPS origins with synthetic CA and SNI failures
+        run: python3 deploy/traffic/test_caddy_responses_tls.py

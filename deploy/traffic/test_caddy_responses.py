@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import select
 import socket
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -31,6 +32,7 @@ def eventually(predicate, timeout=8):
 class OriginState:
     def __init__(self, name):
         self.name = name
+        self.peek_flags = socket.MSG_PEEK
         self.lock = threading.Lock()
         self.ready = True
         self.health_checks = 0
@@ -112,16 +114,22 @@ def origin_handler(state):
                 if mode == "partial":
                     self.connection.shutdown(socket.SHUT_RDWR)
                     return
+                if state.peek_flags == 0:
+                    self.connection.settimeout(0.2)  # TLS recv cannot use MSG_PEEK.
                 while not release.is_set() and not state.stop.is_set():
                     readable, _, _ = select.select([self.connection], [], [], 0.05)
-                    if readable and self.connection.recv(1, socket.MSG_PEEK) == b"":
+                    try:
+                        closed = readable and self.connection.recv(1, state.peek_flags) == b""
+                    except TimeoutError:
+                        continue
+                    if closed:
                         with state.lock:
                             state.cancelled.add(token)
                         return
                 if release.is_set():
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
                 with state.lock:
                     state.cancelled.add(token)
             finally:
@@ -133,6 +141,17 @@ def origin_handler(state):
 
 
 class CaddyResponsesTest(unittest.TestCase):
+    template = TEMPLATE
+
+    def prepare_origins(self):
+        pass
+
+    def configure_origin(self, server, state):
+        pass
+
+    def extra_environment(self):
+        return {}
+
     def setUp(self):
         self.binary = os.environ["CADDY_BIN"]
         version = subprocess.check_output([self.binary, "version"], text=True, timeout=5)
@@ -140,10 +159,16 @@ class CaddyResponsesTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="s2-caddy-")
         self.addCleanup(self.temp.cleanup)
         self.states = [OriginState("a"), OriginState("b")]
+        self.prepare_origins()
         self.origins = []
         for state in self.states:
             server = ThreadingHTTPServer(("127.0.0.1", 0), origin_handler(state))
             server.daemon_threads = True
+            try:
+                self.configure_origin(server, state)
+            except Exception:
+                server.server_close()
+                raise
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             self.origins.append(server)
@@ -161,18 +186,23 @@ class CaddyResponsesTest(unittest.TestCase):
             "XDG_DATA_HOME": self.temp.name,
             "XDG_CONFIG_HOME": self.temp.name,
         })
+        env.update(self.extra_environment())
+        self.proxy_env = env
         self.log = open(Path(self.temp.name) / "caddy.log", "wb")
         self.addCleanup(self.log.close)
+        self.start_caddy(env)
+        eventually(lambda: all(s.health_checks >= 2 for s in self.states))
+
+    def start_caddy(self, env):
         # Parser errors may be printed in CI; this configuration contains only
         # synthetic local fixture addresses and no credentials/request bodies.
-        subprocess.run([self.binary, "validate", "--config", str(TEMPLATE), "--adapter", "caddyfile"],
+        subprocess.run([self.binary, "validate", "--config", str(self.template), "--adapter", "caddyfile"],
                        env=env, check=True, timeout=10)
         self.caddy = subprocess.Popen(
-            [self.binary, "run", "--config", str(TEMPLATE), "--adapter", "caddyfile"],
+            [self.binary, "run", "--config", str(self.template), "--adapter", "caddyfile"],
             env=env, stdout=self.log, stderr=self.log)
         self.addCleanup(self.close_caddy)
         eventually(self.listening)
-        eventually(lambda: all(s.health_checks >= 2 for s in self.states))
 
     def listening(self):
         self.assertIsNone(self.caddy.poll(), "Caddy must stay alive")
