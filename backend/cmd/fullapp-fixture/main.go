@@ -147,7 +147,11 @@ func run(op string) error {
 				"model_mapping": map[string]string{"gpt-6.1-sol": "gpt-6.1-sol"}},
 			Extra: map[string]any{"openai_passthrough": true}}
 		fixtureStage = "create-account-group"
-		if err := accounts.CreateWithAccountGroups(ctx, account, []service.AccountGroup{{GroupID: group.ID, Priority: 1}}); err != nil {
+		atomicCreator, ok := accounts.(service.AccountDuplicateRepository)
+		if !ok {
+			return errors.New("fixture requires atomic account/group repository capability")
+		}
+		if err := atomicCreator.CreateWithAccountGroups(ctx, account, []service.AccountGroup{{GroupID: group.ID, Priority: 1}}); err != nil {
 			return err
 		}
 		fixtureStage = "hydrate-account"
