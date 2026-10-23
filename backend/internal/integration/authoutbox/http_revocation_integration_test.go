@@ -116,11 +116,30 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 	require.False(t, scenario.crashClaim && (scenario.rejectDelete || scenario.rejectPublish), "keep claim crash and Redis command failure checkpoints separate")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	checkCtx, stopCheck := context.WithTimeout(ctx, 10*time.Second)
-	// Fixed test-runner tool only; no application endpoint or credentials.
-	dockerErr := exec.CommandContext(checkCtx, "docker", "info").Run()
+	// The CI daemon can briefly stall while other isolated packages start
+	// containers. Retry only this side-effect-free readiness query, with both
+	// a total budget and a deadline on every attempt. Missing Docker still
+	// fails in CI; no application request or fixture assertion is retried here.
+	checkCtx, stopCheck := context.WithTimeout(ctx, 30*time.Second)
+	dockerReady := func() bool {
+		for {
+			attemptCtx, stopAttempt := context.WithTimeout(checkCtx, 3*time.Second)
+			err := exec.CommandContext(attemptCtx, "docker", "info").Run()
+			stopAttempt()
+			if err == nil {
+				return true
+			}
+			timer := time.NewTimer(200 * time.Millisecond)
+			select {
+			case <-checkCtx.Done():
+				timer.Stop()
+				return false
+			case <-timer.C:
+			}
+		}
+	}()
 	stopCheck()
-	if dockerErr != nil {
+	if !dockerReady {
 		if os.Getenv("CI") != "" {
 			t.Fatal("Docker is required for the isolated auth outbox fixture in CI")
 		}
