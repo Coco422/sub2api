@@ -303,7 +303,7 @@ func TestIsHTMLResponse(t *testing.T) {
 }
 
 func TestCloudflare1010AcrossForkPlatformsDoesNotPenalize(t *testing.T) {
-	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformAntigravity, PlatformDeepseek, PlatformKimi, PlatformZhipu, PlatformMinimax, PlatformCline, PlatformGrok} {
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformAntigravity, PlatformDeepseek, PlatformKimi, PlatformZhipu, PlatformMiniMax, PlatformCline, PlatformGrok} {
 		t.Run(platform, func(t *testing.T) {
 			repo := &rateLimitAccountRepoStub{}
 			counter := &countingOpenAI403CounterCache{}
