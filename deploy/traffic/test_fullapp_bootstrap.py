@@ -28,6 +28,30 @@ class FixtureFailure(RuntimeError):
     pass
 
 
+def docker_failure_flags(text):
+    """Return fixed classifications only; input may contain credentials/paths."""
+    text = text.lower()
+    signatures = {
+        "logging_options": ("log opt", "log-opt", "logging driver", "max-file", "max-size"),
+        "cgroup": ("cgroup",),
+        "cpu_limit": ("cpu", "cfs"),
+        "memory_limit": ("memory", "swap"),
+        "process_limit": ("pids", "resource temporarily unavailable"),
+        "network_setup": ("network", "iptables", "nftables", "ipam", "veth"),
+        "mount_setup": ("mount", "read-only file system"),
+        "permission": ("permission denied", "operation not permitted"),
+        "runtime_start": ("oci runtime", "runc", "create task", "create shim"),
+        "security_policy": ("apparmor", "seccomp"),
+        "disk_space": ("no space left",),
+        "image_or_binary": ("executable file not found", "no such image", "exec format"),
+        "invalid_option": ("unknown flag", "invalid argument", "invalid option"),
+    }
+    flags = {name: any(signature in text for signature in needles)
+             for name, needles in signatures.items()}
+    flags["unclassified"] = not any(flags.values())
+    return flags
+
+
 def docker(*args, timeout=30, check=True):
     # Output may contain fixture passwords or config. Never echo Docker argv,
     # stdout/stderr or CalledProcessError to ordinary CI logs/artifacts.
@@ -37,7 +61,9 @@ def docker(*args, timeout=30, check=True):
     except subprocess.TimeoutExpired:
         raise FixtureFailure("isolated Docker operation exceeded budget") from None
     if check and result.returncode:
-        raise FixtureFailure("isolated Docker operation failed: exit " + str(result.returncode))
+        flags = docker_failure_flags(result.stderr)
+        raise FixtureFailure("isolated Docker operation failed: exit " + str(result.returncode)
+                             + " classifications=" + json.dumps(flags, sort_keys=True))
     return result
 
 
@@ -247,7 +273,8 @@ class RealApplicationBootstrapTest(unittest.TestCase):
                 state = json.loads(inspected.stdout)
                 self.report["containers"].append({"role": name.removeprefix(self.prefix + "-"),
                                                    "OOMKilled": state["OOMKilled"],
-                                                   "ExitCode": state["ExitCode"]})
+                                                   "ExitCode": state["ExitCode"],
+                                                   "start_error_flags": docker_failure_flags(state.get("Error", ""))})
                 if "-app-" in name:
                     # Classify ONLY this synthetic application's bounded log.
                     # Export fixed booleans, never raw errors/config/SQL/URLs.
@@ -328,6 +355,23 @@ class RealApplicationBootstrapTest(unittest.TestCase):
         self.assertFalse(self.state(self.apps[0])["OOMKilled"])
         self.assertTrue(self.state(self.apps[1])["Running"])
         self.phase("real-sigterm-drain-clean-exit-peer-still-serving")
+
+
+class DockerFailureClassificationTest(unittest.TestCase):
+    def test_fixed_diagnostics_do_not_echo_sensitive_input(self):
+        sensitive = "token=fixture-secret /private/fixture-path 192.0.2.7"
+        for message, expected in (
+                ("invalid log opt max-file " + sensitive, "logging_options"),
+                ("OCI runtime failed to create task: pids limit " + sensitive, "process_limit"),
+                ("network iptables permission denied " + sensitive, "network_setup"),
+                ("unexpected failure " + sensitive, "unclassified")):
+            with self.subTest(category=expected):
+                flags = docker_failure_flags(message)
+                self.assertTrue(flags[expected])
+                encoded = json.dumps(flags)
+                for value in (sensitive, "fixture-secret", "/private/fixture-path", "192.0.2.7"):
+                    self.assertNotIn(value, encoded)
+                self.assertTrue(all(isinstance(value, bool) for value in flags.values()))
 
 
 if __name__ == "__main__":
