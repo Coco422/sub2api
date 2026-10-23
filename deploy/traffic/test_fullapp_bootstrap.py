@@ -75,12 +75,12 @@ def application_failure_flags(text):
     return flags
 
 
-def docker(*args, timeout=30, check=True):
+def docker(*args, timeout=30, check=True, input_text=None):
     # Output may contain fixture passwords or config. Never echo Docker argv,
     # stdout/stderr or CalledProcessError to ordinary CI logs/artifacts.
     try:
         result = subprocess.run(["docker", *map(str, args)], capture_output=True,
-                                text=True, timeout=timeout, check=False)
+                                text=True, timeout=timeout, check=False, input=input_text)
     except subprocess.TimeoutExpired:
         raise FixtureFailure("isolated Docker operation exceeded budget") from None
     if check and result.returncode:
@@ -100,6 +100,12 @@ def eventually(predicate, seconds, label):
 
 
 class RealApplicationBootstrapTest(unittest.TestCase):
+    def fixture_pricing(self):
+        return {"gpt-6.1-sol": {"input_cost_per_token": 0, "output_cost_per_token": 0}}
+
+    def configure_application(self, cfg):
+        pass
+
     def setUp(self):
         self.assertEqual(os.environ.get("CI"), "true", "CI-only; never run on a production host")
         self.binary = Path(os.environ["FULLAPP_BIN"]).resolve(strict=True)
@@ -168,8 +174,7 @@ class RealApplicationBootstrapTest(unittest.TestCase):
             directory.mkdir(mode=0o700)
             pricing = directory / "pricing"
             pricing.mkdir()
-            (pricing / "model_pricing.json").write_text(json.dumps({
-                "gpt-6.1-sol": {"input_cost_per_token": 0, "output_cost_per_token": 0}}))
+            (pricing / "model_pricing.json").write_text(json.dumps(self.fixture_pricing()))
             cfg = {"timezone": "UTC", "run_mode": "standard",
                    "runtime": {"role": "gateway", "node_id": "bootstrap-" + node},
                    "server": {"host": "0.0.0.0", "port": 8080, "mode": "release",
@@ -189,6 +194,7 @@ class RealApplicationBootstrapTest(unittest.TestCase):
                    # only fixed classifications below ever leave the container.
                    "log": {"level": "info", "output": {"to_stdout": True, "to_file": False}},
                    "plugins": {"data_dir": "/fixture/node/plugins"}}
+            self.configure_application(cfg)
             config = directory / "config.yaml"
             config.write_text(json.dumps(cfg))  # JSON is accepted by the YAML loader.
             config.chmod(0o600)

@@ -52,9 +52,28 @@ jobs:
       - name: Initialize two full Sub2API applications and real Caddy in isolation
         timeout-minutes: 15
         run: python3 deploy/traffic/test_fullapp_bootstrap.py
+      - name: Build isolated seed and model fixture only
+        working-directory: backend
+        env:
+          CGO_ENABLED: '0'
+          GOMAXPROCS: '1'
+          GOFLAGS: '-p=1'
+        run: |
+          set -euo pipefail
+          go build -tags=fullappfixture -trimpath \
+            -o "$RUNNER_TEMP/sub2api-fullapp/fullapp-fixture" ./cmd/fullapp-fixture
+          echo "FULLAPP_FIXTURE_BIN=$RUNNER_TEMP/sub2api-fullapp/fullapp-fixture" >> "$GITHUB_ENV"
+      - name: Authenticated model SSE through two complete applications
+        timeout-minutes: 15
+        env:
+          FULLAPP_REPORT: ${{ runner.temp }}/sub2api-fullapp/model-result.json
+        run: python3 deploy/traffic/test_fullapp_models.py
       - name: Save bounded fixture metadata, no config or application logs
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/sub2api-fullapp/result.json" ]; then
             cat "$RUNNER_TEMP/sub2api-fullapp/result.json"
+          fi
+          if [ -f "$RUNNER_TEMP/sub2api-fullapp/model-result.json" ]; then
+            cat "$RUNNER_TEMP/sub2api-fullapp/model-result.json"
           fi

@@ -31,3 +31,5 @@ CI `release-helpers`执行`test_multihost_preflight.py`，覆盖合法双节点�
 可选的独立 L7 样例与真实代理回归见 [Caddy HTTP Responses 多目标入口](CADDY_RESPONSES.md)。它与此静态预检分开，不修改应用或默认单机站点，不配置 DNS/生产；新增行为测试结果需精确 head CI，不能用预检成功替代。
 
 两个完整 `cmd/server` 应用的独占 DB/Redis、网络与资源隔离初始化前置见 [完整应用隔离 bootstrap](FULLAPP_BOOTSTRAP.md)。它实际启动应用二进制和真实 Caddy，只先验证初始化/readiness/未鉴权路由/空闲 SIGTERM drain；模型 SSE、已接收请求不重放及取消组合仍待合法隔离种子和假模型通道，不能把部件进程或 HTTP401 冒充完成。
+
+真实模型链的首个离线切片见 [完整双应用模型 SSE fixture](FULLAPP_MODELS.md)：显式tag种子工具、internal合成gpt-6.1-sol上游、真实鉴权/调度/用量去重/并发收尾。新源码与CI入口不等于动态已通过；在途drain/EOF/partial/取消故障模式仍待后续沿真实应用链验证。
