@@ -266,6 +266,23 @@ describe('admin AccountsView bulk edit scope', () => {
     }
   })
 
+  it('does not reload an unmounted filter view after its debounce expires', async () => {
+    vi.useFakeTimers()
+    const wrapper = mountProbeView({ AccountTableFilters: FilterValuesStub })
+    try {
+      await flushPromises()
+      expect(listAccounts).toHaveBeenCalledTimes(1)
+      await wrapper.get('[data-test="persist-filters"]').trigger('click')
+      wrapper.unmount()
+      await vi.advanceTimersByTimeAsync(301)
+      await flushPromises()
+      expect(listAccounts).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('freezes filtered results as explicit IDs before opening bulk edit', async () => {
     listAccounts.mockResolvedValue(probePage([7, 11]))
     const wrapper = mount(AccountsView, {
