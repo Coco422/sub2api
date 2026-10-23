@@ -60,7 +60,8 @@ class FullApplicationModelSSETest(bootstrap.RealApplicationBootstrapTest):
         # stdin only: no key/config/DSN in Docker argv or report. The helper
         # rejects endpoints that aren't this fixture's generated PG/Redis names.
         result = bootstrap.docker("exec", "--interactive", "--env", "CI_FULLAPP_FIXTURE=1",
-                                  self.apps[0], "/fixture/bin/fullapp-fixture", operation,
+                                  getattr(self, "fixture_executor", self.apps[0]),
+                                  "/fixture/bin/fullapp-fixture", operation,
                                   input_text=json.dumps(self.fixture_input), timeout=15, check=False)
         if result.returncode:
             stages = ("input", "create-user", "create-group", "create-key", "create-account-group",
@@ -134,10 +135,110 @@ class FullApplicationModelSSETest(bootstrap.RealApplicationBootstrapTest):
         self.phase("both-full-app-model-sse-and-unique-settlement-verified")
 
 
+class FullApplicationInflightDrainTest(FullApplicationModelSSETest):
+    def model_post(self, marker, hold=False):
+        connection = http.client.HTTPConnection(*self.edge_port, timeout=12)
+        self.addCleanup(connection.close)
+        body = {"model": "gpt-6.1-sol", "input": "fixture-hold-until-release" if hold else "synthetic fixture",
+                "stream": True}
+        connection.request("POST", "/v1/responses", body=json.dumps(body), headers={
+            "Host": "api.fixture.invalid", "Content-Type": "application/json",
+            "Authorization": "Bearer " + self.key, "X-Client-Request-ID": marker})
+        response = connection.getresponse()
+        self.addCleanup(response.close)
+        self.assertEqual(response.status, 200)
+        self.assertIn("text/event-stream", response.getheader("Content-Type", ""))
+        return connection, response
+
+    def release_model(self):
+        connection = http.client.HTTPConnection(*self.model_endpoint, timeout=2)
+        try:
+            connection.request("POST", "/fixture/release", body="")
+            response = connection.getresponse()
+            response.read(1024)
+            self.assertEqual(response.status, 204)
+        finally:
+            connection.close()
+
+    def test_inflight_sse_finishes_on_draining_owner_and_new_model_reaches_peer_once(self):
+        old_connection, old_response = self.model_post("drain-old-stream", hold=True)
+        owner_target = old_response.getheader("X-Fixture-Target")
+        self.assertIn(owner_target, {app + ":8080" for app in self.apps})
+        owner = next(index for index, app in enumerate(self.apps) if app + ":8080" == owner_target)
+        peer = 1 - owner
+        # Read an actual delta before signaling; a completed/buffered response
+        # cannot satisfy the in-flight checkpoint.
+        for _ in range(12):
+            line = old_response.readline(4096)
+            self.assertTrue(line, "held stream must stay open until release")
+            if b"response.output_text.delta" in line:
+                break
+        else:
+            self.fail("held model did not emit its first text delta")
+        self.assertEqual(self.model_stats(), {"accepted": 1, "completed": 0, "active": 1})
+        status = self.fixture_command("status")
+        self.assertEqual(status["usage_rows"], 0)
+        self.assertEqual(status["dedup_rows"], 0)
+        self.assertEqual((status["user_slots"], status["account_slots"], status["api_key_slots"]), (1, 1, 1))
+        self.phase("model-sse-held-inflight-with-real-shared-slots")
+
+        bootstrap.docker("kill", "--signal=TERM", self.apps[owner])
+        bootstrap.eventually(lambda: self.request(self.ports[owner])[0] == 503, 2,
+                             "real owner withdraws readiness before listener closes")
+        consecutive = 0
+
+        def peer_admitted():
+            nonlocal consecutive
+            code, target = self.request(self.edge_port, "/v1/responses", "POST")
+            consecutive = consecutive + 1 if code == 401 and target == self.apps[peer] + ":8080" else 0
+            return consecutive >= 4
+
+        # These are unauthenticated health-routing observations, not model
+        # retries. Only two authenticated model POSTs exist in this scenario.
+        bootstrap.eventually(peer_admitted, 3, "Caddy observes drain and routes new requests to peer")
+        self.assertEqual(self.model_stats(), {"accepted": 1, "completed": 0, "active": 1})
+        self.assertTrue(self.state(self.apps[owner])["Running"], "old SSE owner remains alive while draining")
+        new_connection, new_response = self.model_post("drain-new-peer")
+        self.assertEqual(new_response.getheader("X-Fixture-Target"), self.apps[peer] + ":8080")
+        self.assertIn(b'"response.completed"', new_response.read(65536))
+        new_response.close()
+        new_connection.close()
+        self.assertEqual(self.model_stats(), {"accepted": 2, "completed": 1, "active": 1})
+        self.phase("new-authenticated-model-completed-on-peer-old-stream-still-held")
+        self.release_model()
+        self.assertIn(b'"response.completed"', old_response.read(65536))
+        old_response.close()
+        old_connection.close()
+        wait = bootstrap.docker("wait", self.apps[owner], timeout=20)
+        self.assertEqual(wait.stdout.strip(), "0")
+        self.assertFalse(self.state(self.apps[owner])["OOMKilled"])
+        self.assertTrue(self.state(self.apps[peer])["Running"])
+
+        # The seed/status binary executes inside the peer if app-a was drained.
+        self.fixture_executor = self.apps[peer]
+
+        def settled():
+            if self.model_stats() != {"accepted": 2, "completed": 2, "active": 0}:
+                return False
+            status = self.fixture_command("status")
+            return (status["usage_rows"] == 2 and status["dedup_rows"] == 2
+                    and status["input_tokens"] == 14 and status["output_tokens"] == 4
+                    and 9 < status["balance"] < 10
+                    and status["user_slots"] == status["account_slots"] == status["api_key_slots"] == 0)
+
+        bootstrap.eventually(settled, 12, "both requests settle once and draining-owner slots release")
+        self.report["inflight_drain_verification"] = {"authenticated_posts": 2, "generated": 2,
+                                                       "completed": 2, "usage_rows": 2, "dedup_rows": 2,
+                                                       "slots": 0, "old_stream_migrated_or_replayed": False,
+                                                       "owner_exit_code": 0, "peer_serving": True}
+        self.phase("old-model-completed-on-original-owner-once-and-drain-settlement-clean")
+
+
 if __name__ == "__main__":
     # The original bootstrap suite still runs as its existing CI step. This
     # targeted entry adds only the new model case, not inherited duplicates.
-    suite = unittest.TestSuite([FullApplicationModelSSETest(
-        "test_two_real_applications_complete_sse_once_and_settle_shared_state")])
+    suite = unittest.TestSuite([
+        FullApplicationModelSSETest("test_two_real_applications_complete_sse_once_and_settle_shared_state"),
+        FullApplicationInflightDrainTest("test_inflight_sse_finishes_on_draining_owner_and_new_model_reaches_peer_once")])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(0 if result.wasSuccessful() else 1)

@@ -44,3 +44,15 @@ CGO_ENABLED=0 GOMAXPROCS=1 GOFLAGS=-p=1 go build -tags=fullappfixture -trimpath 
 这个最小依赖前置先证明两真实应用的**正常SSE/真实结算/槽位收尾**。在途旧SSE drain、新请求切peer、accept后EOF/partial流不跨节点重放、客户端取消和失败/取消后的账本/并发收尾仍须沿此合法夹具新增受控故障模式及逐请求计数，不能拿正常SSE或旧Python上游七/十项当这些完整应用场景已经通过。当前没有自动恢复/重放、长期媒体/供应商新语义，也未修改生产账本或业务策略。
 
 真实两主机、DNS、用户流量、出口字节及真实付费模型仍未验，不因隔离模型fixture就视为授权生产操作。
+
+## 后续最小切片：真实在途模型 SSE drain
+
+基于正常模型链已在 `2a13fc29f` 双事件通过的证据，新增独立新鲜 fixture 用例 `test_inflight_sse_finishes_on_draining_owner_and_new_model_reaches_peer_once`。原正常四请求用例函数体不变、仍独立执行；新模型 upstream 只新增有限 hold/release 控制，不改变生产app/gateway/账本策略。
+
+先真实鉴权发送一条合成 `gpt-6.1-sol` SSE，读取实际文本delta后证明上游accepted1/completed0/active1、真实user/account/APIKey槽均1且未入usage/dedup。随后向**实际拥有该流的完整应用**发送SIGTERM，沿原main BeginDrain→原drain delay→Shutdown/Wait/Cleanup：直接readiness503、Caddy采样收敛后无Key401观察只到peer；这类观察不调用模型，也不重发旧POST。
+
+再仅发一条新鉴权模型POST，必须由peer处理并完成；此时原流仍active1、总accepted2/completed1。随后通过同internal网的独立控制端点release原流，原响应继续返回completed，owner正常exit0无OOM、peer存活。最终上游两请求各只接受/完成一次，真实usage/dedup各2、tokens14/4、合成非零扣费、三类slots归零。status工具改在存活peer内执行，避免用已退出app查询掩盖收尾。报告仅固定计数/状态，不输出地址/Key/正文。
+
+原生产graceful_shutdown_timeout=5、shutdown_drain_delay=4及Caddy健康/零重试配置不改；新夹具hold最多12秒、读流12秒、readiness撤离2秒/Caddy新流收敛3秒、只读最终结算12秒，Docker wait20秒和原硬内存/internal隔离均保持有界。若deadline触发或原流被提前取消/重发必须失败，不能加长生产停机预算或客户端自动重放来迁就测试。
+
+本轮新切片仅源码/静态检查，尚未编译或动态执行；新精确head push/PR须显示两个独立模型用例实际执行、normal4及inflight2请求报告、所有phase/PASS/cleanup与全部原CI。acceptedEOF、partialEOF、客户端cancel后的失败结算/槽清理、并发争抢和真实两机仍未覆盖，不把此drain切片写成所有故障模式已完成。

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -211,11 +212,21 @@ func run(op string) error {
 type modelState struct {
 	mu                          sync.Mutex
 	accepted, completed, active int
+	release                     chan struct{}
+	releaseOnce                 sync.Once
 }
 
 func serve() error {
-	s := &modelState{}
+	s := &modelState{release: make(chan struct{})}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/fixture/release", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		s.releaseOnce.Do(func() { close(s.release) })
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/fixture/stats", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -223,7 +234,8 @@ func serve() error {
 	})
 	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Model string `json:"model"`
+			Model string          `json:"model"`
+			Input json.RawMessage `json:"input"`
 		}
 		if r.Method != http.MethodPost || json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&body) != nil ||
 			body.Model != "gpt-6.1-sol" || r.Header.Get("Authorization") != "Bearer synthetic-upstream-only" {
@@ -255,6 +267,16 @@ func serve() error {
 		}
 		if event("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": "msg_fixture", "output_index": 0, "content_index": 0, "delta": "OK"}) != nil {
 			return
+		}
+		if bytes.Contains(body.Input, []byte("fixture-hold-until-release")) {
+			// Synthetic control only, not a gateway replay/recovery mechanism.
+			select {
+			case <-s.release:
+			case <-r.Context().Done():
+				return
+			case <-time.After(12 * time.Second):
+				return
+			}
 		}
 		response["status"] = "completed"
 		response["output"] = []any{map[string]any{"id": "msg_fixture", "type": "message", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": "OK", "annotations": []any{}}}}}
