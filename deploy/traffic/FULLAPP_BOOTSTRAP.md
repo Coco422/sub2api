@@ -12,6 +12,7 @@
 - 在临时目录生成共享测试 JWT/TOTP、独占 DB 密码及最小 JSON 格式 YAML 配置，权限 0600。不读取已有 config.yaml、环境文件、密钥、数据库或客户记录；不给容器 GitHub token、宿主环境或 Docker socket。
 - 为两个真实应用提供各自全新目录、本地合成 `gpt-6.1-sol` 零定价文件、关闭远程定价 URL/hash。空数据库没有模型账号、用户或 API Key，不存在真实模型出口；网络层还阻断应用的外部网络。不会借本地代理连接生产。
 - 两个实际二进制容器使用宿主测试 UID/GID、只读根文件系统、移除全部 capability、禁止提权、有限 tmpfs 和进程数；每应用 memory/swap 同为 512MiB。PG 384MiB、Redis 96MiB、Caddy 256MiB，也禁止额外 swap。这些是容器硬限制，不能与 Go 的软内存提示混淆。编译只在远端 runner 单槽执行，未声称编译进程峰值低于 1GiB。
+- 应用和 Caddy 不请求或发布宿主端口。专用 Linux Docker runner 从宿主直接访问本轮唯一 internal bridge 的私有 IPv4，断言进程存活、仅附着本轮网络、有地址、无 HostConfig.PortBindings 或实际映射；不接入外部/默认/host 网络、不修改防火墙、不输出地址。取得端点不表示 readiness 成功，后续仍须实际 `/readyz` 返回 200。
 - 验证编译 commit、实际容器 entrypoint 为 `/fixture/bin/sub2api`、Args 为空、两个完整 OS PID 不同、实际网络和内存限制一致。临时 fixture 只持有合成配置，不保存 app 日志或 SQL 正文。
 
 ## 实际新门禁
@@ -32,7 +33,9 @@ Docker CLI 非零退出和本轮容器的 `State.Error` 只通过固定分类布
 
 后续 `6b93f2eea` 双事件仍在首个 PG 启动失败，真实固定分类一致为 `logging_options=true`、`runtime_start=true`，其余分类 false。复核 Moby `daemon/logger/local/config.go` 与 `local.go`：local driver 默认启用压缩，而 `max-file=1` 与压缩同时启用会被拒绝。因此夹具显式增加 `--log-opt compress=false`，保留原 1MiB/单文件上限、所有内存/swap/CPU/pids、网络和安全限制。这是与实际分类吻合且源码可确认的日志选项冲突修复，不将布尔分类冒充原始 daemon 完整错误；应用是否能初始化仍须新精确 head CI。原 bootstrap 和脱敏回归均保留，不 skip、不改成假应用。
 
-`8060db08e` 双事件编译成功并越过旧首 PG 启动失败，但在读取首个应用的宿主端口时 `KeyError: 8080/tcp`。报告无 phase，push app ExitCode 为 0、PR 为 1，均非 OOM，未记录端口读取时的 Running/网络/映射，旧应用日志分类也均未命中。不能据此断定是早退、启动配置、端口发布语义或 inspect 时序。本轮只补单次 inspect 固定数值/布尔状态：运行/暂停/退出/OOM、请求映射与实际映射是否存在、是否仅连接本轮网络及是否分配地址；应用日志最多末 60 行只作大小写无关固定分类，不输出原文。发现早退即 `process_exited`、运行但映射缺失即 `host_mapping_absent`，明确失败，不重试、不返回替代端口、不以直连地址兜底或KeyError消失冒充成功。原全部资源、网络、映射和业务断言保持，新精确 CI 才能给出下一层证据。
+`8060db08e` 双事件编译成功并越过旧首 PG 启动失败，但在读取首个应用的宿主端口时 `KeyError: 8080/tcp`。当时报告无 phase，push app ExitCode 为 0、PR 为 1，均非 OOM，未记录端口时点 Running/网络/映射，因此没有猜测根因。随后 `cf2fce23f` 只补单次固定诊断，真实双事件均显示进程当时 `running=true`、地址已分配、仅附着 fixture 网络、`requested_mapping=true` 且 `realized_mapping=false`，明确失败为 `host_mapping_absent`，三项脱敏诊断回归通过。由此确认当时阻塞层是宿主映射未建立；应用稍后 Exit1 仍未定位，不能宣布应用已启动。
+
+现在将夹具的端点契约明确设为唯一 internal 网络私有地址，移除 host publication 请求；这是基于新事实的单一探测路径，不是在宿主映射失败时悄悄 fallback。Docker 官方说明 Linux host 可访问 internal bridge 网络；不通过加入外部网络放开出口。仍保留固定 Running/映射/network/app 分类、早退失败、地址/网络不合要求失败、禁止 host publication、实际 readiness 和全部业务/资源/清理断言。新端点回归只 mock诊断层，不替代真实应用 bootstrap。此修复未动态运行，新精确 CI 仍须证明应用 readiness 或揭示下一层安全诊断。
 
 job 35 分钟上限含单槽 Go 编译、镜像下载；动态步骤 15 分钟；单应用启动 120 秒，Docker 操作、健康等待及退出都有有界超时。工具/镜像/启动失败直接失败，不 skip、不回退成假应用。所有动态操作仅 CI。本机只 AST/YAML/diff 静态检查，未编译或运行；下一精确提交双事件 CI 才能证明本前置实际通过，旧 26c 七/十项成功不能覆盖。
 
@@ -42,4 +45,4 @@ job 35 分钟上限含单槽 Go 编译、镜像下载；动态步骤 15 分钟�
 
 这一缺口是安全初始化/fixture 前置，不是需要用户替我们选择透明重放或媒体保留。后续应先扩展独占数据库合法种子及合成上游，逐项连接已有真实业务路径；本轮不改生产 schema、约束、账本或新运行策略。真实双机、DNS、SDK、模型付费、生产流量与媒体持久化仍未验，未授权的生产操作不因 CI 前置完成而恢复。
 
-Docker 隔离与资源语义来源：[internal network](https://docs.docker.com/reference/cli/docker/network/create/)、[runtime limits](https://docs.docker.com/engine/containers/resource_constraints/)、[run options](https://docs.docker.com/reference/cli/docker/container/run)。
+Docker 隔离与资源语义来源：[internal network](https://docs.docker.com/reference/cli/docker/network/create/)、[internal bridge 宿主可达](https://docs.docker.com/engine/network/port-publishing/)、[runtime limits](https://docs.docker.com/engine/containers/resource_constraints/)、[run options](https://docs.docker.com/reference/cli/docker/container/run)。

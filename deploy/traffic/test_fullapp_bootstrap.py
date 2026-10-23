@@ -7,6 +7,7 @@ credential or database is read. All dynamic operations belong on the CI runner.
 
 import hashlib
 import http.client
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -193,10 +194,10 @@ class RealApplicationBootstrapTest(unittest.TestCase):
                 "--mount", "type=bind,src=" + str(directory) + ",dst=/fixture/node",
                 "--env", "CONFIG_FILE=/fixture/node/config.yaml", "--env", "DATA_DIR=/fixture/node",
                 "--env", "SKIP_SETUP=true", "--env", "IP_RISK_DISABLED=true",
-                "--env", "GOMAXPROCS=1", "--publish", "127.0.0.1::8080",
+                "--env", "GOMAXPROCS=1",
                 "--entrypoint", "/fixture/bin/sub2api"], [])
             self.apps.append(app)
-            port = self.published_port(app, "8080/tcp")
+            port = self.internal_endpoint(app, 8080)
             self.ports.append(port)
             # Real cmd/server initializes migrations and its complete Wire graph.
             eventually(lambda: self.ready(app, port), 120, "full application " + node + " startup")
@@ -218,7 +219,7 @@ class RealApplicationBootstrapTest(unittest.TestCase):
         caddyfile.write_text(template)
         self.edge = self.run_container("edge", RUNTIME_IMAGE, "256m", "0.5", [
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m", "--publish", "127.0.0.1::9080",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m",
             "--mount", "type=bind,src=" + str(self.root / "bin") + ",dst=/fixture/bin,readonly",
             "--mount", "type=bind,src=" + str(caddyfile) + ",dst=/fixture/Caddyfile,readonly",
             "--env", "SUB2API_LB_LISTEN=0.0.0.0:9080",
@@ -229,7 +230,7 @@ class RealApplicationBootstrapTest(unittest.TestCase):
             "--env", "XDG_DATA_HOME=/tmp", "--env", "XDG_CONFIG_HOME=/tmp",
             "--entrypoint", "/fixture/bin/caddy"],
             ["run", "--config", "/fixture/Caddyfile", "--adapter", "caddyfile"])
-        self.edge_port = self.published_port(self.edge, "9080/tcp")
+        self.edge_port = self.internal_endpoint(self.edge, 9080)
 
     def run_container(self, suffix, image, memory, cpus, options, command):
         name = self.prefix + "-" + suffix
@@ -252,44 +253,53 @@ class RealApplicationBootstrapTest(unittest.TestCase):
         self.assertEqual(actual["network"], self.network)
         return name
 
-    def published_port(self, name, port):
-        # One snapshot separates process exit, missing network attachment,
-        # requested mapping and realized mapping. Never echo names/IPs/errors.
+    def internal_endpoint(self, name, port):
+        # Dedicated Linux Docker CI probes this internal bridge directly.
+        # No host publication or fallback: validate the one intended network.
         result = json.loads(docker("inspect", "--format",
             '{"state":{{json .State}},"ports":{{json .NetworkSettings.Ports}},'
             '"requested":{{json .HostConfig.PortBindings}},'
             '"networks":{{json .NetworkSettings.Networks}}}', name).stdout)
         state = result["state"]
-        bindings = (result["ports"] or {}).get(port)
-        requested = (result["requested"] or {}).get(port)
+        bindings = result["ports"] or {}
+        requested = result["requested"] or {}
         networks = result["networks"] or {}
         facts = {"role": "app" if name in self.apps else "edge",
                  "running": state["Running"], "paused": state["Paused"],
                  "OOMKilled": state["OOMKilled"], "ExitCode": state["ExitCode"],
                  "started": state.get("StartedAt", "").startswith("20"),
-                 "requested_mapping": bool(requested), "realized_mapping": bool(bindings),
+                 "requested_mapping": bool(requested), "realized_mapping": any(bool(v) for v in bindings.values()),
                  "only_fixture_network": set(networks) == {self.network},
                  "fixture_address_assigned": bool(networks.get(self.network, {}).get("IPAddress")),
                  "start_error_flags": docker_failure_flags(state.get("Error", ""))}
         self.report["port_checks"].append(facts)
-        if not state["Running"] or not bindings:
+        if not state["Running"]:
             logs = docker("logs", "--tail", "60", name, timeout=5, check=False)
             facts["application_flags"] = application_failure_flags(logs.stdout + logs.stderr)
-            # This is NOT a retry, direct-IP fallback or successful readiness.
-            # An exited app must fail even if its old mapping still exists.
-            category = "process_exited" if not state["Running"] else "host_mapping_absent"
-            raise FixtureFailure("fixture published-port unavailable: " + category
+            raise FixtureFailure("fixture internal endpoint unavailable: process_exited"
                                  + " facts=" + json.dumps(facts, sort_keys=True))
-        self.assertEqual(len(bindings), 1)
-        self.assertEqual(bindings[0]["HostIp"], "127.0.0.1")
-        return int(bindings[0]["HostPort"])
+        if set(networks) != {self.network} or not facts["fixture_address_assigned"]:
+            raise FixtureFailure("fixture internal endpoint unavailable: invalid_fixture_network"
+                                 + " facts=" + json.dumps(facts, sort_keys=True))
+        if requested or any(bindings.values()):
+            raise FixtureFailure("fixture internal endpoint forbids host publication"
+                                 + " facts=" + json.dumps(facts, sort_keys=True))
+        address = networks[self.network]["IPAddress"]
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            raise FixtureFailure("fixture internal endpoint has invalid private address") from None
+        if parsed.version != 4 or not parsed.is_private or parsed.is_loopback or parsed.is_unspecified:
+            raise FixtureFailure("fixture internal endpoint must use an assigned private IPv4")
+        return address, port
 
     def state(self, name):
         state = json.loads(docker("inspect", "--format", "{{json .State}}", name).stdout)
         return {key: state[key] for key in ("Running", "Paused", "OOMKilled", "ExitCode", "Pid")}
 
-    def request(self, port, path="/readyz", method="GET"):
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    def request(self, endpoint, path="/readyz", method="GET"):
+        address, port = endpoint
+        connection = http.client.HTTPConnection(address, port, timeout=2)
         try:
             connection.request(method, path, body="{}" if method == "POST" else None,
                                headers={"Host": "api.fixture.invalid", "Content-Type": "application/json"})
@@ -406,25 +416,44 @@ class DockerFailureClassificationTest(unittest.TestCase):
         fixture.apps = ["private-app-name"]
         fixture.network = "private-network-name"
         fixture.report = {"port_checks": []}
-        for running, bindings, category in (
-                (False, [{"HostIp": "127.0.0.1", "HostPort": "12345"}], "process_exited"),
-                (True, None, "host_mapping_absent")):
+        for running, assigned, bindings, category in (
+                (False, True, [{"HostIp": "127.0.0.1", "HostPort": "12345"}], "process_exited"),
+                (True, False, None, "invalid_fixture_network"),
+                (True, True, [{"HostIp": "127.0.0.1", "HostPort": "12345"}], "forbids host publication")):
             snapshot = {"state": {"Running": running, "Paused": False, "OOMKilled": False,
                                   "ExitCode": 0 if running else 1, "Error": "private-secret",
                                   "StartedAt": "2026-01-01T00:00:00Z"},
                         "ports": {"8080/tcp": bindings},
-                        "requested": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]},
-                        "networks": {fixture.network: {"IPAddress": "192.0.2.7"}}}
+                        "requested": None,
+                        "networks": {fixture.network: {"IPAddress": "192.0.2.7"}} if assigned else {}}
             replies = [subprocess.CompletedProcess([], 0, json.dumps(snapshot), ""),
                        subprocess.CompletedProcess([], 0, "FAILED TO LOAD CONFIG private-secret", "")]
             with self.subTest(category=category), patch(__name__ + ".docker", side_effect=replies) as invoke:
                 with self.assertRaises(FixtureFailure) as failure:
-                    fixture.published_port(fixture.apps[0], "8080/tcp")
+                    fixture.internal_endpoint(fixture.apps[0], 8080)
                 self.assertIn(category, str(failure.exception))
                 for value in ("private-app-name", "private-network-name", "private-secret", "192.0.2.7"):
                     self.assertNotIn(value, str(failure.exception))
-                self.assertEqual(invoke.call_count, 2, "one snapshot and bounded log read only; no retry")
-                self.assertTrue(fixture.report["port_checks"][-1]["application_flags"]["config_load_failed"])
+                self.assertEqual(invoke.call_count, 2 if not running else 1, "one snapshot; no retry")
+                if not running:
+                    self.assertTrue(fixture.report["port_checks"][-1]["application_flags"]["config_load_failed"])
+
+    def test_internal_endpoint_requires_no_host_mapping_and_does_not_claim_readiness(self):
+        fixture = RealApplicationBootstrapTest()
+        fixture.apps = ["private-app-name"]
+        fixture.network = "private-network-name"
+        fixture.report = {"port_checks": []}
+        snapshot = {"state": {"Running": True, "Paused": False, "OOMKilled": False,
+                              "ExitCode": 0, "Error": "", "StartedAt": "2026-01-01T00:00:00Z"},
+                    "ports": {"8080/tcp": None}, "requested": None,
+                    "networks": {fixture.network: {"IPAddress": "172.19.0.7"}}}
+        reply = subprocess.CompletedProcess([], 0, json.dumps(snapshot), "")
+        with patch(__name__ + ".docker", return_value=reply) as invoke:
+            self.assertEqual(fixture.internal_endpoint(fixture.apps[0], 8080), ("172.19.0.7", 8080))
+            self.assertEqual(invoke.call_count, 1)
+        self.assertFalse(fixture.report["port_checks"][-1]["requested_mapping"])
+        self.assertFalse(fixture.report["port_checks"][-1]["realized_mapping"])
+        self.assertNotIn("ready", fixture.report["port_checks"][-1])
 
     def test_application_flags_are_case_independent_and_fixed(self):
         secret = "fixture-secret /private/fixture-path 192.0.2.7"
