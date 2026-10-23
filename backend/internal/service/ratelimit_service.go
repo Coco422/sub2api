@@ -304,6 +304,12 @@ const (
 // CheckErrorPolicy 检查自定义错误码和临时不可调度规则。
 // 自定义错误码开启时覆盖后续所有逻辑（包括临时不可调度）。
 func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) ErrorPolicyResult {
+	// An edge refusal must not reach account-specific rules, linked-account
+	// mutation or quota handlers, even when administrators configured a broad 403.
+	if statusCode == http.StatusForbidden && isCloudflareBotBlockResponse(responseBody) {
+		return ErrorPolicySkipped
+	}
+
 	if account.IsOpenAICompatible() && isOpenAIUpstreamSessionBlocked(responseBody) {
 		return ErrorPolicySkipped
 	}
@@ -350,6 +356,12 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 // handleUpstreamErrorAfterStreakReset keeps account policy handling shared with
 // the OpenAI gateway, which resets the streak before its early-return policies.
 func (s *RateLimitService) handleUpstreamErrorAfterStreakReset(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
+	// An edge refusal must not reach account-specific rules, linked-account
+	// mutation or quota handlers, even when administrators configured a broad 403.
+	if statusCode == http.StatusForbidden && isCloudflareBotBlockResponse(responseBody) {
+		return false
+	}
+
 	ctx = s.observeAccountOps(ctx, account, statusCode, headers, responseBody)
 	ctx = withTempUnschedulableModel(ctx, requestedModel)
 	// A frozen upstream conversation must not reach custom cooldown rules,
