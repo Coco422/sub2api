@@ -13,6 +13,7 @@ import secrets
 import shutil
 import socket
 import unittest
+from decimal import Decimal
 
 import test_fullapp_bootstrap as bootstrap
 
@@ -537,6 +538,63 @@ class FullApplicationConcurrentFailureTest(FullApplicationInflightDrainTest):
         self.phase("concurrent-failure-peer-completed-once-unique-billing-all-leases-clean")
 
 
+class FullApplicationConcurrentSuccessTest(FullApplicationConcurrentFailureTest):
+    def test_two_held_successes_release_together_and_preserve_both_settlements(self):
+        first_connection, first_response = self.model_post("concurrent-success-first", hold=True)
+        self.read_live_delta(first_response)
+        second_connection, second_response = self.model_post("concurrent-success-second", hold=True)
+        self.read_live_delta(second_response)
+        self.assertEqual({first_response.getheader("X-Fixture-Target"),
+                          second_response.getheader("X-Fixture-Target")},
+                         {app + ":8080" for app in self.apps},
+                         "two successful in-flight requests must belong to different real applications")
+        self.assertEqual(self.model_stats(), {"accepted": 2, "completed": 0, "active": 2})
+        status = self.fixture_command("status")
+        self.assertEqual((status["user_slots"], status["account_slots"], status["api_key_slots"]), (2, 2, 2))
+        self.assertEqual((status["usage_rows"], status["dedup_rows"]), (0, 0))
+        self.assertEqual((status["input_tokens"], status["output_tokens"]), (0, 0))
+        self.assertEqual(status["balance"], 10)
+        self.phase("two-real-app-successful-streams-held-shared-slots-two-before-settlement")
+
+        # A single existing control releases both independently held upstreams.
+        # Read order below does not serialize upstream completion or app usage
+        # workers, but no claim is made that SQL transactions overlap exactly.
+        self.release_model()
+        for connection, response in ((first_connection, first_response), (second_connection, second_response)):
+            payload = response.read(65536)
+            self.assertIn(b'"response.completed"', payload)
+            response.close()
+            connection.close()
+        self.phase("single-release-allows-both-original-app-streams-to-complete-without-replay")
+
+        # Fixture rate=1: each response has 7 input + 2 output tokens, priced at
+        # 0.000001 and 0.000002. Compare decimal values at the real ledger scale;
+        # a broad nonzero-debit check would miss a lost or repeated balance write.
+        per_request = Decimal(7) * Decimal("0.000001") + Decimal(2) * Decimal("0.000002")
+        expected_balance = Decimal("10") - 2 * per_request
+
+        def both_settled():
+            status = self.fixture_command("status")
+            return (self.model_stats() == {"accepted": 2, "completed": 2, "active": 0}
+                    and status["usage_rows"] == status["dedup_rows"] == 2
+                    and status["input_tokens"] == 14 and status["output_tokens"] == 4
+                    and Decimal(str(status["balance"])) == expected_balance
+                    and status["user_slots"] == status["account_slots"] == status["api_key_slots"] == 0)
+
+        bootstrap.eventually(both_settled, 12, "both app settlements preserve exact cumulative debit and release slots")
+        self.assertTrue(all(self.state(app)["Running"] for app in self.apps))
+        self.report["concurrent_success_verification"] = {"authenticated_posts": 2, "accepted": 2,
+                                                          "completed": 2, "usage_rows": 2, "dedup_rows": 2,
+                                                          "input_tokens": 14, "output_tokens": 4,
+                                                          "balance_before": 10,
+                                                          "balance_expected": str(expected_balance),
+                                                          "balance_final": self.fixture_command("status")["balance"],
+                                                          "slots_before_release": 2, "slots_final": 0,
+                                                          "requests_replayed": False,
+                                                          "scope": "two held successes released together; not forced SQL transaction overlap"}
+        self.phase("both-successful-app-requests-settled-once-exact-debit-all-slots-clean")
+
+
 if __name__ == "__main__":
     # The original bootstrap suite still runs as its existing CI step. This
     # Explicit cases avoid rerunning inherited tests as accidental duplicates.
@@ -546,6 +604,7 @@ if __name__ == "__main__":
         FullApplicationPartialEOFTest("test_partial_model_sse_eof_is_not_replayed_or_billed_and_peer_can_continue"),
         FullApplicationAcceptedEOFTest("test_accepted_model_request_eof_is_not_replayed_or_settled_as_success"),
         FullApplicationClientCancelTest("test_client_cancel_drains_existing_upstream_usage_once_and_peer_can_continue"),
-        FullApplicationConcurrentFailureTest("test_failed_concurrent_stream_releases_only_its_lease_and_peer_settles_once")])
+        FullApplicationConcurrentFailureTest("test_failed_concurrent_stream_releases_only_its_lease_and_peer_settles_once"),
+        FullApplicationConcurrentSuccessTest("test_two_held_successes_release_together_and_preserve_both_settlements")])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(0 if result.wasSuccessful() else 1)

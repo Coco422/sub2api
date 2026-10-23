@@ -98,3 +98,13 @@ normal4 和在途 drain2 已在基线 `2da2bf9ae` 双事件 CI 成功，之后�
 原五个 case AST及所有断言保留，原模型/正常hold行为与全套硬内存/internal隔离/cleanup/CI预算保持。新失败hold复用12秒上限；失败租约状态只读收敛最多6秒，最终结算12秒，不为了测试延长生产停机或槽位TTL。无第三请求/客户端模型重试，本机仅静态，动态待新精确head双事件 bootstrap6+模型6项和全部原CI。
 
 边界：这是重叠成功/失败请求的账本隔离与各自租约收尾，未证明多个成功终态同时写账本、同幂等身份的重复提交争抢、第三请求限流或所有多账号 ambiguous failover；真实两机、透明续接与长期媒体生命周期仍未交付。若实际新 CI失败，必须读精确原始日志定向修复，不能弱化槽位/计费/无重放断言或改变生产策略迁就夹具。
+
+## 后续最小边界：双成功流共同释放后的累计结算
+
+#547 的真实双事件 bootstrap6+模型6（head `c7b519b40`）已成功且合并；其失败并发场景只有一条成功结算，normal4逐条结算、drain则peer和owner先后完成。新增独立 fresh fixture `test_two_held_successes_release_together_and_preserve_both_settlements`，不重复以上顺序或单成功场景：同一合法用户、Key和单账号的两条成功模型流由两个完整app分别持有，均输出真实delta后hold，accepted2/completed0/active2、三slots2、usage/dedup/tokens0、余额10。
+
+只调用一次既有release控制，使两条原上游同时具备完成条件；不重发模型POST、不新增控制端点/Go夹具。两个客户端原响应均须有 `response.completed`；当前passthrough会在成功终态的空行停止读取，故不要求额外 `[DONE]` 才算完成。最终真实PG usage/dedup均2、tokens14/4、accepted/completed2/active0、三slots0。按现有定价输入7×0.000001+输出2×0.000002、倍率1，Decimal核对累计精确余额 **9.999978**，避免仅判断“余额非零减少”漏掉少扣或重扣。
+
+这验证两条已重叠在途请求共同释放后两个app的完整结算保留，不声称强制两个SQL事务物理同时，也不证明同billing身份去重竞争、第三请求上限或所有race。原六个case AST/全部断言、tagged Go工具/生产代码/账本、硬资源/internal网/超时/清理均不改；suite显式7项。每条hold仍最多12秒，最终只读结算12秒，恰好两模型POST。
+
+本轮固定production `5e9bbe994`，保留已合并其他改动；本机仅源码静态，新动态必须后续精确head双push/PR真实bootstrap6+模型7和全部适用CI/security/Caddy通过。多账号、同billing身份争抢、真实双机、透明续接/长期媒体语义仍未验，不借本测试新增生产策略。
