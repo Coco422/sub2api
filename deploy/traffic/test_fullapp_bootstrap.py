@@ -122,7 +122,8 @@ class RealApplicationBootstrapTest(unittest.TestCase):
         self.report = {"compiled_commit": self.expected_commit,
                        "binary_sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest(),
                        "scope": "full cmd/server initialization; no authenticated model request",
-                       "images": [], "phases": [], "containers": [], "port_checks": []}
+                       "images": [], "phases": [], "containers": [], "port_checks": [],
+                       "http_observations": {}}
         self.addCleanup(self.save_report)
         docker("info", timeout=15)
         # Pull before creating the network; application containers have no
@@ -181,7 +182,10 @@ class RealApplicationBootstrapTest(unittest.TestCase):
                    "jwt": {"secret": shared_jwt}, "totp": {"encryption_key": shared_totp},
                    "pricing": {"remote_url": "", "hash_url": "", "data_dir": "/fixture/node/pricing",
                                "fallback_file": "", "update_interval_hours": 24},
-                   "log": {"level": "error", "output": {"to_stdout": True, "to_file": False}},
+                   # The legacy stdlog bridge can classify leading "Failed ..."
+                   # as info. Keep it observable inside this synthetic fixture;
+                   # only fixed classifications below ever leave the container.
+                   "log": {"level": "info", "output": {"to_stdout": True, "to_file": False}},
                    "plugins": {"data_dir": "/fixture/node/plugins"}}
             config = directory / "config.yaml"
             config.write_text(json.dumps(cfg))  # JSON is accepted by the YAML loader.
@@ -305,8 +309,11 @@ class RealApplicationBootstrapTest(unittest.TestCase):
                                headers={"Host": "api.fixture.invalid", "Content-Type": "application/json"})
             response = connection.getresponse()
             response.read(4096)
-            return response.status, response.getheader("X-Fixture-Target")
+            target = response.getheader("X-Fixture-Target")
+            self.observe_http(endpoint, path, response.status, target)
+            return response.status, target
         except (OSError, http.client.HTTPException):
+            self.observe_http(endpoint, path, None, None)
             return None, None
         finally:
             connection.close()
@@ -314,8 +321,31 @@ class RealApplicationBootstrapTest(unittest.TestCase):
     def ready(self, app, port):
         state = self.state(app)
         if not state["Running"]:
-            raise FixtureFailure("full application exited before ready; OOM=" + str(state["OOMKilled"]))
+            logs = docker("logs", "--tail", "60", app, timeout=5, check=False)
+            facts = {"ExitCode": state["ExitCode"], "OOMKilled": state["OOMKilled"],
+                     "application_flags": application_failure_flags(logs.stdout + logs.stderr)}
+            raise FixtureFailure("full application exited before ready facts="
+                                 + json.dumps(facts, sort_keys=True))
         return self.request(port)[0] == 200
+
+    def observe_http(self, endpoint, path, status, target):
+        # Only fixed scope/route/status/known-target categories; never save an
+        # arbitrary header, address, URL, response body or exception message.
+        scope = "unknown"
+        for index, known in enumerate(self.ports):
+            if endpoint == known:
+                scope = "app-a" if index == 0 else "app-b"
+        if endpoint == getattr(self, "edge_port", None):
+            scope = "edge"
+        identity = "missing" if not target else "unrecognized"
+        for index, app in enumerate(self.apps):
+            if target == app + ":8080":
+                identity = "app-a" if index == 0 else "app-b"
+        route = "ready" if path == "/readyz" else "responses" if path == "/v1/responses" else "other"
+        code = str(status) if isinstance(status, int) and 100 <= status <= 599 else "transport_error"
+        key = "/".join((scope, route, code, identity))
+        counters = self.report["http_observations"]
+        counters[key] = counters.get(key, 0) + 1
 
     def phase(self, name):
         self.report["phases"].append(name)
@@ -364,6 +394,10 @@ class RealApplicationBootstrapTest(unittest.TestCase):
             Path(report).write_text(json.dumps(self.report, indent=2) + "\n")
 
     def test_full_application_bootstrap_readiness_and_signal_drain(self):
+        for port in self.ports:
+            self.assertEqual(self.request(port, "/v1/responses", "POST")[0], 401,
+                             "direct full application auth route must reject a missing key")
+        self.phase("direct-full-app-auth-routes-401")
         expected = {app + ":8080" for app in self.apps}
         seen = set()
 
@@ -411,6 +445,20 @@ class RealApplicationBootstrapTest(unittest.TestCase):
 
 
 class DockerFailureClassificationTest(unittest.TestCase):
+    def test_http_observations_emit_only_fixed_categories(self):
+        fixture = RealApplicationBootstrapTest()
+        fixture.ports = [("192.0.2.7", 8080)]
+        fixture.apps = ["private-app-name"]
+        fixture.edge_port = ("192.0.2.8", 9080)
+        fixture.report = {"http_observations": {}}
+        fixture.observe_http(fixture.edge_port, "/v1/responses", 401, "private-app-name:8080")
+        fixture.observe_http(fixture.ports[0], "/readyz", None, "fixture-secret private-header")
+        self.assertEqual(fixture.report["http_observations"], {
+            "edge/responses/401/app-a": 1, "app-a/ready/transport_error/unrecognized": 1})
+        encoded = json.dumps(fixture.report)
+        for value in ("private-app-name", "192.0.2.7", "192.0.2.8", "fixture-secret", "private-header"):
+            self.assertNotIn(value, encoded)
+
     def test_port_diagnostics_fail_without_fallback_or_echo(self):
         fixture = RealApplicationBootstrapTest()
         fixture.apps = ["private-app-name"]

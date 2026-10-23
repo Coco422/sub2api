@@ -27,6 +27,8 @@
 4. 对应用 A 发送真实 SIGTERM，经过原 `main` 的 `BeginDrain`、配置 drain delay、`Shutdown`、`Lifecycle.Wait` 及 Cleanup。新无 Key 请求收敛到应用 B，A 正常 exit 0、无 OOM，B 仍运行。此时没有已有模型 SSE，因此不声称验证了流保持。
 5. 失败路径也取消 pause，按唯一名称逆序清理容器及匿名卷、network，临时配置删除。只保存固定阶段、commit、二进制 SHA、image ID、数值退出/OOM 状态及少量固定诊断布尔值；对本轮合成应用最多读取日志末尾 60 行并只匹配固定错误分类，不导出原始内容，不读其他容器。不导出容器 env/挂载配置、DB 内容、请求体或 app 日志。
 
+仅隔离配置的日志级别设为 info，原 1MiB/单文件上限和不导出原文规则不变。原因是生产 stdlog bridge 的固定级别推断可能把开头为 `Failed ...`、且不含后续 error/fatal 等关键词的 `log.Fatalf` 消息归为 info；error 过滤会使启动错误分类缺失。本修改不触及生产 logger 代码或配置。早退时立即输出 ExitCode/OOM 和固定应用分类；HTTP观察只累计固定 app-a/app-b/edge、ready/responses、状态码及已知目标类别，不存任意响应头、地址、URL或正文。新增直接访问两真实 app 的401前置，保留经 Caddy 双目标401原断言，以区分鉴权路由本身和入口观察失败。
+
 Docker CLI 非零退出和本轮容器的 `State.Error` 只通过固定分类布尔值输出（logging/cgroup/CPU/memory/pids/network/mount/permission/runtime/security/disk/image/options/unknown），不回显原始错误、命令参数或输入。分类是下一步定位证据，不等于已确定根因；不以分类为理由移除内存、swap、network 或安全限制。脚本还包含合成敏感字符串不回显的离线回归，由同一远端 CI 执行。
 
 历史 `e52e957cb` 双事件中，真实应用二进制编译成功；首个 PostgreSQL `docker run` 返回 125，容器 ExitCode 128、非 OOM，应用尚未初始化。旧脚本没有记录 Docker stderr/State.Error 分类，无法从原日志确定具体启动根因。保留该失败而不盲重跑；本次只补安全分类，不削弱任何原业务/资源/隔离断言。
@@ -36,6 +38,8 @@ Docker CLI 非零退出和本轮容器的 `State.Error` 只通过固定分类布
 `8060db08e` 双事件编译成功并越过旧首 PG 启动失败，但在读取首个应用的宿主端口时 `KeyError: 8080/tcp`。当时报告无 phase，push app ExitCode 为 0、PR 为 1，均非 OOM，未记录端口时点 Running/网络/映射，因此没有猜测根因。随后 `cf2fce23f` 只补单次固定诊断，真实双事件均显示进程当时 `running=true`、地址已分配、仅附着 fixture 网络、`requested_mapping=true` 且 `realized_mapping=false`，明确失败为 `host_mapping_absent`，三项脱敏诊断回归通过。由此确认当时阻塞层是宿主映射未建立；应用稍后 Exit1 仍未定位，不能宣布应用已启动。
 
 现在将夹具的端点契约明确设为唯一 internal 网络私有地址，移除 host publication 请求；这是基于新事实的单一探测路径，不是在宿主映射失败时悄悄 fallback。Docker 官方说明 Linux host 可访问 internal bridge 网络；不通过加入外部网络放开出口。仍保留固定 Running/映射/network/app 分类、早退失败、地址/网络不合要求失败、禁止 host publication、实际 readiness 和全部业务/资源/清理断言。新端点回归只 mock诊断层，不替代真实应用 bootstrap。此修复未动态运行，新精确 CI 仍须证明应用 readiness 或揭示下一层安全诊断。
+
+`7dd383a8b` 新双事件已经越过旧宿主映射失败：push真实app在ready前Exit1且非OOM，旧固定应用分类全unknown；PR事件到达`two-full-applications-ready`，但Caddy双401目标观察超时。两者不能当同一根因，PR成功初始化也不能抵push失败。现在仅修补上述日志级别/HTTP固定观察证据缺口，不猜改模型/鉴权/入口配置，不将新诊断写成应用启动或路由已修。
 
 job 35 分钟上限含单槽 Go 编译、镜像下载；动态步骤 15 分钟；单应用启动 120 秒，Docker 操作、健康等待及退出都有有界超时。工具/镜像/启动失败直接失败，不 skip、不回退成假应用。所有动态操作仅 CI。本机只 AST/YAML/diff 静态检查，未编译或运行；下一精确提交双事件 CI 才能证明本前置实际通过，旧 26c 七/十项成功不能覆盖。
 
