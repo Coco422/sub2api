@@ -131,3 +131,11 @@ API Key鉴权的本机正/负L1缓存依赖共享Redis Pub/Sub失效通知。go-
 L2 显式关闭，正负 TTL 为 120 秒且大于 30 秒测试上下文，不靠 L2 回读或自然过期替代失效传播。测试不访问私有缓存字段、不增加生产测试接口；订阅在关闭客户端前停止并等待，临时 Redis 被终止并等待，有限 L1 缓存随独立测试 binary 退出释放。该目录仅在 `integration` 标签下参与 CI，使用既有 workflow 安装的 `redis-server`；缺工具在 CI 中失败。
 
 本机只做源码及非编译静态检查，**此组合回归未编译/运行**，等待新精确 head CI。它验证公开查询与缓存传播，不包含 HTTP 中间件准入、数据库/outbox、在途请求撤销、自动重连丢消息、真实两进程/主机、计费或模型；`GetByKey` 返回未知 Key 不能冒充完整业务撤销验收。没有产品策略、运行行为或媒体/透明重放语义修改。
+
+## DB/outbox/L2与HTTP鉴权：第一遍撤销组合回归
+
+`internal/integration/authoutbox/http_revocation_integration_test.go` 的 `TestDatabaseOutboxFirstPassRevokesTwoHotHTTPReaders` 使用本测试独占的 Docker PostgreSQL/Redis、真实迁移、API Key/outbox 仓储、worker、共享 L2、两个独立 service/client 和公开 HTTP 鉴权中间件。真实 worker 按整表领任务，独占数据库可避免消费其他集成测试的事件；测试不新增生产过滤接口。
+
+测试启用 L1/L2、TTL 长于测试时限，并用真实仓储及 L2 读取计数同时证明两端 HTTP 查询命中热 L1。数据库停用 Key 后、worker 启动前，HTTP 和共享 L2 仍明确保留旧状态；第一遍实际删除 L2 并广播后，两端新请求返回 `401/API_KEY_DISABLED` 且不进入固定下游 handler，共享 L2 回读为停用状态，无关 Key 仍热命中。HTTP fixture 只在本进程注册现有只需认证的 `GET /v1/sub2api/billing` 路径和固定 204 handler，不调用真实倍率、模型、账本或运营接口。
+
+本次只验证第一遍及真实 stage 1 延迟调度，随后停止 worker；不加速默认安全第二遍，也不声称最终 ack、故障重试、在途撤销或真实两机验收。没有 schema、权限、TTL 默认值、worker 策略或生产配置变更。仅 `integration` 回归源码，本机未编译/运行，等待新精确 head 远端 CI；有限 L1 随专用测试 binary 退出，worker/订阅、客户端和独占容器按序清理。
