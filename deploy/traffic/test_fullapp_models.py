@@ -1,8 +1,8 @@
 """CI only: authenticated Responses SSE through two UNMODIFIED cmd/server apps.
 
 The model is synthetic and internal; SQL/account/key/dispatch/billing/concurrency
-are the application's real paths. This first slice establishes legal fixtures
-and normal SSE settlement, before drain/EOF/partial/cancel fault scenarios.
+are the application's real paths. Separate fresh fixtures cover normal SSE,
+drain, EOF and downstream cancellation without changing application policies.
 """
 
 import http.client
@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import socket
 import unittest
 
 import test_fullapp_bootstrap as bootstrap
@@ -363,13 +364,93 @@ class FullApplicationAcceptedEOFTest(FullApplicationModelSSETest):
         self.phase("accepted-before-response-eof-once-no-success-billing-slots-clean")
 
 
+class FullApplicationClientCancelTest(FullApplicationInflightDrainTest):
+    def test_client_cancel_drains_existing_upstream_usage_once_and_peer_can_continue(self):
+        connection, response = self.model_post("cancel-held-stream", hold=True)
+        canceled_target = response.getheader("X-Fixture-Target")
+        self.assertIn(canceled_target, {app + ":8080" for app in self.apps})
+        for _ in range(12):
+            line = response.readline(4096)
+            self.assertTrue(line, "client must receive a live SSE before cancellation")
+            if line.startswith(b"data: ") and b"response.output_text.delta" in line and b"OK" in line:
+                break
+        else:
+            self.fail("held model did not emit a delta before client cancellation")
+        self.assertEqual(self.model_stats(), {"accepted": 1, "completed": 0, "active": 1})
+        status = self.fixture_command("status")
+        self.assertEqual((status["usage_rows"], status["dedup_rows"]), (0, 0))
+        self.assertEqual((status["user_slots"], status["account_slots"], status["api_key_slots"]), (1, 1, 1))
+        self.assertEqual(status["balance"], 10)
+        self.phase("cancel-case-live-delta-and-shared-slots-before-client-disconnect")
+
+        # Close the real downstream TCP connection, not just stop reading. The
+        # existing ordinary passthrough deliberately detaches upstream reads to
+        # collect terminal usage after downstream cancellation; do not invent
+        # an upstream-abort or free-generation policy in this fixture.
+        downstream = connection.sock
+        self.assertIsNotNone(downstream, "live SSE must own a cancellable client socket")
+        downstream.shutdown(socket.SHUT_RDWR)
+        response.close()
+        connection.close()
+        self.assertTrue(response.isclosed())
+        self.assertEqual(downstream.fileno(), -1)
+        self.assertEqual(self.model_stats(), {"accepted": 1, "completed": 0, "active": 1})
+        status = self.fixture_command("status")
+        self.assertEqual((status["usage_rows"], status["dedup_rows"]), (0, 0))
+        self.assertEqual((status["input_tokens"], status["output_tokens"]), (0, 0))
+        self.assertEqual(status["balance"], 10)
+        # Intermediate slot ownership depends on existing admission mode. Only
+        # the pre-cancel acquisition and final cleanup are contractual here.
+        self.phase("client-socket-closed-existing-upstream-still-held-no-premature-settlement")
+        self.release_model()
+
+        def canceled_request_settled():
+            status = self.fixture_command("status")
+            return (self.model_stats() == {"accepted": 1, "completed": 1, "active": 0}
+                    and status["usage_rows"] == status["dedup_rows"] == 1
+                    and status["input_tokens"] == 7 and status["output_tokens"] == 2
+                    and 9 < status["balance"] < 10
+                    and status["user_slots"] == status["account_slots"] == status["api_key_slots"] == 0)
+
+        bootstrap.eventually(canceled_request_settled, 12, "canceled client upstream settles once and slots release")
+        canceled_balance = self.fixture_command("status")["balance"]
+        self.phase("canceled-client-original-upstream-terminal-usage-settled-once-slots-clean")
+        # A distinct explicit request, never a retry of the canceled POST.
+        control_connection, control_response = self.model_post("cancel-new-peer-control")
+        self.assertIn(control_response.getheader("X-Fixture-Target"), {app + ":8080" for app in self.apps})
+        self.assertNotEqual(control_response.getheader("X-Fixture-Target"), canceled_target)
+        self.assertIn(b'"response.completed"', control_response.read(65536))
+        control_response.close()
+        control_connection.close()
+
+        def control_settled():
+            status = self.fixture_command("status")
+            return (self.model_stats() == {"accepted": 2, "completed": 2, "active": 0}
+                    and status["usage_rows"] == status["dedup_rows"] == 2
+                    and status["input_tokens"] == 14 and status["output_tokens"] == 4
+                    and 9 < status["balance"] < canceled_balance
+                    and status["user_slots"] == status["account_slots"] == status["api_key_slots"] == 0)
+
+        bootstrap.eventually(control_settled, 12, "new peer control and canceled upstream each settle once")
+        self.report["client_cancel_verification"] = {"authenticated_posts": 2, "accepted": 2,
+                                                      "completed": 2, "usage_rows": 2, "dedup_rows": 2,
+                                                      "input_tokens": 14, "output_tokens": 4,
+                                                      "balance_before": 10, "balance_after_canceled": canceled_balance,
+                                                      "balance_final": self.fixture_command("status")["balance"],
+                                                      "client_socket_closed": True,
+                                                      "canceled_request_replayed": False, "slots": 0,
+                                                      "scope": "existing detached usage drain; no upstream cancellation policy change"}
+        self.phase("new-peer-control-after-client-cancel-unique-billing-and-cleanup")
+
+
 if __name__ == "__main__":
     # The original bootstrap suite still runs as its existing CI step. This
-    # targeted entry adds only the new model case, not inherited duplicates.
+    # Explicit cases avoid rerunning inherited tests as accidental duplicates.
     suite = unittest.TestSuite([
         FullApplicationModelSSETest("test_two_real_applications_complete_sse_once_and_settle_shared_state"),
         FullApplicationInflightDrainTest("test_inflight_sse_finishes_on_draining_owner_and_new_model_reaches_peer_once"),
         FullApplicationPartialEOFTest("test_partial_model_sse_eof_is_not_replayed_or_billed_and_peer_can_continue"),
-        FullApplicationAcceptedEOFTest("test_accepted_model_request_eof_is_not_replayed_or_settled_as_success")])
+        FullApplicationAcceptedEOFTest("test_accepted_model_request_eof_is_not_replayed_or_settled_as_success"),
+        FullApplicationClientCancelTest("test_client_cancel_drains_existing_upstream_usage_once_and_peer_can_continue")])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(0 if result.wasSuccessful() else 1)

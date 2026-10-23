@@ -76,3 +76,13 @@ normal4 和在途 drain2 已在基线 `2da2bf9ae` 双事件 CI 成功，之后�
 **边界限制**：当前应用在transport错误或尚无语义输出EOF时允许既有账户failover；本用例只有一个合法上游账号，验证两个应用入口及Caddy不复制该请求，不证明多个上游账户的全部切换/重试都禁止重复生成。不能据此宣称端到端所有ambiguous-send状态都可安全重试或已禁重放；多账号备用路径需要另一个明确检查点/契约审查，不能靠测试关闭或改生产策略隐瞒。本场景通过也不代表client cancel/失败结算或共享并发争抢完成。
 
 新源码仅静态未本机编译运行；精确新head双事件必须bootstrap+四模型case实际PASS/计数/结算/slots/cleanup及全部原CI。若错误被既有策略重放、返回成功或扣费，必须保留失败并按实际调用链定位，不skip/弱化，也不擅定透明恢复/重放产品语义。
+
+## 后续最小边界：客户端取消后的既有 usage 收尾
+
+基线 `a5db0d575` 的 normal/drain/partial/acceptedEOF 四用例已在双事件 CI 通过。新增独立 fresh fixture 用例 `test_client_cancel_drains_existing_upstream_usage_once_and_peer_can_continue`，仍是完整两个真实应用、真实 Caddy 和隔离合成模型，不修改生产取消、账本或并发策略。
+
+当前普通 OpenAI passthrough 在上游请求发出后使用分离的 context 读取终态/usage；客户端断开停止下游写入，但不会据此把已经生成的模型用量记成免费或取消上游。依据 `openai_gateway_passthrough.go` 的 upstream read 生命周期与 Responses handler 的 usage 提交路径，新用例先收到真实 delta、确认一条活跃生成/三类槽位占用/尚未结算，再对真实客户端 socket 执行双向 shutdown 和 close。原合成上游必须仍只有一条 active 请求、没有提前 usage/dedup 或扣费。释放现有 hold 后，原请求完成一次，usage/dedup各1、tokens7/2、非零合成扣费、三类 slots 最终归零。中间槽位是否在取消时立即释放由既有 admission owner 模式决定，本用例不改变或另定此策略。
+
+再发唯一一个新的显式客户端 control POST，由轮转 peer 正常完成；最终 accepted/completed各2、usage/dedup各2、tokens14/4，余额相对第一次结算继续减少，三 slots 为0。计数、取消 socket 状态、合成余额及清理 phase 导出固定报告；总共两条模型 POST，不自动重试、不迁移旧流、不承诺向客户端返回取消后的终态。复用既有 hold最多12秒、只读结算12秒、各容器硬内存/internal网络和全部 cleanup 限制；原四个 case AST/断言保持。
+
+本切片本机只做 AST/YAML/diff 静态检查，尚未动态执行；需新精确 head 双事件真实 bootstrap + 五模型 case 及全部原 CI。失败账本并发争抢、多账号 ambiguous failover、真实两机流量、透明续接与媒体生命周期仍不由本取消用例覆盖。
