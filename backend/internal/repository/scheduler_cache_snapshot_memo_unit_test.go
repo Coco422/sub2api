@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -241,7 +242,13 @@ func TestSchedulerCacheSnapshotMemoSecondReadOnlyFetchesTagsAndLastUsed(t *testi
 	}, recorder.recorded())
 
 	require.Equal(t, []int64{1, 2, 3}, memoIDs(second))
-	require.Equal(t, first, second)
+	// Memo copies intentionally have different private map-pointer cache keys.
+	// Compare every wire-visible field and separately assert independent objects.
+	firstJSON, err := json.Marshal(first)
+	require.NoError(t, err)
+	secondJSON, err := json.Marshal(second)
+	require.NoError(t, err)
+	require.JSONEq(t, string(firstJSON), string(secondJSON))
 	for i := range first {
 		require.NotSame(t, first[i], second[i])
 	}
