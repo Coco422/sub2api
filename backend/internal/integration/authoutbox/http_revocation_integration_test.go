@@ -57,10 +57,11 @@ func (c *countedAuthCache) GetAuthCache(ctx context.Context, key string) (*servi
 
 type observedWorkerCache struct {
 	service.APIKeyCache
-	target    string
-	deleted   atomic.Bool
-	published atomic.Bool
-	denied    atomic.Bool
+	target        string
+	deleted       atomic.Bool
+	published     atomic.Bool
+	denied        atomic.Bool
+	publishDenied atomic.Bool
 }
 
 func (c *observedWorkerCache) DeleteAuthCache(ctx context.Context, key string) error {
@@ -77,6 +78,9 @@ func (c *observedWorkerCache) DeleteAuthCache(ctx context.Context, key string) e
 
 func (c *observedWorkerCache) PublishAuthCacheInvalidation(ctx context.Context, key string) error {
 	err := c.APIKeyCache.PublishAuthCacheInvalidation(ctx, key)
+	if err != nil && key == c.target && strings.Contains(err.Error(), "NOPERM") {
+		c.publishDenied.Store(true)
+	}
 	if err == nil && key == c.target {
 		c.published.Store(true)
 	}
@@ -95,13 +99,19 @@ func TestDatabaseOutboxRealRedisDeleteFailureRecoversThroughSafetyPass(t *testin
 	testDatabaseOutboxHTTPRevocation(t, outboxHTTPScenario{safetyPass: true, rejectDelete: true})
 }
 
+func TestDatabaseOutboxRealRedisPublishFailureAfterDeleteRecoversThroughSafetyPass(t *testing.T) {
+	testDatabaseOutboxHTTPRevocation(t, outboxHTTPScenario{safetyPass: true, rejectPublish: true})
+}
+
 type outboxHTTPScenario struct {
-	safetyPass   bool
-	rejectDelete bool
+	safetyPass    bool
+	rejectDelete  bool
+	rejectPublish bool
 }
 
 func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario) {
 	t.Helper()
+	require.False(t, scenario.rejectDelete && scenario.rejectPublish, "inject exactly one Redis command failure per scenario")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	checkCtx, stopCheck := context.WithTimeout(ctx, 10*time.Second)
@@ -258,10 +268,15 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 		workerUser     = "auth-fixture-worker"
 		workerPassword = "fixture-only-del-rejection" // Dedicated temporary container, never a deployment credential.
 	)
-	if scenario.rejectDelete {
+	rejectCommand := scenario.rejectDelete || scenario.rejectPublish
+	deniedCommand := "del"
+	if scenario.rejectPublish {
+		deniedCommand = "publish"
+	}
+	if rejectCommand {
 		// Only this test owns the Redis container. Deny one real command for
 		// the worker alone; default/controller/readers keep their own access.
-		require.NoError(t, controller.ACLSetUser(ctx, workerUser, "reset", "on", ">"+workerPassword, "~*", "&*", "+@all", "-del").Err())
+		require.NoError(t, controller.ACLSetUser(ctx, workerUser, "reset", "on", ">"+workerPassword, "~*", "&*", "+@all", "-"+deniedCommand).Err())
 		t.Cleanup(func() {
 			cleanupCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
 			defer stop()
@@ -272,7 +287,7 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 		opts.Password = workerPassword
 		workerClient := redis.NewClient(&opts)
 		t.Cleanup(func() { require.NoError(t, workerClient.Close()) })
-		require.NoError(t, workerClient.Ping(ctx).Err(), "the fixture identity is healthy; only DEL is denied")
+		require.NoError(t, workerClient.Ping(ctx).Err(), "the fixture identity is healthy; only the selected command is denied")
 		identity, err := workerClient.ACLWhoAmI(ctx).Result()
 		require.NoError(t, err)
 		require.Equal(t, workerUser, identity, "the real command must run as the denied fixture identity")
@@ -285,14 +300,18 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 	var retryAt time.Time
 	var retryAttempts int
 	firstPassBudget := 5 * time.Second
-	if scenario.rejectDelete {
+	if rejectCommand {
 		require.Eventually(t, func() bool {
-			return worker.Health(ctx).Failures > 0 && observed.denied.Load()
+			denied := observed.denied.Load()
+			if scenario.rejectPublish {
+				denied = observed.publishDenied.Load()
+			}
+			return worker.Health(ctx).Failures > 0 && denied
 		}, 5*time.Second, 10*time.Millisecond)
 		worker.Stop() // Join RetryClaimed before inspecting the real lease state.
 		require.Zero(t, worker.Health(ctx).Processed)
-		require.False(t, observed.deleted.Load())
-		require.False(t, observed.published.Load(), "DEL failure must not reach Publish or ack")
+		require.Equal(t, scenario.rejectPublish, observed.deleted.Load(), "PUBLISH failure must follow a real successful DEL; DEL failure must not delete")
+		require.False(t, observed.published.Load(), "the rejected command must not produce a successful invalidation broadcast")
 		var claimedAt sql.NullTime
 		var claimedBy, lastError sql.NullString
 		var createdAt time.Time
@@ -306,10 +325,16 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 		require.Contains(t, lastError.String, "NOPERM")
 		require.True(t, retryAt.After(createdAt), "the real RetryClaimed must schedule backoff")
 		entry, err = sharedCache.GetAuthCache(ctx, cacheKey)
-		require.NoError(t, err)
-		require.NotNil(t, entry)
-		require.NotNil(t, entry.Snapshot)
-		require.Equal(t, service.StatusActive, entry.Snapshot.Status)
+		if scenario.rejectPublish {
+			require.ErrorIs(t, err, redis.Nil, "DEL already removed L2 even though the invalidation broadcast failed")
+			require.Nil(t, entry)
+			require.False(t, observed.denied.Load(), "the injected failure must be PUBLISH, not DEL")
+		} else {
+			require.NoError(t, err)
+			require.NotNil(t, entry)
+			require.NotNil(t, entry.Snapshot)
+			require.Equal(t, service.StatusActive, entry.Snapshot.Status)
+		}
 		for node := range nodes {
 			dbReads, l2Reads := repositories[node].reads.Load(), caches[node].reads.Load()
 			require.Equal(t, http.StatusNoContent, probe(node, target.Key).Code)
@@ -319,7 +344,7 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 		}
 		// Restore the exact denied capability, not an artificial cache result or
 		// an outbox timestamp. A new worker must reclaim using the real retryAt.
-		require.NoError(t, controller.ACLSetUser(ctx, workerUser, "+del").Err())
+		require.NoError(t, controller.ACLSetUser(ctx, workerUser, "+"+deniedCommand).Err())
 		observed = &observedWorkerCache{APIKeyCache: workerCache, target: cacheKey}
 		worker = service.NewAuthCacheInvalidationWorker(repository.NewAuthCacheInvalidationOutboxRepository(db), observed)
 		t.Cleanup(worker.Stop)
@@ -336,7 +361,7 @@ func testDatabaseOutboxHTTPRevocation(t *testing.T, scenario outboxHTTPScenario)
 		"SELECT delivery_stage, available_at > NOW() FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).Scan(&stage, &future))
 	require.Equal(t, 1, stage)
 	require.True(t, future, "keep the existing delayed second pass; do not accelerate or claim final ack")
-	if scenario.rejectDelete {
+	if rejectCommand {
 		var attempts int
 		var lastError sql.NullString
 		var retryDue bool
