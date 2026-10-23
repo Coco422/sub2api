@@ -291,7 +291,7 @@ func newSchedulerCacheWithChunkSizes(rdb *redis.Client, mgetChunkSize, writeChun
 // GetSnapshot 读取 bucket 的激活快照。解码后的精简记录按 bucket 常驻进程内存，
 // 只有 ready、active 版本、全局修订号与该 bucket 所涉平台的修订号都与 Redis 一致且未超过最长复用时长时才复用；
 // 否则重新从 Redis 加载。last_used 每次都从 Redis 读取。
-// 返回的账号对象由本次调用独占，可以修改其顶层字段；map、切片底层数组与指针指向的值与其它调用共享，不得原地修改。
+// 返回账号的 Credentials/Extra/分组模型列表为独立副本，兼容 fork 选号路径的本地修改。
 func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
 	bucketKey := bucket.String()
 	tagKeys := schedulerSnapshotTagKeys(bucket)
@@ -461,7 +461,7 @@ func snapshotAccountsWithLastUsed(ctx context.Context, entry *schedulerSnapshotE
 	slab := make([]service.Account, len(entry.accounts))
 	accounts := make([]*service.Account, len(entry.accounts))
 	for i, master := range entry.accounts {
-		slab[i] = *master
+		slab[i] = master.CopySchedulerSnapshot()
 		account := &slab[i]
 		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
 			return nil, err

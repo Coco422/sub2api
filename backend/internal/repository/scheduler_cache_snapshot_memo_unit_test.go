@@ -890,8 +890,8 @@ func TestSchedulerCacheSnapshotMemoKeepsNewerEntryOnLateStore(t *testing.T) {
 	require.Same(t, newer, cache.lookupSnapshotEntry("b"))
 }
 
-// 母本在发布前预解析了模型映射：副本命中时不计算签名。此处故意原地改写共享的原始映射，
-// 只用来观察副本走的是免签名路径（生产代码不会原地修改该 map）。
+// Prepared mappings are reused while request-local edits retain signature checking.
+// Mutations must remain isolated from the master and subsequent reads.
 func TestSchedulerCacheSnapshotMemoPreparesSharedModelMapping(t *testing.T) {
 	cache, _, _ := newSchedulerCacheMemoUnit(t, defaultSchedulerSnapshotWriteChunkSize)
 	bucket := memoTestBucket(121)
@@ -909,7 +909,8 @@ func TestSchedulerCacheSnapshotMemoPreparesSharedModelMapping(t *testing.T) {
 	rawMapping, ok := probe.Credentials["model_mapping"].(map[string]any)
 	require.True(t, ok)
 	rawMapping["claude-sonnet"] = "sonnet-mutated-in-place"
-	require.Equal(t, "sonnet-a", probe.GetMappedModel("claude-sonnet"))
+	require.Equal(t, "sonnet-mutated-in-place", probe.GetMappedModel("claude-sonnet"))
+	require.Equal(t, "sonnet-a", memoRead(t, cache, bucket)[0].GetMappedModel("claude-sonnet"), "request-local edits cannot poison the memo")
 }
 
 func TestSchedulerCacheSnapshotMemoRevisionValuesAreUnique(t *testing.T) {
