@@ -314,6 +314,31 @@ describe('useAuthStore', () => {
     })
   })
 
+  describe('token refresh', () => {
+    it('刷新后持久化新的 access token 和 refresh token', async () => {
+      localStorage.setItem('auth_token', 'old-access-token')
+      localStorage.setItem('auth_user', JSON.stringify(fakeUser))
+      localStorage.setItem('refresh_token', 'old-refresh-token')
+      localStorage.setItem('token_expires_at', String(Date.now() + 121_000))
+      mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
+      mockRefreshToken.mockResolvedValue({
+        access_token: 'new-access-token',
+        refresh_token: 'new-refresh-token',
+        expires_in: 3600,
+        token_type: 'Bearer',
+      })
+
+      const store = useAuthStore()
+      store.checkAuth()
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(store.token).toBe('new-access-token')
+      expect(localStorage.getItem('auth_token')).toBe('new-access-token')
+      expect(localStorage.getItem('refresh_token')).toBe('new-refresh-token')
+      expect(localStorage.getItem('token_expires_at')).toBe(String(Date.now() + 3_600_000))
+    })
+  })
+
   // --- isAdmin ---
 
   describe('isAdmin', () => {
