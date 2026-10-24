@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -70,10 +71,18 @@ func insertUsageBillingQuote(ctx context.Context, tx *sql.Tx, cmd *service.Usage
 	if cmd.QuotedActualCost == nil {
 		return nil
 	}
+	if math.IsNaN(*cmd.QuotedActualCost) || math.IsInf(*cmd.QuotedActualCost, 0) {
+		return errors.New("non-finite usage quotation")
+	}
+	// Preserve the original float64 quotation as an exact decimal round-trip.
+	// NUMERIC without a typmod does not introduce a second ten-place rounding.
+	// Canonical money is the already-normalized customer command, independently
+	// of the quote (and independently of AccountQuotaCost's upstream cost basis).
+	quoted := strconv.FormatFloat(*cmd.QuotedActualCost, 'f', -1, 64)
+	canonical := max(cmd.BalanceCost, cmd.SubscriptionCost, cmd.APIKeyQuotaCost, cmd.APIKeyRateLimitCost)
 	_, err := tx.ExecContext(ctx, `INSERT INTO usage_billing_quotes
-		(request_id,api_key_id,request_fingerprint,quoted_actual_cost,canonical_actual_cost)
-		VALUES($1,$2,$3,$4,$5)`, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint,
-		*cmd.QuotedActualCost, service.QuantizeUsageBillingAmount(*cmd.QuotedActualCost))
+		(request_id,api_key_id,request_fingerprint,quoted_actual_cost,canonical_actual_cost,quote_encoding_version)
+		VALUES($1,$2,$3,$4::numeric,$5,1)`, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint, quoted, canonical)
 	return err
 }
 
