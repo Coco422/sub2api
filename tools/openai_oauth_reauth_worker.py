@@ -1016,7 +1016,11 @@ def _session_studio_result(response: Any) -> dict[str, Any]:
             if event.get("type") in ("progress", "heartbeat"):
                 continue
             if "type" in event:
-                raise WorkerError("Session Studio returned an unsupported event")
+                # Preserve harmless notifications with other type names, but
+                # never skip an unknown event that might carry a final result.
+                if any(key in event for key in ("payload", "credential", "error", "status")):
+                    raise WorkerError("Session Studio returned an unsupported event")
+                continue
             # Keep the legacy, unwrapped JSON result contract. An active status
             # or a null error alone does not establish that login has finished.
             if "credential" in event or event.get("error") or str(event.get("status", "")).lower() in {

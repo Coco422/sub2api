@@ -66,6 +66,7 @@ class ReauthEngineTests(unittest.TestCase):
             {'type': 'progress', 'error': {'message': 'synthetic-diagnostic'}},
             {'type': 'progress', 'status': 'failed', 'error': 'synthetic-diagnostic'},
             {'type': 'heartbeat', 'status': 'active'},
+            {'type': 'log', 'message': 'synthetic-notification'},
             {'status': 'active'},
             {'error': None},
             {'status': 'active', 'error': None},
