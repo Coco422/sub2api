@@ -77,6 +77,7 @@ func TestContentModerationTypeSafeCategoryBoundariesAndTestParity(t *testing.T) 
 					require.Equal(t, TypeSafeModerationRulesVersion, task.log.EngineMeta.RulesVersion)
 					require.Equal(t, enabled, task.log.EngineMeta.CategorySettings[category].Enabled)
 					require.Equal(t, trial.AuditResult.MatchedCategories, task.log.EngineMeta.MatchedCategories)
+					require.Equal(t, trial.AuditResult.EngineMeta, task.log.EngineMeta)
 					if wantHit {
 						require.Equal(t, []string{category}, task.log.EngineMeta.MatchedCategories)
 					} else {
@@ -296,7 +297,12 @@ func TestContentModerationTypeSafeSyntheticContextCorpus(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, sample.wantHit, decision.Blocked)
 			require.Equal(t, sample.score, decision.CategoryScores[sample.category])
-			require.False(t, (<-s.asyncQueue).log.AutoBanned)
+			task := <-s.asyncQueue
+			s.persistContentModerationLog(context.Background(), task.config, task.log, task.inputHash, task.recordHash, task.applySideEffects)
+			repo, ok := s.repo.(*contentModerationTestRepo)
+			require.True(t, ok)
+			require.Len(t, repo.logs, 1)
+			require.False(t, repo.logs[0].AutoBanned)
 		})
 	}
 }
