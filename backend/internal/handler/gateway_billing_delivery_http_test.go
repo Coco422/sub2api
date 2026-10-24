@@ -18,12 +18,16 @@ import (
 
 type httpDeliveryBilling struct {
 	service.UsageBillingRepository
-	event   *service.UsageBillingEvent
-	failure error
-	applied bool
+	event        *service.UsageBillingEvent
+	failure      error
+	stageFailure error
+	applied      bool
 }
 
 func (r *httpDeliveryBilling) StageUsageBilling(_ context.Context, c *service.UsageBillingCommand, u *service.UsageLog) error {
+	if r.stageFailure != nil {
+		return r.stageFailure
+	}
 	r.event = &service.UsageBillingEvent{Version: 1, Command: *c, Usage: *u}
 	return nil
 }

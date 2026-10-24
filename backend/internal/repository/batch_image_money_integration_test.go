@@ -101,3 +101,54 @@ func TestBatchImageOwnedMoneyCaptureFailureRollsBackAndFreeJobsStayFree(t *testi
 	require.Equal(t, "99.50000000", balance)
 	require.Equal(t, "0.00000000", frozen)
 }
+
+func TestBatchImageSameTaskCaptureReleaseCompeteWithoutTakingOtherHold(t *testing.T) {
+	ctx := context.Background()
+	user := mustCreateUser(t, testEntClient(t), &service.User{Email: uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 100})
+	repo := NewUsageBillingRepository(nil, integrationDB)
+	batch, other := uuid.NewString(), uuid.NewString()
+	for id, amount := range map[string]float64{batch: 1, other: 2} {
+		_, err := repo.ReserveBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{RequestID: service.BatchImageHoldRequestID(id),
+			BatchID: id, UserID: user.ID, APIKeyID: 17, HoldAmount: amount, MonetaryVersion: 2})
+		require.NoError(t, err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		<-start
+		_, err := repo.CaptureBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{RequestID: service.BatchImageCaptureRequestID(batch),
+			BatchID: batch, UserID: user.ID, APIKeyID: 17, HoldAmount: 1, ActualAmount: 0.4, MonetaryVersion: 2})
+		errs <- err
+	}()
+	go func() {
+		<-start
+		_, err := repo.ReleaseBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{RequestID: service.BatchImageReleaseRequestID(batch),
+			BatchID: batch, UserID: user.ID, APIKeyID: 17, HoldAmount: 1, MonetaryVersion: 2})
+		errs <- err
+	}()
+	close(start)
+	success, conflict := 0, 0
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			require.ErrorIs(t, err, service.ErrUsageBillingRequestConflict)
+			conflict++
+		} else {
+			success++
+		}
+	}
+	require.Equal(t, 1, success)
+	require.Equal(t, 1, conflict)
+	var state, balance, frozen string
+	var receipts int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT state FROM batch_image_money_holds WHERE batch_id=$1 AND api_key_id=17", batch).Scan(&state))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text,frozen_balance::text FROM users WHERE id=$1", user.ID).Scan(&balance, &frozen))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*) FROM usage_billing_dedup WHERE api_key_id=17 AND request_id IN ($1,$2)", service.BatchImageCaptureRequestID(batch), service.BatchImageReleaseRequestID(batch)).Scan(&receipts))
+	require.Equal(t, 1, receipts)
+	require.Equal(t, "2.00000000", frozen, "the other task's hold remains intact")
+	if state == "captured" {
+		require.Equal(t, "97.60000000", balance)
+	} else {
+		require.Equal(t, "released", state)
+		require.Equal(t, "98.00000000", balance)
+	}
+}
