@@ -2828,9 +2828,15 @@ func buildContentModerationTestAuditResult(result *moderationAPIResult, cfg *Con
 	if result == nil {
 		return nil
 	}
+	if cfg == nil {
+		cfg = defaultContentModerationConfig()
+	}
 	scores := moderationSupportedScores(result.CategoryScores, cfg.Engine)
 	thresholdSnapshot := mergeContentModerationThresholds(ContentModerationDefaultThresholds(cfg.Engine), cfg.Thresholds)
 	flagged, highestCategory, highestScore, matched := evaluateModerationScores(scores, cfg)
+	if result.EngineMeta != nil {
+		result.EngineMeta.MatchedCategories = matched
+	}
 	compositeScore := highestScore
 	return &ContentModerationTestAuditResult{
 		EngineMeta:        result.EngineMeta,
