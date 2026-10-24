@@ -299,6 +299,8 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		AccountType:        p.Account.Type,
 		RequestPayloadHash: strings.TrimSpace(p.RequestPayloadHash),
 	}
+	quoted := p.Cost.ActualCost
+	cmd.QuotedActualCost = &quoted
 	if usageLog != nil {
 		cmd.Model = usageLog.Model
 		cmd.BillingType = usageLog.BillingType
@@ -359,6 +361,19 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	}
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
+	// The fingerprint above retains the original monetary inputs. From here on,
+	// every customer-facing amount uses the exact same quantum as the SQL charge.
+	// Keep TotalCost and the independent account-cost multiplier untouched.
+	if p.Cost != nil {
+		canonicalParams := *p
+		canonicalCost := *p.Cost
+		canonicalCost.ActualCost = QuantizeUsageBillingAmount(p.Cost.ActualCost)
+		canonicalParams.Cost = &canonicalCost
+		p = &canonicalParams
+		if usageLog != nil {
+			usageLog.ActualCost = canonicalCost.ActualCost
+		}
+	}
 	if cmd == nil || cmd.RequestID == "" || repo == nil {
 		if p.SimpleModeKeyRateLimitOnly {
 			return false, ErrSimpleModeKeyRateLimitBillingUnavailable

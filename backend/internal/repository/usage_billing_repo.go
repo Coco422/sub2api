@@ -55,12 +55,26 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 	if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
 		return nil, err
 	}
+	if err := insertUsageBillingQuote(ctx, tx, cmd); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	tx = nil
 	return result, nil
+}
+
+func insertUsageBillingQuote(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) error {
+	if cmd.QuotedActualCost == nil {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO usage_billing_quotes
+		(request_id,api_key_id,request_fingerprint,quoted_actual_cost,charged_actual_cost)
+		VALUES($1,$2,$3,$4,$5)`, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint,
+		*cmd.QuotedActualCost, service.QuantizeUsageBillingAmount(*cmd.QuotedActualCost))
+	return err
 }
 
 func (r *usageBillingRepository) claimUsageBillingKey(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) (bool, error) {
