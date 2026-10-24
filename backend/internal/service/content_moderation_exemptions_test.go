@@ -200,7 +200,7 @@ func TestModerationExemptionsTypeSafeAdapter(t *testing.T) {
 			}
 			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
 			require.Contains(t, body.State, "blocked-word")
-			require.Len(t, body.Questions, 13)
+			require.Len(t, body.Questions, 15)
 			answers := make(map[string]any)
 			for category := range body.Questions {
 				answers[category] = map[string]any{"type": "noul", "noul": 0.0}
