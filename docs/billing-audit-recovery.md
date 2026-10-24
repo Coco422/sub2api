@@ -12,10 +12,13 @@ receipt, committed with the money operation. Capture and release are mutually
 exclusive even when another job has enough money in the user's frozen pool.
 Free jobs retain their zero-money behavior. Existing holds are not backfilled.
 
-A legacy hold with more than eight places is ambiguous. Automatic capture and
-release fail with `BATCH_IMAGE_MONEY_REVIEW_REQUIRED`; they never infer ownership
-from the user's pooled frozen balance. There is no migration, background job or
-command that rounds historical holds, refunds them, or charges old usage.
+A legacy amount with more than eight places cannot execute a new money change.
+A retry first makes a read-only hot/archive receipt check using the original
+operation ID, key, owner, batch, amounts and payload fingerprint. An exact match
+confirms that operation already committed, so the task status can catch up
+without moving money. A missing/conflicting receipt fails; a fingerprint conflict
+is never itself evidence that a refund succeeded. No pooled balance inference,
+historical rounding, backfill, refund or back-charge is supplied.
 
 Ordinary usage is staged synchronously as a versioned immutable event before
 monetary execution. The money effects, dedup claim, raw quote, canonical usage
@@ -54,14 +57,35 @@ imported, no missing old charges are inferred, and no balance adjustments occur
 at migration time. Existing legacy backlog requires separate evidence and must
 not be described as repaired by this PR.
 
-The raw customer quote is stored in `usage_billing_quotes.quoted_actual_cost`;
-`canonical_actual_cost` records the eight-place canonical amount. Canonical
+The customer quote is stored in scale-free NUMERIC as the shortest exact decimal
+round-trip of the original float64 quotation. `quote_encoding_version=1` marks
+that representation; version 0 may have already lost digits under the old
+ten-place schema and is not retrospectively repaired. `canonical_actual_cost`
+comes from the already-normalized customer command, never a re-rounded stored
+quote. Canonical
 usage and cache reloads use that same customer amount. `total_cost` and the
 account cost multiplier retain their independent meaning. A subscription or
 simple-mode key-window charge is not new cash revenue.
 
-Release review must account for the new durable events, projections and owned
-holds before any rollback to an old binary that cannot read them. Batch workers
-must all understand version-2 ownership before processing new jobs; outstanding
-legacy financial writers/caches need a reviewed drain boundary. These are code
-compatibility limits, not authorization to perform a cutover or repair data.
+Mixed old financial writers/binaries are a release blocker, including a rolling
+period in which an old batch worker can claim a version-2 job. Approval requires
+an explicitly reviewed admission stop and drain of old in-flight requests,
+usage workers, batch workers and flusher cycles (including already-popped
+snapshots), then all relevant nodes on the same verified financial protocol and
+migrations before new admission. Unknown started work remains occupied; expiry
+is not authority to refund or repeat a model request. This document executes no
+drain and supplies no automatic migration of old monetary values.
+
+Rollback to an old reader/writer is not approved just because all journal events
+are complete: it still cannot account for new projections and owned holds.
+A rollback build must understand those states, or a separate, explicitly
+authorized reconciliation/drain plan must be reviewed. No command in this PR
+merges historical money or projections into a legacy ledger.
+
+Quota window starts retain precise administrative reset cutoffs. Day/week
+delivery uses the later of that cutoff and the natural boundary; an event before
+the cutoff contributes zero to that window, even if it is the first projection
+row. Ordinary and regional writers read the same effective monthly anchor under
+the baseline row lock, and advance together only at the 30-day boundary. Checked
+auth invalidation errors (including key lookup and broadcast) leave cache work
+pending; an unchecked/absent invalidator cannot acknowledge key-quota exhaustion.
