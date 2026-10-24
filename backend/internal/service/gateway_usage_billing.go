@@ -387,6 +387,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
 
+	if durable, ok := repo.(DurableUsageBillingRepository); ok && usageLog != nil {
+		return applyDurableUsageBilling(billingCtx, durable, cmd, usageLog, p, deps)
+	}
 	result, err := repo.Apply(billingCtx, cmd)
 	if err != nil {
 		return false, err
@@ -956,11 +959,11 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}, s.billingDeps(), s.usageBillingRepo)
 
 	if billingErr != nil {
-		usageLog.ActualCost = 0
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		return billingErr
 	}
-	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+	if !s.DurableUsageBillingEnabled() {
+		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+	}
 
 	return nil
 }

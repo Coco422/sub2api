@@ -1103,7 +1103,7 @@ func TestOpenAIGatewayServiceRecordUsage_GeneratesRequestIDWhenAllSourcesMissing
 	require.Equal(t, billingRepo.lastCmd.RequestID, usageRepo.lastLog.RequestID)
 }
 
-func TestOpenAIGatewayServiceRecordUsage_BillingErrorWritesUnsettledUsageLog(t *testing.T) {
+func TestOpenAIGatewayServiceRecordUsage_BillingErrorDoesNotWriteFalseZeroCostLog(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{}
 	billingErr := errors.New("billing tx failed")
 	billingRepo := &openAIRecordUsageBillingRepoStub{err: billingErr}
@@ -1128,14 +1128,8 @@ func TestOpenAIGatewayServiceRecordUsage_BillingErrorWritesUnsettledUsageLog(t *
 
 	require.ErrorIs(t, err, billingErr)
 	require.Equal(t, 1, billingRepo.calls)
-	require.Equal(t, 1, usageRepo.calls)
-	require.NotNil(t, usageRepo.lastLog)
-	require.Equal(t, 8, usageRepo.lastLog.InputTokens)
-	require.Equal(t, 4, usageRepo.lastLog.OutputTokens)
-	require.Greater(t, usageRepo.lastLog.InputCost, 0.0)
-	require.Greater(t, usageRepo.lastLog.OutputCost, 0.0)
-	require.Greater(t, usageRepo.lastLog.TotalCost, 0.0)
-	require.Zero(t, usageRepo.lastLog.ActualCost)
+	require.Zero(t, usageRepo.calls)
+	require.Nil(t, usageRepo.lastLog, "unknown settlement is not a successful zero-cost usage row")
 }
 
 func TestOpenAIGatewayServiceRecordUsage_UpdatesAPIKeyQuotaWhenConfigured(t *testing.T) {
