@@ -156,7 +156,7 @@ func TestModerationEmailExemptionKeepsGlobalSwitchAndHistory(t *testing.T) {
 	require.False(t, repo.snapshotLogs()[0].EmailSent, "old evidence must not become current status")
 }
 
-func TestModerationEmailExemptionQueuedRecordAndObserveReadLatest(t *testing.T) {
+func TestModerationEmailExemptionQueuedRecordAndObserveSameVersionReadLatest(t *testing.T) {
 	for _, mode := range []string{ContentModerationModePreBlock, ContentModerationModeObserve} {
 		t.Run(mode, func(t *testing.T) {
 			svc, _, calls := exemptionService(t, mode, ContentModerationKeywordModeKeywordAndAPI, ModerationUserState{Version: 2})
@@ -168,7 +168,10 @@ func TestModerationEmailExemptionQueuedRecordAndObserveReadLatest(t *testing.T) 
 			require.NoError(t, err)
 			require.Len(t, svc.asyncQueue, 1)
 			task := <-svc.asyncQueue
-			// Isolate mail eligibility from the existing account version fence.
+			// Deliberately isolate same-version mail eligibility here. This state
+			// assignment is NOT a management save: real saves increment version
+			// and reject old queued hits. The repository integration regression
+			// TestModerationMailManagementSaveFencesQueuedTasks covers that path.
 			repo.state.EmailExempt = true
 			snapshot, err := svc.loadRuntimeSnapshot(context.Background())
 			require.NoError(t, err)
