@@ -33,8 +33,8 @@ func incrementUsageBillingPlatformQuota(ctx context.Context, tx *sql.Tx, cmd *se
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_platform_quota_totals
 		(quota_id,daily_usage_usd,weekly_usage_usd,monthly_usage_usd,daily_window_start,weekly_window_start,monthly_window_start,legacy_daily_anchor,legacy_weekly_anchor,legacy_monthly_anchor)
-		VALUES($1,CASE WHEN $3>$6 THEN 0 ELSE $2 END,CASE WHEN $4>$6 THEN 0 ELSE $2 END,
-		 CASE WHEN $5>$6 THEN 0 ELSE $2 END,$3,$4,$5,$3,$4,$5)
+		VALUES($1,CASE WHEN $3::timestamptz>$6::timestamptz THEN 0 ELSE $2::numeric END,CASE WHEN $4::timestamptz>$6::timestamptz THEN 0 ELSE $2::numeric END,
+		 CASE WHEN $5::timestamptz>$6::timestamptz THEN 0 ELSE $2::numeric END,$3,$4,$5,$3,$4,$5)
 		ON CONFLICT(quota_id) DO UPDATE SET
 		daily_usage_usd=CASE WHEN usage_platform_quota_totals.daily_window_start>EXCLUDED.daily_window_start THEN usage_platform_quota_totals.daily_usage_usd
 		 WHEN usage_platform_quota_totals.daily_window_start<EXCLUDED.daily_window_start THEN EXCLUDED.daily_usage_usd
