@@ -2879,7 +2879,7 @@ type moderationAPIResult struct {
 
 func evaluateModerationScores(scores map[string]float64, cfg *ContentModerationConfig) (bool, string, float64, []string) {
 	highestCategory, highestScore := "", 0.0
-	matched := []string{}
+	var matched []string
 	thresholds := mergeContentModerationThresholds(ContentModerationDefaultThresholds(cfg.Engine), cfg.Thresholds)
 	for _, category := range ContentModerationCategories(cfg.Engine) {
 		score, ok := scores[category]

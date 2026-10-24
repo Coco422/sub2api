@@ -88,7 +88,7 @@ type UpdateContentModerationEngineInput struct {
 
 type ContentModerationEngineMeta struct {
 	CategorySettings  map[string]ContentModerationCategorySetting `json:"category_settings,omitempty"`
-	MatchedCategories []string                                    `json:"matched_categories"`
+	MatchedCategories []string                                    `json:"matched_categories,omitempty"`
 	Engine            string                                      `json:"engine"`
 	Model             string                                      `json:"model"`
 	RulesVersion      string                                      `json:"rules_version"`
