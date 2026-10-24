@@ -78,8 +78,15 @@ func invalidateDurableUsageBilling(ctx context.Context, recovered *UsageBillingR
 			err = errors.Join(err, cache.InvalidateDurablePlatformQuota(ctx, e.Command.UserID, e.Command.PlatformQuotaPlatform))
 		}
 	}
-	if auth != nil && recovered.Result.APIKeyQuotaExhausted {
-		auth.InvalidateAuthCacheByUserID(ctx, e.Command.UserID)
+	if recovered.Result.APIKeyQuotaExhausted {
+		checked, ok := auth.(interface {
+			InvalidateAuthCacheByUserIDChecked(context.Context, int64) error
+		})
+		if !ok {
+			err = errors.Join(err, errors.New("checked auth cache invalidation unavailable; receipt remains pending"))
+		} else {
+			err = errors.Join(err, checked.InvalidateAuthCacheByUserIDChecked(ctx, e.Command.UserID))
+		}
 	}
 	return err
 }
