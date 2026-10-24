@@ -395,7 +395,9 @@ const taskErrorLabel = (errorCode: string) => {
   const path = `tokenGuardV2.reauthErrors.${errorCode}`
   return te(path) ? t(path) : errorCode
 }
-const taskLabel = (task: TokenGuardV2Task) => task.error ? `${task.status}: ${taskErrorLabel(task.error)}` : `${task.status} · ${task.stage}`
+const taskLabel = (task: TokenGuardV2Task) => task.diagnostic
+  ? `${task.status}: ${task.diagnostic.stage} · ${task.diagnostic.reason} · ${task.diagnostic.elapsed_ms} ms`
+  : task.error ? `${task.status}: ${taskErrorLabel(task.error)}` : `${task.status} · ${task.stage}`
 const configurationDetail = (item: TokenGuardV2Account) => {
   const config = item.login_config
   if (!config) return '-'

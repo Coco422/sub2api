@@ -107,16 +107,17 @@ type OpenAIOAuthReauthRuntimeSettings struct {
 
 // OpenAIOAuthReauthTask is the safe task status exposed to administrators.
 type OpenAIOAuthReauthTask struct {
-	OAuthProfile string     `json:"oauth_profile"`
-	ID           int64      `json:"id"`
-	AccountID    int64      `json:"account_id"`
-	Status       string     `json:"status"`
-	Stage        string     `json:"stage"`
-	Error        string     `json:"error,omitempty"`
-	Attempt      int        `json:"attempt"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	Diagnostic   *LocalProtocolDiagnostic `json:"diagnostic,omitempty"`
+	OAuthProfile string                   `json:"oauth_profile"`
+	ID           int64                    `json:"id"`
+	AccountID    int64                    `json:"account_id"`
+	Status       string                   `json:"status"`
+	Stage        string                   `json:"stage"`
+	Error        string                   `json:"error,omitempty"`
+	Attempt      int                      `json:"attempt"`
+	CreatedAt    time.Time                `json:"created_at"`
+	UpdatedAt    time.Time                `json:"updated_at"`
+	FinishedAt   *time.Time               `json:"finished_at,omitempty"`
 }
 
 // OpenAIOAuthReauthStatus combines saved configuration and the latest task.
@@ -1255,14 +1256,19 @@ func safeReauthTask(record *OpenAIOAuthReauthTaskRecord) *OpenAIOAuthReauthTask 
 	if record == nil {
 		return nil
 	}
+	_, diagnostic, _ := localProtocolError(record.Error)
 	return &OpenAIOAuthReauthTask{
-		ID: record.ID, AccountID: record.AccountID, Status: record.Status, OAuthProfile: reauthTaskProfile(record),
+		Diagnostic: diagnostic,
+		ID:         record.ID, AccountID: record.AccountID, Status: record.Status, OAuthProfile: reauthTaskProfile(record),
 		Stage: record.Stage, Error: sanitizeReauthError(record.Error), Attempt: record.Attempt,
 		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, FinishedAt: record.FinishedAt,
 	}
 }
 
 func sanitizeReauthError(raw string) string {
+	if safe, _, handled := localProtocolError(raw); handled {
+		return safe
+	}
 	msg := strings.TrimSpace(raw)
 	if msg == "" {
 		return ""

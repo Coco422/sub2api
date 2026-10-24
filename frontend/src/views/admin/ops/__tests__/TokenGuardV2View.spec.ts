@@ -403,6 +403,20 @@ describe('TokenGuardV2View', () => {
 })
 
 describe('managed re-login availability', () => {
+  it('shows the safe protocol phase without presenting failed as successful', async () => {
+    const data = await api.listGuard()
+    api.listGuard.mockResolvedValue({ ...data, accounts: [{
+      ...data.accounts[0], latest_task: { id: 7, account_id: 42, status: 'failed', stage: 'failed',
+        error: 'synthetic-private', attempt: 1,
+        diagnostic: { stage: 'token_exchange', reason: 'token_exchange_failed', elapsed_ms: 120, exit_code: 1 } }
+    }] })
+    wrapper = mount(TokenGuardV2View, { global: { stubs: {
+      AppLayout: { template: '<div><slot /></div>' }, Pagination: true, OpenAITOTPDialog: true
+    } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('failed: token_exchange · token_exchange_failed · 120 ms')
+    expect(wrapper.text()).not.toContain('synthetic-private')
+  })
   it('separates encrypted credential readiness from a failed runtime', async () => {
     const data = await api.listGuard()
     api.listGuard.mockResolvedValue({

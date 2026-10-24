@@ -79,6 +79,14 @@ Worker 单元测试使用离线协议替身及本地假邮箱；真实密码/TOT
 
 需要同时升级 API 与 Worker / 对应版本的内置运行包。迁移 `262_openai_oauth_reauth_engine.sql` 将现有账号默认设为 `local_worker`，不自动向第三方发送凭据。新版 Worker 在领取请求中声明支持的引擎；旧 Worker 只会领取本地任务，不能把外部任务悄悄转为本地。升级前已运行的任务仍应先完成，再更新 Worker。回退旧版本前应将外部引擎账号切回本地并处理活跃任务，数据库新增字段可以保留。
 
+### 本地 Codex 协议阶段诊断
+
+本地密码/TOTP路径继续使用固定 toSub2 提交 `8548397e89bf80e508eda64a87e0d556d43abc84`。Worker 只在任务临时目录建立适配副本：校验精确 callback origin/path、唯一 code/state 与绑定 state、PKCE verifier，然后才交换授权码；三项 OAuth 凭据完整后保留原子文件输出与后端身份/profile/ownership/CAS 校验。授权拒绝不在同一任务内重新登录，不切换引擎或代理。未知依赖布局在登录前拒绝，不静默部分适配。
+
+适配进程只把版本、task_id、白名单 stage/reason 和有限 elapsed_ms 写到任务私有诊断文件；不把 stdout/stderr、异常原文、URL、密码、OTP、cookie 或 Token 当诊断。Worker 有界读取、验证任务绑定及枚举；失败仍要求非零退出/错误结果，`completed` 进度不能替代完整输出。旧运行器没有诊断文件时保留原有退出码/完整输出契约。
+
+任务终态仍是 `failed`，接口新增可选 `diagnostic`（stage/reason/elapsed_ms/exit_code），页面展示安全阶段。Node 的阶段不等于上游业务成功，回写后的巡检复验仍决定账号是否恢复；这不会自动停止、退避或增加自动重登。此功能需要对应 API 与 Worker 生效，不能仅凭源码合并认为线上已升级，也不能从通用 exit1 反推真实故障阶段。
+
 ### 多 Worker 并发
 
 新版消费者默认启动 **3 个独立进程**。页面支持即时调整 **1–16** 个进程，新版 Worker 约每 5 秒通过独立令牌鉴权接口同步：扩容启动新进程，缩容等待当前任务完成后停止领取并退出，不重启整池。临时读取失败时保留上一次数量。Session Studio 任务同样占用进程。
