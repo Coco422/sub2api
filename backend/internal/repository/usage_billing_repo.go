@@ -125,20 +125,21 @@ func (r *usageBillingRepository) claimUsageBillingRequest(ctx context.Context, t
 }
 
 func (r *usageBillingRepository) ReserveBatchImageBalance(ctx context.Context, cmd *service.BatchImageBalanceHoldCommand) (*service.BatchImageBalanceHoldResult, error) {
-	return r.applyBatchImageBalanceHold(ctx, cmd, reserveUsageBillingBatchImageBalance)
+	return r.applyBatchImageBalanceHold(ctx, cmd, "hold", reserveUsageBillingBatchImageBalance)
 }
 
 func (r *usageBillingRepository) CaptureBatchImageBalance(ctx context.Context, cmd *service.BatchImageBalanceHoldCommand) (*service.BatchImageBalanceHoldResult, error) {
-	return r.applyBatchImageBalanceHold(ctx, cmd, captureUsageBillingBatchImageBalance)
+	return r.applyBatchImageBalanceHold(ctx, cmd, "capture", captureUsageBillingBatchImageBalance)
 }
 
 func (r *usageBillingRepository) ReleaseBatchImageBalance(ctx context.Context, cmd *service.BatchImageBalanceHoldCommand) (*service.BatchImageBalanceHoldResult, error) {
-	return r.applyBatchImageBalanceHold(ctx, cmd, releaseUsageBillingBatchImageBalance)
+	return r.applyBatchImageBalanceHold(ctx, cmd, "release", releaseUsageBillingBatchImageBalance)
 }
 
 func (r *usageBillingRepository) applyBatchImageBalanceHold(
 	ctx context.Context,
 	cmd *service.BatchImageBalanceHoldCommand,
+	operation string,
 	apply func(context.Context, *sql.Tx, *service.BatchImageBalanceHoldCommand) (*service.BatchImageBalanceHoldResult, error),
 ) (_ *service.BatchImageBalanceHoldResult, err error) {
 	if cmd == nil {
@@ -179,7 +180,19 @@ func (r *usageBillingRepository) applyBatchImageBalanceHold(
 	// Only exact legacy amounts are unambiguous. New version-2 tasks quantize
 	// both values before constructing this command.
 
-	result, err := apply(ctx, tx, cmd)
+	var result *service.BatchImageBalanceHoldResult
+	if cmd.MonetaryVersion >= 2 {
+		result, err = applyOwnedBatchImageMoney(ctx, tx, cmd, operation, apply)
+	} else {
+		var owned bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM batch_image_money_holds WHERE batch_id=$1 AND api_key_id=$2)`, cmd.BatchID, cmd.APIKeyID).Scan(&owned); err != nil {
+			return nil, err
+		}
+		if owned {
+			return nil, service.ErrBatchImageLegacyMoneyPrecision
+		}
+		result, err = apply(ctx, tx, cmd)
+	}
 	if err != nil {
 		return nil, err
 	}

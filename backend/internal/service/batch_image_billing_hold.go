@@ -57,6 +57,7 @@ func buildBatchImageHoldCommand(job *BatchImageJob, requestID string, actualAmou
 		BatchID:            job.BatchID,
 		HoldAmount:         holdAmount,
 		ActualAmount:       actualAmount,
+		MonetaryVersion:    job.PricingSnapshotVersion,
 		RequestPayloadHash: strings.TrimSpace(payloadHash),
 	}, nil
 }

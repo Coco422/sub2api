@@ -188,6 +188,7 @@ type BatchImageBalanceHoldCommand struct {
 	BatchID            string
 	HoldAmount         float64
 	ActualAmount       float64
+	MonetaryVersion    int // >=2 requires an individually owned durable hold
 }
 
 func (c *BatchImageBalanceHoldCommand) Normalize() {

@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestBatchImageMoneyConcurrentJobsConserveBalance(t *testing.T) {
 		go func(id string, hold float64) {
 			defer wg.Done()
 			_, err := repo.ReserveBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{
-				RequestID: service.BatchImageHoldRequestID(id), APIKeyID: 17, UserID: user.ID, BatchID: id, HoldAmount: hold,
+				RequestID: service.BatchImageHoldRequestID(id), APIKeyID: 17, UserID: user.ID, BatchID: id, HoldAmount: hold, MonetaryVersion: 2,
 			})
 			errs <- err
 		}(jobs[i], amount)
@@ -41,11 +42,15 @@ func TestBatchImageMoneyConcurrentJobsConserveBalance(t *testing.T) {
 	// Capture one job, refund the other, and replay both operations.
 	for attempt := 0; attempt < 2; attempt++ {
 		_, err := repo.CaptureBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{
-			RequestID: service.BatchImageCaptureRequestID(jobs[0]), APIKeyID: 17, UserID: user.ID, BatchID: jobs[0], HoldAmount: amounts[0], ActualAmount: 0.05,
+			RequestID: service.BatchImageCaptureRequestID(jobs[0]), APIKeyID: 17, UserID: user.ID, BatchID: jobs[0], HoldAmount: amounts[0], ActualAmount: 0.05, MonetaryVersion: 2,
 		})
 		require.NoError(t, err)
 		_, err = repo.ReleaseBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{
-			RequestID: service.BatchImageReleaseRequestID(jobs[1]), APIKeyID: 17, UserID: user.ID, BatchID: jobs[1], HoldAmount: amounts[1],
+			RequestID: service.BatchImageReleaseRequestID(jobs[0]), APIKeyID: 17, UserID: user.ID, BatchID: jobs[0], HoldAmount: amounts[0], MonetaryVersion: 2,
+		})
+		require.ErrorIs(t, err, service.ErrUsageBillingRequestConflict, "capture must not be refunded out of another job's frozen funds")
+		_, err = repo.ReleaseBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{
+			RequestID: service.BatchImageReleaseRequestID(jobs[1]), APIKeyID: 17, UserID: user.ID, BatchID: jobs[1], HoldAmount: amounts[1], MonetaryVersion: 2,
 		})
 		require.NoError(t, err)
 	}
@@ -58,4 +63,41 @@ func TestBatchImageMoneyConcurrentJobsConserveBalance(t *testing.T) {
 		RequestID: fmt.Sprintf("legacy:%s", jobs[0]), APIKeyID: 17, UserID: user.ID, BatchID: jobs[0], HoldAmount: 0.0761995125,
 	})
 	require.ErrorIs(t, err, service.ErrBatchImageLegacyMoneyPrecision)
+}
+
+func TestBatchImageOwnedMoneyCaptureFailureRollsBackAndFreeJobsStayFree(t *testing.T) {
+	ctx := context.Background()
+	user := mustCreateUser(t, testEntClient(t), &service.User{Email: uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 100})
+	repo := NewUsageBillingRepository(nil, integrationDB)
+	id := uuid.NewString()
+	_, err := repo.ReserveBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{RequestID: service.BatchImageHoldRequestID(id),
+		APIKeyID: 17, UserID: user.ID, BatchID: id, HoldAmount: 1, MonetaryVersion: 2})
+	require.NoError(t, err)
+	name := "hold_fail_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	_, err = integrationDB.ExecContext(ctx, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+	BEGIN IF NEW.batch_id='%s' THEN RAISE EXCEPTION 'injected receipt failure'; END IF; RETURN NEW; END; $$;
+	CREATE TRIGGER %s BEFORE UPDATE ON batch_image_money_holds FOR EACH ROW EXECUTE FUNCTION %s()`, name, id, name, name))
+	require.NoError(t, err)
+	cleanup := func() {
+		_, _ = integrationDB.ExecContext(ctx, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON batch_image_money_holds; DROP FUNCTION IF EXISTS %s()", name, name))
+	}
+	t.Cleanup(cleanup)
+	capture := &service.BatchImageBalanceHoldCommand{RequestID: service.BatchImageCaptureRequestID(id), APIKeyID: 17,
+		UserID: user.ID, BatchID: id, HoldAmount: 1, ActualAmount: 0.5, MonetaryVersion: 2}
+	_, err = repo.CaptureBatchImageBalance(ctx, capture)
+	require.Error(t, err)
+	var balance, frozen string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text,frozen_balance::text FROM users WHERE id=$1", user.ID).Scan(&balance, &frozen))
+	require.Equal(t, "99.00000000", balance)
+	require.Equal(t, "1.00000000", frozen)
+	cleanup()
+	_, err = repo.CaptureBatchImageBalance(ctx, capture)
+	require.NoError(t, err)
+	free := uuid.NewString()
+	_, err = repo.CaptureBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{RequestID: service.BatchImageCaptureRequestID(free),
+		APIKeyID: 17, UserID: user.ID, BatchID: free, MonetaryVersion: 2})
+	require.NoError(t, err)
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text,frozen_balance::text FROM users WHERE id=$1", user.ID).Scan(&balance, &frozen))
+	require.Equal(t, "99.50000000", balance)
+	require.Equal(t, "0.00000000", frozen)
 }

@@ -7,6 +7,11 @@ unchanged. The persisted hold is the exact amount moved between spendable and
 frozen balance. Version 0/1 jobs with an exact eight-place hold retain their
 existing behavior.
 
+Version-2 holds also carry individual ownership and a held/captured/released
+receipt, committed with the money operation. Capture and release are mutually
+exclusive even when another job has enough money in the user's frozen pool.
+Free jobs retain their zero-money behavior. Existing holds are not backfilled.
+
 A legacy hold with more than eight places is ambiguous. Automatic capture and
 release fail with `BATCH_IMAGE_MONEY_REVIEW_REQUIRED`; they never infer ownership
 from the user's pooled frozen balance. There is no migration, background job or
