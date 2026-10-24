@@ -34,8 +34,9 @@ func (a *failingCheckedBillingAuth) InvalidateAuthCacheByUserIDChecked(context.C
 
 func TestUsageBillingQuotaExhaustionAuthFailureRetriesWithoutSecondDebit(t *testing.T) {
 	ctx := context.Background()
-	repo, cmd, usage := durableBillingFixture(t)
-	_, err := integrationDB.ExecContext(ctx, "UPDATE api_keys SET quota=1 WHERE id=$1", cmd.APIKeyID)
+	repo, cmd, usage, _ := durableBillingFixture(t)
+	db := repo.db
+	_, err := db.ExecContext(ctx, "UPDATE api_keys SET quota=1 WHERE id=$1", cmd.APIKeyID)
 	require.NoError(t, err)
 	require.NoError(t, repo.StageUsageBilling(ctx, &cmd, &usage))
 	result, err := repo.ApplyStagedUsageBilling(ctx, service.UsageBillingEventKey{RequestID: cmd.RequestID, APIKeyID: cmd.APIKeyID})
@@ -47,22 +48,22 @@ func TestUsageBillingQuotaExhaustionAuthFailureRetriesWithoutSecondDebit(t *test
 	t.Cleanup(worker.Stop)
 	var state, failure string
 	require.Eventually(t, func() bool {
-		err := integrationDB.QueryRowContext(ctx, `SELECT state,COALESCE(failure_code,'') FROM usage_billing_events WHERE request_id=$1 AND api_key_id=$2`, cmd.RequestID, cmd.APIKeyID).Scan(&state, &failure)
+		err := db.QueryRowContext(ctx, `SELECT state,COALESCE(failure_code,'') FROM usage_billing_events WHERE request_id=$1 AND api_key_id=$2`, cmd.RequestID, cmd.APIKeyID).Scan(&state, &failure)
 		return err == nil && state == "applied" && failure == "cache_invalidation_failed"
 	}, 10*time.Second, 10*time.Millisecond)
 	auth.fail.Store(false)
 	// Advance the synthetic retry clock after the failure receipt is durable.
-	_, err = integrationDB.ExecContext(ctx, "UPDATE usage_billing_events SET next_attempt_at=NOW() WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, cmd.APIKeyID)
+	_, err = db.ExecContext(ctx, "UPDATE usage_billing_events SET next_attempt_at=NOW() WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, cmd.APIKeyID)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
-		err := integrationDB.QueryRowContext(ctx, "SELECT state FROM usage_billing_events WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, cmd.APIKeyID).Scan(&state)
+		err := db.QueryRowContext(ctx, "SELECT state FROM usage_billing_events WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, cmd.APIKeyID).Scan(&state)
 		return err == nil && state == "complete"
 	}, 10*time.Second, 10*time.Millisecond)
 	var balance, quota, status string
 	var canonicalRows int
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", cmd.UserID).Scan(&balance))
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quota_used::text,status FROM api_keys WHERE id=$1", cmd.APIKeyID).Scan(&quota, &status))
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*) FROM usage_logs WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, cmd.APIKeyID).Scan(&canonicalRows))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", cmd.UserID).Scan(&balance))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT quota_used::text,status FROM api_keys WHERE id=$1", cmd.APIKeyID).Scan(&quota, &status))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM usage_logs WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, cmd.APIKeyID).Scan(&canonicalRows))
 	require.Equal(t, "99.00000000", balance)
 	require.Equal(t, "1.00000000", quota)
 	require.Equal(t, service.StatusAPIKeyQuotaExhausted, status)

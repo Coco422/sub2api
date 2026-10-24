@@ -20,9 +20,10 @@ func TestUsageBillingNonBoundaryResetPreservesNewUsageAndRejectsLateWindowUsage(
 			for _, lateFirst := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/totals=%t/late_first=%t", window, existingTotals, lateFirst), func(t *testing.T) {
 					ctx := context.Background()
-					repo, template, usage := durableBillingFixture(t)
+					repo, template, usage, client := durableBillingFixture(t)
+					db := repo.db
 					cutoff := time.Date(2026, 10, 21, 12, 34, 56, 123000000, timezone.Location())
-					_, err := integrationDB.ExecContext(ctx, `INSERT INTO user_platform_quotas
+					_, err := db.ExecContext(ctx, `INSERT INTO user_platform_quotas
 					 (user_id,platform,daily_limit_usd,weekly_limit_usd,daily_usage_usd,weekly_usage_usd,daily_window_start,weekly_window_start)
 					 VALUES($1,'openai',100,100,2,2,$2,$3)`, template.UserID, timezone.StartOfDay(cutoff), timezone.StartOfWeek(cutoff))
 					require.NoError(t, err)
@@ -43,7 +44,7 @@ func TestUsageBillingNonBoundaryResetPreservesNewUsageAndRejectsLateWindowUsage(
 					// Persist an observed request before the exact administrative reset,
 					// but leave its monetary execution pending across that reset.
 					late := stage(cutoff.Add(-time.Minute), 0.25)
-					quotaRepo := NewUserPlatformQuotaRepository(testEntClient(t))
+					quotaRepo := NewUserPlatformQuotaRepository(client)
 					require.NoError(t, quotaRepo.ResetExpiredWindow(ctx, template.UserID, "openai", window, cutoff))
 					fresh := stage(cutoff.Add(time.Minute), 0.4)
 					order := []service.UsageBillingEventKey{fresh, late}
@@ -67,7 +68,7 @@ func TestUsageBillingNonBoundaryResetPreservesNewUsageAndRejectsLateWindowUsage(
 					require.NotNil(t, start)
 					require.True(t, start.Equal(cutoff), "retain the precise cutoff rather than rounding it to a natural boundary")
 					var balance string
-					require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", template.UserID).Scan(&balance))
+					require.NoError(t, db.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", template.UserID).Scan(&balance))
 					want := "99.35000000"
 					if existingTotals {
 						want = "98.85000000"

@@ -51,7 +51,7 @@ func TestBatchSubmitSnapshotDatabaseRoundTripThenSettlement(t *testing.T) {
 		{1.2346, 0.0762118580, 0.07621186, "99.92378814"},
 	} {
 		ctx := context.Background()
-		client := testEntClient(t)
+		db, client := newBillingAuditDatabase(t)
 		user := mustCreateUser(t, client, &service.User{Email: uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 100})
 		price := 0.05
 		group := mustCreateGroup(t, client, &service.Group{Name: "snapshot-" + uuid.NewString(), Platform: service.PlatformGemini,
@@ -61,15 +61,17 @@ func TestBatchSubmitSnapshotDatabaseRoundTripThenSettlement(t *testing.T) {
 		account := mustCreateAccount(t, client, &service.Account{Name: "snapshot-" + uuid.NewString(), Platform: service.PlatformGemini,
 			Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, RateMultiplier: &tc.rate})
 		account.GroupIDs = []int64{group.ID}
-		jobs := NewBatchImageRepository(integrationDB)
-		billing := NewUsageBillingRepository(nil, integrationDB)
+		jobs := NewBatchImageRepository(db)
+		billing := NewUsageBillingRepository(nil, db)
 		provider := &snapshotSubmitProvider{}
 		public := &service.BatchImagePublicService{Repo: jobs, BillingRepo: billing, AccountRepo: &snapshotSubmitAccounts{account},
 			GroupRepo: &snapshotSubmitGroup{group}, ProviderRegistry: service.NewBatchImageProviderRegistry(provider), Pricing: &batchSnapshotOnlyPrice{},
 			Config: &config.Config{BatchImage: config.BatchImageConfig{Enabled: true, MaxItemsPerJobDefault: 2, MaxPromptCharsPerItem: 64,
 				DefaultResponseMimeType: "image/png", DefaultImageSize: "1K"}}}
 		owner := service.BatchImageOwner{UserID: user.ID, APIKeyID: key.ID, GroupID: &group.ID}
-		req := service.BatchImageSubmitRequest{Model: "gemini-2.5-flash-image", Provider: service.BatchImageProviderGeminiAPI,
+		// Keep the request stable across wall-clock seconds: the service
+		// generates a time-based default TaskName when the field is empty.
+		req := service.BatchImageSubmitRequest{TaskName: "snapshot-roundtrip", Model: "gemini-2.5-flash-image", Provider: service.BatchImageProviderGeminiAPI,
 			ImageSize: "1K", Items: []service.BatchImageSubmitItem{{CustomID: "one", Prompt: "synthetic"}}}
 		idempotency := uuid.NewString()
 		submitted, err := public.Submit(ctx, owner, req, idempotency)
@@ -79,16 +81,16 @@ func TestBatchSubmitSnapshotDatabaseRoundTripThenSettlement(t *testing.T) {
 		require.Equal(t, 1, provider.calls)
 		// A fresh repository reads NUMERIC(20,10) prices and the exact eight-place
 		// hold, rather than keeping the Submit calculation's in-memory floats.
-		saved, err := NewBatchImageRepository(integrationDB).GetBatchImageJobByBatchID(ctx, submitted.ID)
+		saved, err := NewBatchImageRepository(db).GetBatchImageJobByBatchID(ctx, submitted.ID)
 		require.NoError(t, err)
 		require.Equal(t, 2, saved.PricingSnapshotVersion)
 		require.Equal(t, tc.hold, *saved.HoldAmount)
 		require.Equal(t, tc.unit, saved.BillableUnitPrice)
 		require.NoError(t, jobs.TransitionBatchImageJobStatus(ctx, saved.BatchID, service.BatchImageJobStatusIndexing, service.BatchImageTransitionOptions{}))
-		_, err = integrationDB.ExecContext(ctx, "UPDATE batch_image_jobs SET success_count=1 WHERE batch_id=$1", saved.BatchID)
+		_, err = db.ExecContext(ctx, "UPDATE batch_image_jobs SET success_count=1 WHERE batch_id=$1", saved.BatchID)
 		require.NoError(t, err) // synthetic provider result, not a real image/model call
 		require.NoError(t, jobs.TransitionBatchImageJobStatus(ctx, saved.BatchID, service.BatchImageJobStatusSettling, service.BatchImageTransitionOptions{}))
-		settlement := &service.BatchImageSettlementService{Repo: NewBatchImageRepository(integrationDB), BillingRepo: billing, Pricing: &batchSnapshotOnlyPrice{}}
+		settlement := &service.BatchImageSettlementService{Repo: NewBatchImageRepository(db), BillingRepo: billing, Pricing: &batchSnapshotOnlyPrice{}}
 		for repeat := 0; repeat < 2; repeat++ {
 			result, err := settlement.Settle(ctx, saved.BatchID)
 			require.NoError(t, err)
@@ -96,8 +98,8 @@ func TestBatchSubmitSnapshotDatabaseRoundTripThenSettlement(t *testing.T) {
 			require.Equal(t, repeat > 0, result.AlreadySettled)
 		}
 		var balance, frozen, ownedState string
-		require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text,frozen_balance::text FROM users WHERE id=$1", user.ID).Scan(&balance, &frozen))
-		require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT state FROM batch_image_money_holds WHERE batch_id=$1 AND api_key_id=$2", saved.BatchID, key.ID).Scan(&ownedState))
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT balance::text,frozen_balance::text FROM users WHERE id=$1", user.ID).Scan(&balance, &frozen))
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT state FROM batch_image_money_holds WHERE batch_id=$1 AND api_key_id=$2", saved.BatchID, key.ID).Scan(&ownedState))
 		require.Equal(t, tc.balance, balance)
 		require.Equal(t, "0.00000000", frozen)
 		require.Equal(t, "captured", ownedState)

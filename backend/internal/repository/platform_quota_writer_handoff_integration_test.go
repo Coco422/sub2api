@@ -18,22 +18,18 @@ import (
 
 func TestPlatformQuotaOrdinaryRegionalHandoffPreservesRollingMonthAndMoney(t *testing.T) {
 	ctx := context.Background()
-	repo, cmd, usage := durableBillingFixture(t)
-	t.Cleanup(func() {
-		_, _ = integrationDB.Exec("DELETE FROM regional_primary_requests WHERE user_id=$1", cmd.UserID)
-		_, _ = integrationDB.Exec("DELETE FROM regional_budget_allocations WHERE user_id=$1", cmd.UserID)
-	})
-	client := testEntClient(t)
+	repo, cmd, usage, client := durableBillingFixture(t)
+	db := repo.db
 	group := mustCreateGroup(t, client, &service.Group{Name: "handoff-" + uuid.NewString(), Platform: service.PlatformOpenAI, RateMultiplier: 1})
-	_, err := integrationDB.ExecContext(ctx, "UPDATE api_keys SET group_id=$2 WHERE id=$1", cmd.APIKeyID, group.ID)
+	_, err := db.ExecContext(ctx, "UPDATE api_keys SET group_id=$2 WHERE id=$1", cmd.APIKeyID, group.ID)
 	require.NoError(t, err)
-	_, err = integrationDB.ExecContext(ctx, "UPDATE accounts SET platform='openai',status='active',schedulable=true WHERE id=$1", cmd.AccountID)
+	_, err = db.ExecContext(ctx, "UPDATE accounts SET platform='openai',status='active',schedulable=true WHERE id=$1", cmd.AccountID)
 	require.NoError(t, err)
-	_, err = integrationDB.ExecContext(ctx, "INSERT INTO account_groups(account_id,group_id)VALUES($1,$2)", cmd.AccountID, group.ID)
+	_, err = db.ExecContext(ctx, "INSERT INTO account_groups(account_id,group_id)VALUES($1,$2)", cmd.AccountID, group.ID)
 	require.NoError(t, err)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	ordinaryAt := now.Add(-10 * 24 * time.Hour)
-	_, err = integrationDB.ExecContext(ctx, `INSERT INTO user_platform_quotas
+	_, err = db.ExecContext(ctx, `INSERT INTO user_platform_quotas
 		(user_id,platform,monthly_limit_usd,monthly_usage_usd,monthly_window_start)
 		VALUES($1,'openai',6,4,$2)`, cmd.UserID, now.Add(-45*24*time.Hour))
 	require.NoError(t, err)
@@ -57,9 +53,9 @@ func TestPlatformQuotaOrdinaryRegionalHandoffPreservesRollingMonthAndMoney(t *te
 		require.True(t, rec.MonthlyWindowStart.Equal(start))
 	}
 	assertMonth(5, ordinaryAt)
-	_, holds, _ := NewRegionalFundsAuthorities(integrationDB, func(context.Context, *sql.Tx) error { return nil })
+	_, holds, _ := NewRegionalFundsAuthorities(db, func(context.Context, *sql.Tx) error { return nil })
 	price := ledger.Price{Model: "handoff-" + uuid.NewString(), Input: 500_000_000_000_000, MaxInput: 1, MaxOutput: 1}
-	require.NoError(t, ledger.InstallPrice(ctx, integrationDB, price))
+	require.NoError(t, ledger.InstallPrice(ctx, db, price))
 	request := func(at time.Time, maximum regional.Amount) ledger.Reservation {
 		return ledger.Reservation{RequestID: uuid.NewString(), UserID: cmd.UserID, APIKeyID: cmd.APIKeyID, AccountID: cmd.AccountID,
 			RegionID: "primary", AdmittedAt: at, Maximum: maximum, Model: price.Model,
@@ -95,6 +91,6 @@ func TestPlatformQuotaOrdinaryRegionalHandoffPreservesRollingMonthAndMoney(t *te
 	ordinary(boundary.Add(time.Hour), 0.25)
 	assertMonth(0.75, boundary)
 	var balance string
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", cmd.UserID).Scan(&balance))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", cmd.UserID).Scan(&balance))
 	require.Equal(t, "93.75000000", balance)
 }

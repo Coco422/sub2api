@@ -13,22 +13,22 @@ import (
 
 func TestUsageBillingQuoteKeepsRawQuoteAndExactMoneyDelta(t *testing.T) {
 	ctx := context.Background()
-	client := testEntClient(t)
+	db, client := newBillingAuditDatabase(t)
 	user := mustCreateUser(t, client, &service.User{Email: uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 1})
 	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-mock-" + uuid.NewString(), Name: "quote", Quota: 1})
 	account := mustCreateAccount(t, client, &service.Account{Name: "quote-" + uuid.NewString(), Type: service.AccountTypeAPIKey})
 	raw := 0.000078125
 	cmd := &service.UsageBillingCommand{RequestID: uuid.NewString(), UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID,
 		BalanceCost: raw, APIKeyQuotaCost: raw, QuotedActualCost: &raw}
-	repo := NewUsageBillingRepository(nil, integrationDB)
+	repo := NewUsageBillingRepository(nil, db)
 	for i := 0; i < 2; i++ {
 		_, err := repo.Apply(ctx, cmd)
 		require.NoError(t, err)
 	}
 	var balance, quota, quote, charged string
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", user.ID).Scan(&balance))
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quota_used::text FROM api_keys WHERE id=$1", key.ID).Scan(&quota))
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quoted_actual_cost::text,canonical_actual_cost::text FROM usage_billing_quotes WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, key.ID).Scan(&quote, &charged))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", user.ID).Scan(&balance))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT quota_used::text FROM api_keys WHERE id=$1", key.ID).Scan(&quota))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT quoted_actual_cost::text,canonical_actual_cost::text FROM usage_billing_quotes WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, key.ID).Scan(&quote, &charged))
 	require.Equal(t, "0.99992187", balance)
 	require.Equal(t, "0.00007813", quota)
 	require.Equal(t, "0.000078125", quote)
@@ -44,22 +44,22 @@ func TestUsageBillingRawQuoteBoundarySurvivesStorageWithoutDoubleRounding(t *tes
 		{0.00000000505, "0.00000000505", "0.00000001"},
 	} {
 		ctx := context.Background()
-		client := testEntClient(t)
+		db, client := newBillingAuditDatabase(t)
 		user := mustCreateUser(t, client, &service.User{Email: uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 1})
 		key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-mock-" + uuid.NewString(), Name: "quote-boundary", Quota: 1})
 		cmd := &service.UsageBillingCommand{RequestID: uuid.NewString(), UserID: user.ID, APIKeyID: key.ID,
 			BalanceCost: tc.raw, APIKeyQuotaCost: tc.raw, QuotedActualCost: &tc.raw}
-		_, err := NewUsageBillingRepository(nil, integrationDB).Apply(ctx, cmd)
+		_, err := NewUsageBillingRepository(nil, db).Apply(ctx, cmd)
 		require.NoError(t, err)
 		var quote, canonical string
 		var version int
-		require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT quoted_actual_cost::text,canonical_actual_cost::text,quote_encoding_version
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT quoted_actual_cost::text,canonical_actual_cost::text,quote_encoding_version
 			FROM usage_billing_quotes WHERE request_id=$1 AND api_key_id=$2`, cmd.RequestID, key.ID).Scan(&quote, &canonical, &version))
 		require.Equal(t, tc.quote, quote)
 		require.Equal(t, tc.canonical, canonical)
 		require.Equal(t, 1, version)
 		var quota string
-		require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quota_used::text FROM api_keys WHERE id=$1", key.ID).Scan(&quota))
+		require.NoError(t, db.QueryRowContext(ctx, "SELECT quota_used::text FROM api_keys WHERE id=$1", key.ID).Scan(&quota))
 		require.Equal(t, tc.canonical, quota, "canonical receipt is the executed command, not a re-rounded stored quote")
 	}
 }

@@ -19,7 +19,8 @@ func (*batchSnapshotOnlyPrice) BatchImageUnitPrice(context.Context, *service.Bat
 
 func TestLegacyBatchReceiptsReadOnlyMatchHotArchiveAndOwnership(t *testing.T) {
 	ctx := context.Background()
-	repo := &usageBillingRepository{db: integrationDB}
+	db, _ := newBillingAuditDatabase(t)
+	repo := &usageBillingRepository{db: db}
 	for _, archive := range []bool{false, true} {
 		for _, prefix := range []func(string) string{service.BatchImageHoldRequestID, service.BatchImageCaptureRequestID, service.BatchImageReleaseRequestID} {
 			batch := uuid.NewString()
@@ -33,7 +34,7 @@ func TestLegacyBatchReceiptsReadOnlyMatchHotArchiveAndOwnership(t *testing.T) {
 			if archive {
 				table = "usage_billing_dedup_archive"
 			}
-			_, err = integrationDB.ExecContext(ctx, "INSERT INTO "+table+"(request_id,api_key_id,request_fingerprint,created_at) VALUES($1,$2,$3,NOW())", cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint)
+			_, err = db.ExecContext(ctx, "INSERT INTO "+table+"(request_id,api_key_id,request_fingerprint,created_at) VALUES($1,$2,$3,NOW())", cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint)
 			require.NoError(t, err)
 			confirmed, err = repo.ConfirmBatchImageBillingReceipt(ctx, cmd)
 			require.NoError(t, err)
@@ -48,7 +49,7 @@ func TestLegacyBatchReceiptsReadOnlyMatchHotArchiveAndOwnership(t *testing.T) {
 			_, err = repo.ConfirmBatchImageBillingReceipt(ctx, &wrong)
 			require.ErrorIs(t, err, service.ErrUsageBillingRequestConflict)
 			var ownedRows int
-			require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT count(*) FROM batch_image_money_holds WHERE batch_id=$1", batch).Scan(&ownedRows))
+			require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM batch_image_money_holds WHERE batch_id=$1", batch).Scan(&ownedRows))
 			require.Zero(t, ownedRows, "receipt confirmation must not install historical owned holds")
 		}
 	}
@@ -56,10 +57,11 @@ func TestLegacyBatchReceiptsReadOnlyMatchHotArchiveAndOwnership(t *testing.T) {
 
 func TestLegacyCaptureCommittedBeforeTaskStatusUpgradeRetryDoesNotMoveMoney(t *testing.T) {
 	ctx := context.Background()
-	user := mustCreateUser(t, testEntClient(t), &service.User{Email: uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 99.93876543})
+	db, client := newBillingAuditDatabase(t)
+	user := mustCreateUser(t, client, &service.User{Email: uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 99.93876543})
 	key, account := int64(17), int64(23)
 	hold, actual := 0.0761995125, 0.0612345678
-	jobs := NewBatchImageRepository(integrationDB)
+	jobs := NewBatchImageRepository(db)
 	job, err := jobs.CreateBatchImageJob(ctx, service.CreateBatchImageJobParams{
 		BatchID: uuid.NewString(), UserID: user.ID, APIKeyID: &key, AccountID: &account,
 		Provider: service.BatchImageProviderGeminiAPI, Model: "legacy-image", Status: service.BatchImageJobStatusSettling,
@@ -69,9 +71,9 @@ func TestLegacyCaptureCommittedBeforeTaskStatusUpgradeRetryDoesNotMoveMoney(t *t
 	receipt := &service.BatchImageBalanceHoldCommand{RequestID: service.BatchImageCaptureRequestID(job.BatchID), BatchID: job.BatchID,
 		UserID: user.ID, APIKeyID: key, HoldAmount: hold, ActualAmount: actual, RequestPayloadHash: service.BuildBatchImageSettlementManifestHash(job)}
 	receipt.Normalize()
-	_, err = integrationDB.ExecContext(ctx, "INSERT INTO usage_billing_dedup(request_id,api_key_id,request_fingerprint) VALUES($1,$2,$3)", receipt.RequestID, key, receipt.RequestFingerprint)
+	_, err = db.ExecContext(ctx, "INSERT INTO usage_billing_dedup(request_id,api_key_id,request_fingerprint) VALUES($1,$2,$3)", receipt.RequestID, key, receipt.RequestFingerprint)
 	require.NoError(t, err)
-	s := &service.BatchImageSettlementService{Repo: jobs, BillingRepo: &usageBillingRepository{db: integrationDB}, Pricing: &batchSnapshotOnlyPrice{}}
+	s := &service.BatchImageSettlementService{Repo: jobs, BillingRepo: &usageBillingRepository{db: db}, Pricing: &batchSnapshotOnlyPrice{}}
 	result, err := s.Settle(ctx, job.BatchID)
 	require.NoError(t, err)
 	require.False(t, result.AlreadySettled)
@@ -82,7 +84,7 @@ func TestLegacyCaptureCommittedBeforeTaskStatusUpgradeRetryDoesNotMoveMoney(t *t
 	require.NoError(t, err)
 	require.Equal(t, service.BatchImageJobStatusCompleted, saved.Status)
 	var balance, frozen string
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text,frozen_balance::text FROM users WHERE id=$1", user.ID).Scan(&balance, &frozen))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT balance::text,frozen_balance::text FROM users WHERE id=$1", user.ID).Scan(&balance, &frozen))
 	require.Equal(t, "99.93876543", balance)
 	require.Equal(t, "0.00000000", frozen)
 }
