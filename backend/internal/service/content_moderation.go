@@ -2128,14 +2128,18 @@ func (s *ContentModerationService) sendFlaggedNotificationSideEffects(ctx contex
 	emailSent := false
 	if cfg.EmailOnHit {
 		if err := s.sendViolationEmail(ctx, cfg, log); err != nil {
-			slog.Warn("content_moderation.email_failed", "user_id", *log.UserID, "email", log.UserEmail, "error", err)
+			if !errors.Is(err, errModerationEmailExempt) {
+				slog.Warn("content_moderation.email_failed", "user_id", *log.UserID, "email", log.UserEmail, "error", err)
+			}
 		} else {
 			emailSent = true
 		}
 	}
 	if autoBanJustApplied {
 		if err := s.sendAccountDisabledEmail(ctx, cfg, log); err != nil {
-			slog.Warn("content_moderation.ban_email_failed", "user_id", *log.UserID, "email", log.UserEmail, "error", err)
+			if !errors.Is(err, errModerationEmailExempt) {
+				slog.Warn("content_moderation.ban_email_failed", "user_id", *log.UserID, "email", log.UserEmail, "error", err)
+			}
 		} else {
 			emailSent = true
 		}
@@ -2144,9 +2148,13 @@ func (s *ContentModerationService) sendFlaggedNotificationSideEffects(ctx contex
 }
 
 func (s *ContentModerationService) sendViolationEmail(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) error {
+	if err := s.checkModerationEmailExemption(ctx, log); err != nil {
+		return err
+	}
 	siteName := s.siteName(ctx)
 	if s.emailService.notificationEmailService != nil {
 		if err := s.emailService.notificationEmailService.Send(ctx, NotificationEmailSendInput{
+			beforeSend:     func(ctx context.Context) error { return s.checkModerationEmailExemption(ctx, log) },
 			Event:          NotificationEmailEventContentModerationViolation,
 			RecipientEmail: log.UserEmail,
 			RecipientName:  emailRecipientName(log.UserEmail),
@@ -2165,13 +2173,17 @@ func (s *ContentModerationService) sendViolationEmail(ctx context.Context, cfg *
 	}
 	subject := fmt.Sprintf("[%s] 账户风控提醒 / Risk Control Notice", sanitizeEmailHeader(siteName))
 	body := buildContentModerationViolationEmailBody(siteName, log, cfg)
-	return s.emailService.SendEmail(ctx, log.UserEmail, subject, body)
+	return s.sendModerationEmail(ctx, log, subject, body)
 }
 
 func (s *ContentModerationService) sendAccountDisabledEmail(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) error {
+	if err := s.checkModerationEmailExemption(ctx, log); err != nil {
+		return err
+	}
 	siteName := s.siteName(ctx)
 	if s.emailService.notificationEmailService != nil {
 		if err := s.emailService.notificationEmailService.Send(ctx, NotificationEmailSendInput{
+			beforeSend:     func(ctx context.Context) error { return s.checkModerationEmailExemption(ctx, log) },
 			Event:          NotificationEmailEventContentModerationDisabled,
 			RecipientEmail: log.UserEmail,
 			RecipientName:  emailRecipientName(log.UserEmail),
@@ -2190,7 +2202,7 @@ func (s *ContentModerationService) sendAccountDisabledEmail(ctx context.Context,
 	}
 	subject := fmt.Sprintf("[%s] 账户已被禁用 / Account Disabled", sanitizeEmailHeader(siteName))
 	body := buildContentModerationAccountDisabledEmailBody(siteName, log, cfg)
-	return s.emailService.SendEmail(ctx, log.UserEmail, subject, body)
+	return s.sendModerationEmail(ctx, log, subject, body)
 }
 
 func contentModerationEmailUserID(log *ContentModerationLog) int64 {
@@ -3276,13 +3288,17 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 	emailSent := false
 	if !in.LogOnly && !log.suppressNotification && s.emailService != nil && strings.TrimSpace(log.UserEmail) != "" {
 		if err := s.sendCyberPolicyEmail(ctx, log); err != nil {
-			slog.Warn("content_moderation.cyber_email_failed", "user_id", in.UserID, "error", err)
+			if !errors.Is(err, errModerationEmailExempt) {
+				slog.Warn("content_moderation.cyber_email_failed", "user_id", in.UserID, "error", err)
+			}
 		} else {
 			emailSent = true
 		}
 		if autoBanned {
 			if err := s.sendAccountDisabledEmail(ctx, cfg, log); err != nil {
-				slog.Warn("content_moderation.cyber_ban_email_failed", "user_id", in.UserID, "error", err)
+				if !errors.Is(err, errModerationEmailExempt) {
+					slog.Warn("content_moderation.cyber_ban_email_failed", "user_id", in.UserID, "error", err)
+				}
 			} else {
 				emailSent = true
 			}
@@ -3296,6 +3312,9 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 }
 
 func (s *ContentModerationService) sendCyberPolicyEmail(ctx context.Context, log *ContentModerationLog) error {
+	if err := s.checkModerationEmailExemption(ctx, log); err != nil {
+		return err
+	}
 	siteName := s.siteName(ctx)
 	if s.emailService.notificationEmailService != nil {
 		variables := map[string]string{
@@ -3305,6 +3324,7 @@ func (s *ContentModerationService) sendCyberPolicyEmail(ctx context.Context, log
 			"upstream_message": defaultContentModerationString(log.Error, "-"),
 		}
 		err := s.emailService.notificationEmailService.Send(ctx, NotificationEmailSendInput{
+			beforeSend:     func(ctx context.Context) error { return s.checkModerationEmailExemption(ctx, log) },
 			Event:          NotificationEmailEventCyberPolicyNotice,
 			RecipientEmail: log.UserEmail,
 			RecipientName:  emailRecipientName(log.UserEmail),
@@ -3322,7 +3342,7 @@ func (s *ContentModerationService) sendCyberPolicyEmail(ctx context.Context, log
 		slog.Warn("template cyber policy email failed; falling back", "err", err.Error())
 	}
 	subject := fmt.Sprintf("[%s] 网络安全策略拦截 / Cyber Policy Notice", sanitizeEmailHeader(siteName))
-	return s.emailService.SendEmail(ctx, log.UserEmail, subject, buildCyberPolicyNoticeEmailBody(siteName, log))
+	return s.sendModerationEmail(ctx, log, subject, buildCyberPolicyNoticeEmailBody(siteName, log))
 }
 
 func (s *ContentModerationService) CyberEvidence() *cyberevidence.Service {
