@@ -610,6 +610,12 @@ func (s *OpenAIOAuthReauthService) CreateTask(ctx context.Context, accountID int
 }
 
 func (s *OpenAIOAuthReauthService) CreateTaskForProfile(ctx context.Context, accountID int64, profile string) (*OpenAIOAuthReauthTask, error) {
+	return s.createTaskForProfile(ctx, accountID, profile, nil)
+}
+
+// The guard supplies an atomic budget-aware insertion, after all the same
+// credential, account, encryption and worker checks as a manual task.
+func (s *OpenAIOAuthReauthService) createTaskForProfile(ctx context.Context, accountID int64, profile string, creator func(context.Context, int64, string) (*OpenAIOAuthReauthTaskRecord, error)) (*OpenAIOAuthReauthTask, error) {
 	if profile != "codex" && profile != "excel" && profile != "siwc" {
 		return nil, infraerrors.BadRequest("OPENAI_REAUTH_PROFILE_INVALID", "Invalid OAuth profile")
 	}
@@ -665,7 +671,11 @@ func (s *OpenAIOAuthReauthService) CreateTaskForProfile(ctx context.Context, acc
 		}
 		record, err = excelRepo.CreateExcelTask(ctx, accountID, expectedCredentialsHash)
 	default:
-		record, err = s.repo.CreateTask(ctx, accountID, expectedCredentialsHash)
+		if creator != nil {
+			record, err = creator(ctx, accountID, expectedCredentialsHash)
+		} else {
+			record, err = s.repo.CreateTask(ctx, accountID, expectedCredentialsHash)
+		}
 	}
 	if err != nil {
 		if infraerrors.Code(err) == http.StatusConflict {

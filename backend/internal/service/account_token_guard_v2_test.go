@@ -15,6 +15,8 @@ import (
 )
 
 type accountTokenGuardV2TestRepo struct {
+	createTask  func(context.Context, int64, string) (*OpenAIOAuthReauthTaskRecord, error)
+	outcomes    []AccountReloginOutcome
 	record      *AccountTokenGuardV2Record
 	claimBusy   bool
 	completion  *AccountTokenGuardV2ProbeCompletion
@@ -155,6 +157,7 @@ func TestAccountTokenGuardV2SecondAuthFailureQueuesRelogin(t *testing.T) {
 	guardRepo := &accountTokenGuardV2TestRepo{record: &AccountTokenGuardV2Record{
 		AccountID: 42, Enabled: true, AutoReloginEnabled: true, FailStreak: 1, NextProbeAt: time.Now(),
 	}}
+	guardRepo.createTask = reauthRepo.CreateTask
 	svc := NewAccountTokenGuardV2Service(guardRepo, nil, reader, accountTokenGuardV2TestProber{err: &codexModelsManifestUpstreamError{
 		err: errors.New("unauthorized"), statusCode: http.StatusUnauthorized,
 	}}, reauth)
@@ -182,6 +185,7 @@ func TestAccountTokenGuardV2ActiveReloginTaskIsNotDuplicated(t *testing.T) {
 	guardRepo := &accountTokenGuardV2TestRepo{record: &AccountTokenGuardV2Record{
 		AccountID: 42, Enabled: true, AutoReloginEnabled: true, FailStreak: 1, NextProbeAt: time.Now(),
 	}}
+	guardRepo.createTask = reauthRepo.CreateTask
 	svc := NewAccountTokenGuardV2Service(guardRepo, nil, reader, accountTokenGuardV2TestProber{err: errors.New("invalid token")}, reauth)
 	record, err := guardRepo.GetAccount(context.Background(), 42)
 	require.NoError(t, err)
@@ -224,6 +228,7 @@ func TestAccountTokenGuardV2RulesDefaultAndPersistence(t *testing.T) {
 		ProbeIntervalSeconds: 900, RetryIntervalSeconds: 60,
 		ReloginCooldownSeconds: 7200, FailStreakThreshold: 3,
 	}
+	want = NormalizeReloginBudgetRules(want)
 	saved, err := svc.SaveRules(context.Background(), want)
 	require.NoError(t, err)
 	require.Equal(t, want, saved)
@@ -268,6 +273,7 @@ func TestAccountTokenGuardV2CustomRulesDriveProbe(t *testing.T) {
 	guardRepo := &accountTokenGuardV2TestRepo{record: &AccountTokenGuardV2Record{
 		AccountID: 42, Enabled: true, AutoReloginEnabled: true, NextProbeAt: time.Now(),
 	}}
+	guardRepo.createTask = reauthRepo.CreateTask
 	settings := &accountTokenGuardV2TestSettings{}
 	svc := NewAccountTokenGuardV2Service(guardRepo, settings, reader, accountTokenGuardV2TestProber{err: errors.New("invalid token")}, reauth)
 	_, err := svc.SaveRules(context.Background(), AccountTokenGuardV2Rules{
