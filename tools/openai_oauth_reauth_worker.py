@@ -1010,8 +1010,17 @@ def _session_studio_result(response: Any) -> dict[str, Any]:
                 if not isinstance(payload, dict):
                     raise WorkerError("Session Studio returned an invalid result")
                 return payload
-            if "credential" in event or "error" in event or str(event.get("status", "")).lower() in {
-                "active", "ok", "success", "succeeded", "failed", "error", "auth_failed"
+            # Typed notifications are not results, even when they contain an
+            # informational error or a status such as active. Only the result
+            # envelope above carries a terminal payload in the event protocol.
+            if event.get("type") in ("progress", "heartbeat"):
+                continue
+            if "type" in event:
+                raise WorkerError("Session Studio returned an unsupported event")
+            # Keep the legacy, unwrapped JSON result contract. An active status
+            # or a null error alone does not establish that login has finished.
+            if "credential" in event or event.get("error") or str(event.get("status", "")).lower() in {
+                "ok", "success", "succeeded", "failed", "error", "auth_failed"
             }:
                 return event
         if time.monotonic() >= deadline:
