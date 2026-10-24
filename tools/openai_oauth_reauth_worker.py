@@ -1174,6 +1174,22 @@ def process_password_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
     _best_effort_progress(api, task_id, "protocol_connecting")
     with tempfile.TemporaryDirectory(prefix="sub2api-reauth-") as temp_dir:
         output_path = Path(temp_dir) / "oauth.json"
+        diagnostic_path = Path(temp_dir) / "protocol-diagnostic.json"
+        if oauth_profile == "codex":
+            try:
+                from .openai_codex_oauth_adapter import prepare_codex_runtime, read_protocol_diagnostic, protocol_failure
+            except ImportError:
+                from openai_codex_oauth_adapter import prepare_codex_runtime, read_protocol_diagnostic, protocol_failure
+            try:
+                script = prepare_codex_runtime(root.resolve(), Path(temp_dir))
+            except ValueError:
+                raise WorkerError("unsupported_codex_runtime_layout") from None
+
+            def codex_diagnostic():
+                try:
+                    return read_protocol_diagnostic(diagnostic_path, task_id)
+                except ValueError:
+                    raise WorkerError(protocol_failure(None, 1, 0, "diagnostic_invalid")) from None
         if oauth_profile == "excel":
             try:
                 from .openai_excel_oauth_adapter import prepare_excel_runtime
@@ -1208,6 +1224,18 @@ def process_password_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
             command.extend(("--proxy", proxy_url))
         child_env = os.environ.copy()
         child_env.pop("OPENAI_REAUTH_WORKER_TOKEN", None)
+        # Only this task selects the private side channel. Ambient paths and
+        # identity hints must never carry diagnostics into another task.
+        for key in ("SUB2API_PROTOCOL_DIAGNOSTIC_PATH", "SUB2API_PROTOCOL_TASK_ID", "OPENAI_CODEX_EXPECTED_WORKSPACE"):
+            child_env.pop(key, None)
+        if oauth_profile == "codex":
+            child_env["SUB2API_PROTOCOL_DIAGNOSTIC_PATH"] = str(diagnostic_path)
+            child_env["SUB2API_PROTOCOL_TASK_ID"] = str(task_id)
+            child_env["CHATGPT_PROXY_MAX_ATTEMPTS"] = "1"
+            for key in ("CHATGPT_BASE", "AUTH_BASE", "CHATGPT_PROXY_URL"):
+                child_env.pop(key, None)
+            if claim.get("expected_workspace"):
+                child_env["OPENAI_CODEX_EXPECTED_WORKSPACE"] = str(claim["expected_workspace"])
         if oauth_profile == "excel":
             # One bounded fixed-exit attempt. Never rotate proxies to retry a rejected login.
             child_env["CHATGPT_PROXY_MAX_ATTEMPTS"] = "1"
@@ -1231,19 +1259,35 @@ def process_password_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
             child_env["CHATGPT_TOTP_SECRET"] = totp_secret
         else:
             child_env.pop("CHATGPT_TOTP_SECRET", None)
+        protocol_started = time.monotonic()
         try:
             result = subprocess.run(
                 command,
                 cwd=temp_dir,
                 env=child_env,
                 stdin=subprocess.DEVNULL,
-                capture_output=True,
+                # Codex diagnostics never depend on raw runner output. Other
+                # profiles retain their existing private classification path.
+                stdout=subprocess.DEVNULL if oauth_profile == "codex" else subprocess.PIPE,
+                stderr=subprocess.DEVNULL if oauth_profile == "codex" else subprocess.PIPE,
                 text=True,
                 timeout=10 * 60 if oauth_profile in {"excel", "siwc"} else 25 * 60,
                 check=False,
             )
         except subprocess.TimeoutExpired:
+            if oauth_profile == "codex":
+                raise WorkerError(protocol_failure(codex_diagnostic(), 1,
+                                  (time.monotonic() - protocol_started) * 1000, "timeout")) from None
             raise WorkerError("password/TOTP protocol timed out") from None
+        except OSError:
+            if oauth_profile == "codex":
+                raise WorkerError(protocol_failure(None, 1,
+                                  (time.monotonic() - protocol_started) * 1000, "runtime_error")) from None
+            raise WorkerError("password/TOTP protocol could not start") from None
+        diagnostic = codex_diagnostic() if oauth_profile == "codex" else None
+        if oauth_profile == "codex" and diagnostic and (result.returncode != 0 or diagnostic["reason"] != "none"):
+            raise WorkerError(protocol_failure(diagnostic, result.returncode,
+                              (time.monotonic() - protocol_started) * 1000))
         if oauth_profile == "excel" and callable(getattr(api, "private_protocol_diagnostics", None)):
             # Only the explicit isolated CLI implements this hook. The queue API
             # cannot select a path or persist raw external-runner output.
@@ -1268,7 +1312,7 @@ def process_password_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
                            ("SESSION_SELECTION_INVALID", "session_selection"), ("CLIENT_ID", "client_id")) if marker in private_output]
                 reason = ",".join(sorted(set(reasons))) or "protocol_error"
                 raise WorkerError(f"Excel password/TOTP login failed (stage={stage}, reason={reason}, exit={result.returncode})")
-            private_output = result.stdout + "\n" + result.stderr
+            private_output = (result.stdout or "") + "\n" + (result.stderr or "")
             if proxy_url and any(marker in private_output.lower() for marker in (
                 "econnrefused", "connection refused", "proxy connect", "proxy error",
                 "could not connect", "connect etimedout", "socket hang up",
@@ -1280,8 +1324,15 @@ def process_password_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
                 raise WorkerError("totp_rejected")
             raise WorkerError(f"password/TOTP protocol failed (exit {result.returncode})")
         try:
-            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            with output_path.open("rb") as output:
+                raw_output = output.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw_output) > MAX_RESPONSE_BYTES:
+                raise ValueError
+            payload = json.loads(raw_output)
         except (OSError, UnicodeDecodeError, ValueError):
+            if oauth_profile == "codex":
+                raise WorkerError(protocol_failure(diagnostic, 0,
+                                  (time.monotonic() - protocol_started) * 1000, "output_invalid")) from None
             raise WorkerError("password/TOTP protocol did not produce valid OAuth credentials") from None
 
     if oauth_profile == "siwc":
@@ -1297,7 +1348,7 @@ def process_password_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
     credentials = account.get("credentials") if isinstance(account, dict) else None
     extra = account.get("extra") if isinstance(account, dict) else None
     if not isinstance(credentials, dict) or not all(
-        str(credentials.get(key) or "").strip()
+        isinstance(credentials.get(key), str) and credentials[key].strip()
         for key in ("access_token", "refresh_token", "id_token")
     ):
         raise WorkerError("password/TOTP protocol returned incomplete OAuth credentials")
