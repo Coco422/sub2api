@@ -411,7 +411,7 @@ describe('managed re-login availability', () => {
         diagnostic: { stage: 'token_exchange', reason: 'token_exchange_failed', elapsed_ms: 120, exit_code: 1 } }
     }] })
     wrapper = mount(TokenGuardV2View, { global: { stubs: {
-      AppLayout: { template: '<div><slot /></div>' }, Pagination: true, OpenAITOTPDialog: true
+      AppLayout: { template: '<div><slot /></div>' }, SmartOpsNav: true, Pagination: true, OpenAITOTPDialog: true
     } } })
     await flushPromises()
     expect(wrapper.text()).toContain('failed: token_exchange · token_exchange_failed · 120 ms')
