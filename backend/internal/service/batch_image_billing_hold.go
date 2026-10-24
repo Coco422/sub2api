@@ -38,6 +38,12 @@ func buildBatchImageHoldCommand(job *BatchImageJob, requestID string, actualAmou
 	if job.HoldAmount != nil {
 		holdAmount = *job.HoldAmount
 	}
+	// Never infer a legacy job's actual frozen amount from the user's pooled
+	// frozen_balance. Its original ten-place hold may have rounded either way.
+	// No automatic rounding, refund or capture of historical ambiguous holds.
+	if holdAmount != QuantizeUsageBillingAmount(holdAmount) {
+		return nil, ErrBatchImageLegacyMoneyPrecision
+	}
 	if holdAmount < 0 {
 		holdAmount = 0
 	}

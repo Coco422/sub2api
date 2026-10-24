@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -154,6 +155,15 @@ func (r *usageBillingRepository) applyBatchImageBalanceHold(
 	if !applied {
 		return &service.BatchImageBalanceHoldResult{Applied: false}, nil
 	}
+	// Check after dedup so retries of an already committed historical operation
+	// remain idempotent. Unapplied high-precision holds require explicit review.
+	if math.IsNaN(cmd.HoldAmount) || math.IsInf(cmd.HoldAmount, 0) || cmd.HoldAmount < 0 ||
+		math.IsNaN(cmd.ActualAmount) || math.IsInf(cmd.ActualAmount, 0) || cmd.ActualAmount < 0 ||
+		cmd.HoldAmount != service.QuantizeUsageBillingAmount(cmd.HoldAmount) {
+		return nil, service.ErrBatchImageLegacyMoneyPrecision
+	}
+	// Legacy exact holds can retain their old actual-amount policy. New version-2
+	// tasks quantize both values before constructing this command.
 
 	result, err := apply(ctx, tx, cmd)
 	if err != nil {
