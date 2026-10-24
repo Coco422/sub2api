@@ -37,6 +37,128 @@ def parallel_probe(config, stop=None):
 
 
 class ReauthEngineTests(unittest.TestCase):
+    def fixture(self, name):
+        return (Path(__file__).parent / 'fixtures' / 'session-studio' / name).read_bytes()
+
+    def test_duplicate_fields_cannot_overwrite_terminal_failure(self):
+        for name in ('duplicate-error.ndjson', 'duplicate-status.ndjson',
+                     'duplicate-payload.ndjson', 'escaped-duplicate-error.ndjson'):
+            raw = self.fixture(name)
+            # Every fixture would be accepted by the old last-key-wins decoder.
+            legacy = json.loads(raw)['payload']
+            self.assertFalse(legacy.get('error'))
+            self.assertNotEqual(legacy.get('status'), 'failed')
+            self.assertEqual(legacy['credential'], self.credentials())
+            for chunks in ([raw], [bytes([c]) for c in raw]):
+                with self.subTest(name=name, chunks=len(chunks)):
+                    api = self.api()
+                    response = ChunkResponse(chunks)
+                    with patch.object(worker.NO_REDIRECT_OPENER, 'open', return_value=response), self.assertRaisesRegex(
+                        worker.SessionStudioError, '^Session Studio returned ambiguous JSON$'
+                    ) as failure:
+                        worker.process_password_claim(api, self.claim())
+                    self.assertEqual(failure.exception.reason, 'duplicate_field')
+                    api.credentials.assert_not_called()
+                    self.assertTrue(response.closed)
+
+    def test_offline_fixture_result_and_failure_are_not_interchangeable(self):
+        for name, success in (('progress-success.ndjson', True), ('provider-failed.ndjson', False)):
+            with self.subTest(name=name):
+                api = self.api()
+                response = ChunkResponse([self.fixture(name)])
+                with patch.object(worker.NO_REDIRECT_OPENER, 'open', return_value=response):
+                    if success:
+                        worker.process_password_claim(api, self.claim())
+                        api.credentials.assert_called_once_with(7, self.credentials(), {})
+                    else:
+                        with self.assertRaises(worker.SessionStudioError) as failure:
+                            worker.process_password_claim(api, self.claim())
+                        self.assertEqual(failure.exception.stage, 'terminal_result')
+                        self.assertEqual(failure.exception.reason, 'provider_failed')
+                        api.credentials.assert_not_called()
+
+    def test_run_once_reports_only_observed_allowlisted_phase(self):
+        cases = (
+            (self.fixture('provider-failed.ndjson'), 'terminal_result', 'provider_failed'),
+            (self.fixture('duplicate-error.ndjson'), 'event_stream', 'duplicate_field'),
+            (b'{"type":"heartbeat"}', 'event_stream', 'missing_result'),
+            (b'{"type":"result","payload":null}', 'terminal_result', 'invalid_result'),
+            (b'{"credential":{"access_token":"synthetic-private"}}', 'credentials_validation', 'credentials_incomplete'),
+        )
+        for raw, stage, reason in cases:
+            with self.subTest(stage=stage, reason=reason):
+                api = self.api()
+                api.claim = Mock(return_value=self.claim())
+                api.fail = Mock()
+                with patch.object(worker.NO_REDIRECT_OPENER, 'open', return_value=ChunkResponse([raw])), patch.object(
+                    worker.subprocess, 'run'
+                ) as local, self.assertLogs(worker.LOGGER, level='ERROR') as logs:
+                    self.assertTrue(worker.run_once(api, None))
+                task_id, diagnostic = api.fail.call_args.args
+                self.assertEqual(task_id, 7)
+                self.assertRegex(diagnostic, rf'^session_studio_failed stage={stage} reason={reason} elapsed_ms=[0-9]+ http_status=0$')
+                self.assertNotIn('synthetic', diagnostic + str(logs.output))
+                api.credentials.assert_not_called()
+                local.assert_not_called()
+
+    def test_http_rejection_never_reads_body_or_retries(self):
+        for code in (302, 401, 403, 429, 500):
+            with self.subTest(code=code):
+                api = self.api()
+                api.claim = Mock(return_value=self.claim())
+                api.fail = Mock()
+                body = Mock()
+                error = HTTPError('https://session.example/', code, 'synthetic-private', {}, body)
+                with patch.object(worker.NO_REDIRECT_OPENER, 'open', side_effect=error) as opener, patch.object(
+                    worker.subprocess, 'run'
+                ) as local:
+                    self.assertTrue(worker.run_once(api, None))
+                self.assertRegex(api.fail.call_args.args[1], rf'^session_studio_failed stage=http_request reason=http_rejected elapsed_ms=[0-9]+ http_status={code}$')
+                body.read.assert_not_called()
+                opener.assert_called_once()
+                local.assert_not_called()
+                api.credentials.assert_not_called()
+
+    def test_submission_failure_remains_failed_and_private(self):
+        for result in ({'status': 'failed', 'error': 'synthetic-private'}, None, worker.WorkerError('synthetic-private')):
+            with self.subTest(result=type(result).__name__):
+                api = self.api()
+                if isinstance(result, Exception):
+                    api.credentials.side_effect = result
+                else:
+                    api.credentials.return_value = result
+                api.claim = Mock(return_value=self.claim())
+                api.fail = Mock()
+                with patch.object(worker.NO_REDIRECT_OPENER, 'open', return_value=ChunkResponse([self.fixture('progress-success.ndjson')])):
+                    self.assertTrue(worker.run_once(api, None))
+                diagnostic = api.fail.call_args.args[1]
+                self.assertIn('stage=credentials_submit', diagnostic)
+                self.assertIn('reason=submission_failed' if isinstance(result, Exception) else 'reason=credentials_not_accepted', diagnostic)
+                self.assertNotIn('synthetic', diagnostic)
+                api.credentials.assert_called_once_with(7, self.credentials(), {})
+
+    def test_non_json_constants_are_not_successful_credentials(self):
+        for constant in (b'NaN', b'Infinity', b'-Infinity'):
+            with self.subTest(constant=constant), self.assertRaises(worker.SessionStudioError):
+                worker._session_studio_result(ChunkResponse([b'{"credential":{},"error":' + constant + b'}']))
+
+    def test_diagnostic_survives_real_fail_serialization_without_unmasking_secrets(self):
+        cfg = worker.WorkerConfig('http://127.0.0.1', 'x' * 32, 'synthetic-worker', None)
+        api = worker.WorkerAPI(cfg)
+        for elapsed in (0, 99999, 100000, 123456, 999999, 1000000, 3600000):
+            diagnostic = f'session_studio_failed stage=terminal_result reason=provider_failed elapsed_ms={elapsed} http_status=0'
+            with self.subTest(elapsed=elapsed), patch.object(api, '_post') as post:
+                api.fail(7, diagnostic)
+                self.assertEqual(post.call_args.args[1], {'worker_id': 'synthetic-worker', 'reason': diagnostic})
+        for raw in (
+            diagnostic + ' synthetic-private',
+            diagnostic.replace('terminal_result', 'synthetic-private'),
+            diagnostic.replace('provider_failed', 'token_exchange_failed'),
+            diagnostic.replace('3600000', '3600001'),
+            diagnostic.replace('http_status=0', 'http_status=403'),
+        ):
+            self.assertEqual(worker.sanitize_error(raw), 'Session Studio failed; invalid diagnostic omitted')
+
     def claim(self):
         return dict(task_id=7, account_id=42, credential_mode='password_totp',
                     engine='session_studio', login_email='demo@example.com',

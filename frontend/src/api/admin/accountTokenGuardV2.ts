@@ -19,7 +19,7 @@ export interface TokenGuardV2LoginConfig {
 }
 
 export interface TokenGuardV2Task {
-  diagnostic?: { stage: string; reason: string; elapsed_ms: number; exit_code: number }
+  diagnostic?: { engine?: TokenGuardV2Engine; stage: string; reason: string; elapsed_ms: number; exit_code?: number; http_status?: number }
   id: number
   account_id: number
   status: string

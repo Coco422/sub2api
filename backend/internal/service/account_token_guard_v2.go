@@ -22,6 +22,7 @@ const (
 	AccountTokenGuardV2ProbeOK        = "ok"
 	AccountTokenGuardV2ProbeAuth      = "auth"
 	AccountTokenGuardV2ProbeTransient = "transient"
+	accountTokenGuardV2PolicyBlocked  = "upstream request or policy denied (403); automatic re-login blocked"
 
 	AccountTokenGuardV2ProbeInterval   = 30 * time.Minute
 	AccountTokenGuardV2RetryInterval   = 5 * time.Minute
@@ -498,6 +499,9 @@ func (s *AccountTokenGuardV2Service) runProbe(ctx context.Context, record Accoun
 	} else if pending {
 		completion.BlockedReason = "re-login task active or history reconciliation pending"
 	}
+	if state == AccountTokenGuardV2ProbeTransient && detail == accountTokenGuardV2PolicyBlocked {
+		completion.BlockedReason = detail
+	}
 	switch state {
 	case AccountTokenGuardV2ProbeOK:
 		completion.FailStreak = 0
@@ -547,6 +551,14 @@ func (s *AccountTokenGuardV2Service) probeAccount(ctx context.Context, account *
 		return AccountTokenGuardV2ProbeOK, "credential accepted"
 	}
 	var upstreamErr *codexModelsManifestUpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr.statusCode == http.StatusForbidden {
+		policy, _, _ := detectOpenAICyberPolicy(upstreamErr.body)
+		if policy || isOpenAIUpstreamSessionBlocked(upstreamErr.body) || isOpenAIRequestScoped403(account, upstreamErr.statusCode, upstreamErr.body) {
+			// These denials say nothing about credential health. Never issue a
+			// fresh login/session to bypass them, or echo the upstream body.
+			return AccountTokenGuardV2ProbeTransient, accountTokenGuardV2PolicyBlocked
+		}
+	}
 	if errors.As(err, &upstreamErr) && (upstreamErr.statusCode == http.StatusUnauthorized || upstreamErr.statusCode == http.StatusForbidden) {
 		return AccountTokenGuardV2ProbeAuth, fmt.Sprintf("upstream returned %d", upstreamErr.statusCode)
 	}
