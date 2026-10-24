@@ -40,12 +40,19 @@ func TestBatchImageLegacyAmbiguousHoldRequiresReview(t *testing.T) {
 		job := testSettlingBatchImageJob("legacy-precision")
 		job.HoldAmount = &hold
 		for _, id := range []string{BatchImageHoldRequestID(job.BatchID), BatchImageCaptureRequestID(job.BatchID), BatchImageReleaseRequestID(job.BatchID)} {
-			_, err := buildBatchImageHoldCommand(job, id, 0, "payload")
+			cmd, err := buildBatchImageHoldCommand(job, id, 0, "payload")
+			require.NoError(t, err)
+			require.Equal(t, hold, cmd.HoldAmount, "retain the exact input for read-only receipt verification")
+			handled, err := confirmAmbiguousBatchImageRetry(context.Background(), &fakeBatchImageBillingRepo{}, cmd)
+			require.True(t, handled)
 			require.ErrorIs(t, err, ErrBatchImageLegacyMoneyPrecision)
 		}
 	}
 	job := testSettlingBatchImageJob("legacy-actual-precision")
-	_, err := buildBatchImageHoldCommand(job, BatchImageCaptureRequestID(job.BatchID), 0.000078125, "payload")
+	cmd, err := buildBatchImageHoldCommand(job, BatchImageCaptureRequestID(job.BatchID), 0.000078125, "payload")
+	require.NoError(t, err)
+	handled, err := confirmAmbiguousBatchImageRetry(context.Background(), &fakeBatchImageBillingRepo{}, cmd)
+	require.True(t, handled)
 	require.ErrorIs(t, err, ErrBatchImageLegacyMoneyPrecision)
 }
 
