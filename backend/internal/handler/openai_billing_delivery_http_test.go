@@ -68,7 +68,11 @@ func TestOpenAIGatewayHandlerRealHTTPDeliveryFailureDoesNotInventUsageOrRecallMo
 				c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: key.UserID, Concurrency: 1})
 				c.Next()
 			})
-			router.POST("/openai/v1/responses", h.Responses)
+			finished := make(chan struct{})
+			router.POST("/openai/v1/responses", func(c *gin.Context) {
+				defer close(finished)
+				h.Responses(c)
+			})
 			ingress := httptest.NewServer(router)
 			defer ingress.Close()
 			client := &http.Client{Timeout: 5 * time.Second}
@@ -77,6 +81,11 @@ func TestOpenAIGatewayHandlerRealHTTPDeliveryFailureDoesNotInventUsageOrRecallMo
 			body, err := io.ReadAll(res.Body)
 			_ = res.Body.Close()
 			require.NoError(t, err)
+			select {
+			case <-finished:
+			case <-time.After(5 * time.Second):
+				t.Fatal("actual OpenAI handler did not finish its delivery boundary")
+			}
 			require.Equal(t, http.StatusOK, res.StatusCode)
 			require.Contains(t, string(body), "resp_billing_boundary")
 			require.Equal(t, int32(1), calls.Load())
