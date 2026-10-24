@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,7 +94,18 @@ func TestModerationEmailExemptionActualSendPaths(t *testing.T) {
 				require.Equal(t, []int64{42}, cache.userIDs)
 				require.NoError(t, moderationMailSend(svc, event, log))
 				require.EqualValues(t, 1, smtp.conns.Load())
-				require.True(t, smtp.sawCommand("RCPT TO:<user@example.test>"))
+				// sawCommand uppercases entire lines, including mailbox local parts.
+				// Compare raw RCPT commands to preserve the exact recipient and reject extras.
+				smtp.mu.Lock()
+				commands := append([]string(nil), smtp.commands...)
+				smtp.mu.Unlock()
+				var recipients []string
+				for _, command := range commands {
+					if strings.HasPrefix(strings.ToUpper(command), "RCPT TO:") {
+						recipients = append(recipients, command)
+					}
+				}
+				require.Equal(t, []string{"RCPT TO:<user@example.test>"}, recipients)
 				require.True(t, smtp.sawCommand("DATA"))
 			})
 		}
