@@ -71,7 +71,7 @@ func insertUsageBillingQuote(ctx context.Context, tx *sql.Tx, cmd *service.Usage
 		return nil
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO usage_billing_quotes
-		(request_id,api_key_id,request_fingerprint,quoted_actual_cost,charged_actual_cost)
+		(request_id,api_key_id,request_fingerprint,quoted_actual_cost,canonical_actual_cost)
 		VALUES($1,$2,$3,$4,$5)`, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint,
 		*cmd.QuotedActualCost, service.QuantizeUsageBillingAmount(*cmd.QuotedActualCost))
 	return err

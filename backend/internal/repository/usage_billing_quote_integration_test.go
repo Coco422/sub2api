@@ -28,7 +28,7 @@ func TestUsageBillingQuoteKeepsRawQuoteAndExactMoneyDelta(t *testing.T) {
 	var balance, quota, quote, charged string
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance::text FROM users WHERE id=$1", user.ID).Scan(&balance))
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quota_used::text FROM api_keys WHERE id=$1", key.ID).Scan(&quota))
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quoted_actual_cost::text,charged_actual_cost::text FROM usage_billing_quotes WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, key.ID).Scan(&quote, &charged))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quoted_actual_cost::text,canonical_actual_cost::text FROM usage_billing_quotes WHERE request_id=$1 AND api_key_id=$2", cmd.RequestID, key.ID).Scan(&quote, &charged))
 	require.Equal(t, "0.99992187", balance)
 	require.Equal(t, "0.00007813", quota)
 	require.Equal(t, "0.0000781250", quote)
