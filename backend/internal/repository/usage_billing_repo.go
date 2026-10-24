@@ -173,11 +173,11 @@ func (r *usageBillingRepository) applyBatchImageBalanceHold(
 	// remain idempotent. Unapplied high-precision holds require explicit review.
 	if math.IsNaN(cmd.HoldAmount) || math.IsInf(cmd.HoldAmount, 0) || cmd.HoldAmount < 0 ||
 		math.IsNaN(cmd.ActualAmount) || math.IsInf(cmd.ActualAmount, 0) || cmd.ActualAmount < 0 ||
-		cmd.HoldAmount != service.QuantizeUsageBillingAmount(cmd.HoldAmount) {
+		cmd.HoldAmount != service.QuantizeUsageBillingAmount(cmd.HoldAmount) || cmd.ActualAmount != service.QuantizeUsageBillingAmount(cmd.ActualAmount) {
 		return nil, service.ErrBatchImageLegacyMoneyPrecision
 	}
-	// Legacy exact holds can retain their old actual-amount policy. New version-2
-	// tasks quantize both values before constructing this command.
+	// Only exact legacy amounts are unambiguous. New version-2 tasks quantize
+	// both values before constructing this command.
 
 	result, err := apply(ctx, tx, cmd)
 	if err != nil {

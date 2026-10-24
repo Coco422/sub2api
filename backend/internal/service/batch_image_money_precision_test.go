@@ -44,6 +44,9 @@ func TestBatchImageLegacyAmbiguousHoldRequiresReview(t *testing.T) {
 			require.ErrorIs(t, err, ErrBatchImageLegacyMoneyPrecision)
 		}
 	}
+	job := testSettlingBatchImageJob("legacy-actual-precision")
+	_, err := buildBatchImageHoldCommand(job, BatchImageCaptureRequestID(job.BatchID), 0.000078125, "payload")
+	require.ErrorIs(t, err, ErrBatchImageLegacyMoneyPrecision)
 }
 
 func TestBatchImageVersionTwoSettlementRoundsCompleteAmountOnce(t *testing.T) {
