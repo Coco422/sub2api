@@ -74,6 +74,9 @@ func invalidateDurableUsageBilling(ctx context.Context, recovered *UsageBillingR
 		if e.Command.APIKeyRateLimitCost > 0 {
 			err = errors.Join(err, cache.InvalidateAPIKeyRateLimit(ctx, e.Command.APIKeyID))
 		}
+		if e.Command.PlatformQuotaCost > 0 {
+			err = errors.Join(err, cache.InvalidateDurablePlatformQuota(ctx, e.Command.UserID, e.Command.PlatformQuotaPlatform))
+		}
 	}
 	if auth != nil && recovered.Result.APIKeyQuotaExhausted {
 		auth.InvalidateAuthCacheByUserID(ctx, e.Command.UserID)
@@ -94,6 +97,7 @@ func applyDurableUsageBilling(ctx context.Context, repo DurableUsageBillingRepos
 	if err := invalidateDurableUsageBilling(ctx, recovered, deps.billingCacheService, auth); err != nil {
 		// The committed canonical usage is already authoritative. Cache work
 		// stays pending for the recovery worker; never call legacy billing.
+		deferUsageBillingCache(repo, ctx, key)
 		return false, err
 	}
 	if recovered != nil && recovered.NeedsCache {
@@ -103,6 +107,10 @@ func applyDurableUsageBilling(ctx context.Context, repo DurableUsageBillingRepos
 	}
 	if deps.deferredService != nil && p.Account != nil {
 		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+	}
+	if recovered != nil && recovered.Result.Applied && !p.SimpleModeKeyRateLimitOnly {
+		go notifyBalanceLow(p, deps, &recovered.Result)
+		go notifyAccountQuota(p, deps, &recovered.Result)
 	}
 	return recovered != nil && recovered.Result.Applied, nil
 }
@@ -155,7 +163,20 @@ func recoverUsageBillingBatch(ctx context.Context, repo DurableUsageBillingRepos
 		if err == nil && r != nil && r.NeedsCache {
 			err = repo.AcknowledgeUsageBillingCache(ctx, key)
 		}
+		if err != nil && r != nil && r.NeedsCache {
+			deferUsageBillingCache(repo, ctx, key)
+		}
 		failures = errors.Join(failures, err)
 	}
 	return failures
+}
+
+func deferUsageBillingCache(repo DurableUsageBillingRepository, parent context.Context, key UsageBillingEventKey) {
+	if retry, ok := repo.(interface {
+		DeferUsageBillingCache(context.Context, UsageBillingEventKey) error
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), time.Second)
+		defer cancel()
+		_ = retry.DeferUsageBillingCache(ctx, key)
+	}
 }

@@ -45,7 +45,7 @@ func (r *usageBillingRepository) StageUsageBilling(ctx context.Context, cmd *ser
 	// Keep the first immutable usage snapshot. Repeated delivery may observe a
 	// later wall clock, but must never change the command, owner or monetary basis.
 	var same bool
-	err = tx.QueryRowContext(ctx, `SELECT schema_version=1 AND request_fingerprint=$3 AND payload->'command'=$4::jsonb
+	err = tx.QueryRowContext(ctx, `SELECT schema_version=1 AND request_fingerprint=$3 AND ((payload->'command')-'PlatformUsageAt')=($4::jsonb-'PlatformUsageAt')
 		FROM usage_billing_events WHERE request_id=$1 AND api_key_id=$2`, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint, string(command)).Scan(&same)
 	if err != nil {
 		return err
@@ -61,7 +61,7 @@ func (r *usageBillingRepository) StageUsageBilling(ctx context.Context, cmd *ser
 	check, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	var stored bool
-	checkErr := r.db.QueryRowContext(check, `SELECT schema_version=1 AND request_fingerprint=$3 AND payload->'command'=$4::jsonb
+	checkErr := r.db.QueryRowContext(check, `SELECT schema_version=1 AND request_fingerprint=$3 AND ((payload->'command')-'PlatformUsageAt')=($4::jsonb-'PlatformUsageAt')
 		FROM usage_billing_events WHERE request_id=$1 AND api_key_id=$2`, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint, string(command)).Scan(&stored)
 	if checkErr == nil && stored {
 		return nil
@@ -205,7 +205,8 @@ func (r *usageBillingRepository) PendingUsageBilling(ctx context.Context, limit 
 		return nil, errors.New("invalid usage recovery batch size")
 	}
 	rows, err := r.db.QueryContext(ctx, `SELECT request_id,api_key_id FROM usage_billing_events
-		WHERE state IN ('pending','applied') AND next_attempt_at<=NOW() ORDER BY next_attempt_at,staged_at LIMIT $1`, limit)
+		WHERE state IN ('pending','applied') AND next_attempt_at<=NOW()
+		ORDER BY CASE WHEN state='pending' THEN 0 ELSE 1 END,next_attempt_at,staged_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +223,13 @@ func (r *usageBillingRepository) PendingUsageBilling(ctx context.Context, limit 
 }
 
 func (r *usageBillingRepository) AcknowledgeUsageBillingCache(ctx context.Context, key service.UsageBillingEventKey) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE usage_billing_events SET state='complete',completed_at=NOW()
+	_, err := r.db.ExecContext(ctx, `UPDATE usage_billing_events SET state='complete',completed_at=NOW(),failure_code=NULL
 		WHERE request_id=$1 AND api_key_id=$2 AND state='applied'`, key.RequestID, key.APIKeyID)
+	return err
+}
+
+func (r *usageBillingRepository) DeferUsageBillingCache(ctx context.Context, key service.UsageBillingEventKey) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE usage_billing_events SET next_attempt_at=NOW()+INTERVAL '30 seconds',
+		attempts=attempts+1,failure_code='cache_invalidation_failed' WHERE request_id=$1 AND api_key_id=$2 AND state='applied'`, key.RequestID, key.APIKeyID)
 	return err
 }

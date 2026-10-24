@@ -37,3 +37,31 @@ hold transaction, all other holds for that user, captures/releases and current
 balances. An individually reviewed correction would require separate approval,
 an immutable correction identity and a transaction proving both ownership and
 conservation. This PR supplies no operator action to perform that correction.
+
+New ordinary platform-quota increments commit with the charge and dedup claim,
+independently of the legacy flusher flag. `usage_platform_quota_totals` keeps the
+new projection separate from the existing baseline. The effective view combines
+only matching current windows; old events cannot rewind a newer window. Explicit
+administrator resets update both components in one transaction. Quota removal
+and recreation use different quota row identities.
+
+The combined read cache has its own namespace. It is invalidated idempotently;
+new billing never replays Redis monetary deltas. Legacy dirty entries retain
+their original namespace so the old flusher can finish its baseline snapshots
+without overwriting or double-counting new deltas. Missing/old-schema legacy
+increments return an explicit not-applied error. No historical cache values are
+imported, no missing old charges are inferred, and no balance adjustments occur
+at migration time. Existing legacy backlog requires separate evidence and must
+not be described as repaired by this PR.
+
+The raw customer quote is stored in `usage_billing_quotes.quoted_actual_cost`;
+`canonical_actual_cost` records the eight-place canonical amount. Canonical
+usage and cache reloads use that same customer amount. `total_cost` and the
+account cost multiplier retain their independent meaning. A subscription or
+simple-mode key-window charge is not new cash revenue.
+
+Release review must account for the new durable events, projections and owned
+holds before any rollback to an old binary that cannot read them. Batch workers
+must all understand version-2 ownership before processing new jobs; outstanding
+legacy financial writers/caches need a reviewed drain boundary. These are code
+compatibility limits, not authorization to perform a cutover or repair data.

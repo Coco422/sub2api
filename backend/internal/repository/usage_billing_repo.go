@@ -247,6 +247,12 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 		}
 		result.QuotaState = quotaState
 	}
+	if cmd.PlatformQuotaCost > 0 && cmd.PlatformQuotaPlatform != "" {
+		if err := incrementUsageBillingPlatformQuota(ctx, tx, cmd); err != nil {
+			return err
+		}
+		result.PlatformQuotaApplied = true
+	}
 
 	return nil
 }
