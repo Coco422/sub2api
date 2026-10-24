@@ -38,6 +38,14 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 LOGGER = logging.getLogger("openai_reauth_worker")
 MAX_RESPONSE_BYTES = 1_048_576
+SESSION_STUDIO_PHASE_REASONS = {
+    "http_request": {"http_rejected", "transport_error"},
+    "event_stream": {"duplicate_field", "invalid_json", "unsupported_event", "timeout",
+                     "missing_result", "response_too_large", "transport_error"},
+    "terminal_result": {"invalid_result", "provider_failed"},
+    "credentials_validation": {"credentials_incomplete"},
+    "credentials_submit": {"submission_failed", "credentials_not_accepted"},
+}
 CODE_RE = re.compile(r"\b(\d{6})\b")
 URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 SENSITIVE_PARAM_RE = re.compile(
@@ -58,6 +66,21 @@ CONTEXT_CODE_RE = re.compile(
 
 class WorkerError(RuntimeError):
     pass
+
+
+class SessionStudioError(WorkerError):
+    """Client-observed failure only; never carries provider diagnostic fields."""
+
+    def __init__(self, message: str, stage: str, reason: str, http_status: int = 0):
+        super().__init__(message)
+        self.stage = stage
+        self.reason = reason
+        self.http_status = http_status
+        self.elapsed_ms = 0
+
+    def diagnostic(self) -> str:
+        return sanitize_error(f"session_studio_failed stage={self.stage} reason={self.reason} "
+                              f"elapsed_ms={self.elapsed_ms} http_status={self.http_status}")
 
 
 class ProtocolHTTPError(WorkerError):
@@ -706,6 +729,20 @@ def _best_effort_progress(api: WorkerAPI, task_id: int, stage: str) -> None:
 
 
 def sanitize_error(value: str) -> str:
+    raw = str(value or "").strip()
+    if raw.startswith("session_studio_failed"):
+        # Validate the whole protocol before bypassing generic secret masking:
+        # a six-digit elapsed_ms is a measurement, not a six-digit OTP.
+        match = re.fullmatch(
+            r"session_studio_failed stage=([a-z_]+) reason=([a-z_]+) elapsed_ms=([0-9]{1,7}) http_status=([0-9]{1,3})",
+            raw if len(raw) <= 256 else "",
+        )
+        if match:
+            stage, reason, elapsed, status = match.groups()
+            valid_status = 100 <= int(status) <= 599 if reason == "http_rejected" else int(status) == 0
+            if reason in SESSION_STUDIO_PHASE_REASONS.get(stage, set()) and int(elapsed) <= 3600000 and valid_status:
+                return raw
+        return "Session Studio failed; invalid diagnostic omitted"
     text = URL_RE.sub("[redacted URL]", str(value or ""))
     text = SENSITIVE_PARAM_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
     text = SENSITIVE_JSON_RE.sub(lambda match: f"{match.group(1)}[redacted]", text)
@@ -990,7 +1027,20 @@ def process_claim(api: WorkerAPI, protocol: SimpleNamespace | None, claim: dict[
 
 def _session_studio_result(response: Any) -> dict[str, Any]:
     """Decode bounded JSON/NDJSON, stopping at the terminal object, not EOF."""
-    decoder = json.JSONDecoder()
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                # Last-key-wins could turn a failed result into success. This
+                # exception must not enter raw_decode's incomplete-JSON retry.
+                raise SessionStudioError("Session Studio returned ambiguous JSON", "event_stream", "duplicate_field")
+            value[key] = item
+        return value
+
+    def invalid_constant(_value: str) -> Any:
+        raise SessionStudioError("Session Studio returned invalid JSON", "event_stream", "invalid_json")
+
+    decoder = json.JSONDecoder(object_pairs_hook=unique_object, parse_constant=invalid_constant)
     utf8 = codecs.getincrementaldecoder("utf-8")()
     pending = ""
     total = 0
@@ -1000,15 +1050,17 @@ def _session_studio_result(response: Any) -> dict[str, Any]:
             pending = pending.lstrip()
             try:
                 event, end = decoder.raw_decode(pending)
+            except RecursionError:
+                raise SessionStudioError("Session Studio returned invalid JSON", "event_stream", "invalid_json") from None
             except ValueError:
                 break
             pending = pending[end:]
             if not isinstance(event, dict):
-                raise WorkerError("Session Studio returned invalid JSON")
+                raise SessionStudioError("Session Studio returned invalid JSON", "event_stream", "invalid_json")
             if event.get("type") == "result":
                 payload = event.get("payload")
                 if not isinstance(payload, dict):
-                    raise WorkerError("Session Studio returned an invalid result")
+                    raise SessionStudioError("Session Studio returned an invalid result", "terminal_result", "invalid_result")
                 return payload
             # Typed notifications are not results, even when they contain an
             # informational error or a status such as active. Only the result
@@ -1019,7 +1071,7 @@ def _session_studio_result(response: Any) -> dict[str, Any]:
                 # Preserve harmless notifications with other type names, but
                 # never skip an unknown event that might carry a final result.
                 if any(key in event for key in ("payload", "credential", "error", "status")):
-                    raise WorkerError("Session Studio returned an unsupported event")
+                    raise SessionStudioError("Session Studio returned an unsupported event", "event_stream", "unsupported_event")
                 continue
             # Keep the legacy, unwrapped JSON result contract. An active status
             # or a null error alone does not establish that login has finished.
@@ -1028,17 +1080,17 @@ def _session_studio_result(response: Any) -> dict[str, Any]:
             }:
                 return event
         if time.monotonic() >= deadline:
-            raise WorkerError("Session Studio response timed out")
+            raise SessionStudioError("Session Studio response timed out", "event_stream", "timeout")
         chunk = response.read1(4096)
         if not chunk:
-            raise WorkerError("Session Studio response ended without a result")
+            raise SessionStudioError("Session Studio response ended without a result", "event_stream", "missing_result")
         total += len(chunk)
         if total > 8 * MAX_RESPONSE_BYTES:
-            raise WorkerError("Session Studio response is too large")
+            raise SessionStudioError("Session Studio response is too large", "event_stream", "response_too_large")
         try:
             pending += utf8.decode(chunk)
         except UnicodeDecodeError:
-            raise WorkerError("Session Studio returned invalid JSON") from None
+            raise SessionStudioError("Session Studio returned invalid JSON", "event_stream", "invalid_json") from None
 
 
 def process_session_studio_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
@@ -1086,27 +1138,45 @@ def process_session_studio_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
     started = time.monotonic()
     _best_effort_progress(api, task_id, "starting")
     _best_effort_progress(api, task_id, "protocol_connecting")
+    stage = "http_request"
     try:
         # No redirects: credentials must never be forwarded to another target.
         with NO_REDIRECT_OPENER.open(request, timeout=60) as response:
+            stage = "event_stream"
             payload = _session_studio_result(response)
+    except SessionStudioError as exc:
+        exc.elapsed_ms = min(3600000, max(0, int((time.monotonic() - started) * 1000)))
+        raise
     except HTTPError as exc:
-        raise WorkerError(f"Session Studio HTTP {exc.code}") from None
+        failure = SessionStudioError(f"Session Studio HTTP {exc.code}", stage, "http_rejected", exc.code)
+        failure.elapsed_ms = min(3600000, max(0, int((time.monotonic() - started) * 1000)))
+        raise failure from None
     except (URLError, TimeoutError, OSError, ValueError):
-        raise WorkerError("Session Studio request failed") from None
+        failure = SessionStudioError("Session Studio request failed", stage, "transport_error")
+        failure.elapsed_ms = min(3600000, max(0, int((time.monotonic() - started) * 1000)))
+        raise failure from None
+
+    def fail(message: str, phase: str, reason: str) -> SessionStudioError:
+        failure = SessionStudioError(message, phase, reason)
+        failure.elapsed_ms = min(3600000, max(0, int((time.monotonic() - started) * 1000)))
+        return failure
+
     credentials = payload.get("credential")
     if payload.get("error") or str(payload.get("status", "")).lower() in {"failed", "error", "auth_failed"}:
         # Provider errors may echo secrets. Do not relay their message or code.
-        raise WorkerError("Session Studio login failed")
+        raise fail("Session Studio login failed", "terminal_result", "provider_failed")
     if not isinstance(credentials, dict) or not all(
         isinstance(credentials.get(key), str) and credentials[key].strip()
         for key in ("access_token", "refresh_token", "id_token")
     ):
-        raise WorkerError("Session Studio returned incomplete OAuth credentials")
+        raise fail("Session Studio returned incomplete OAuth credentials", "credentials_validation", "credentials_incomplete")
     _best_effort_progress(api, task_id, "applying_credentials")
-    result = api.credentials(task_id, credentials, {})
-    if not result or result.get("status") != "succeeded":
-        raise WorkerError("Session Studio credentials were not accepted")
+    try:
+        result = api.credentials(task_id, credentials, {})
+    except WorkerError:
+        raise fail("Session Studio credentials submission failed", "credentials_submit", "submission_failed") from None
+    if not isinstance(result, dict) or result.get("status") != "succeeded":
+        raise fail("Session Studio credentials were not accepted", "credentials_submit", "credentials_not_accepted")
     LOGGER.info("task=%s account=%s succeeded engine=session_studio elapsed_ms=%d",
                 task_id, account_id, (time.monotonic() - started) * 1000)
 
@@ -1508,7 +1578,7 @@ def run_once(api: WorkerAPI, protocol: SimpleNamespace | None) -> bool:
     try:
         process_claim(api, protocol, claim)
     except Exception as exc:
-        reason = sanitize_error(f"{type(exc).__name__}: {exc}")
+        reason = exc.diagnostic() if isinstance(exc, SessionStudioError) else sanitize_error(f"{type(exc).__name__}: {exc}")
         LOGGER.error("task=%s failed: %s", task_id or "?", reason)
         if task_id > 0:
             try:

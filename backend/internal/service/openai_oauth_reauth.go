@@ -107,17 +107,17 @@ type OpenAIOAuthReauthRuntimeSettings struct {
 
 // OpenAIOAuthReauthTask is the safe task status exposed to administrators.
 type OpenAIOAuthReauthTask struct {
-	Diagnostic   *LocalProtocolDiagnostic `json:"diagnostic,omitempty"`
-	OAuthProfile string                   `json:"oauth_profile"`
-	ID           int64                    `json:"id"`
-	AccountID    int64                    `json:"account_id"`
-	Status       string                   `json:"status"`
-	Stage        string                   `json:"stage"`
-	Error        string                   `json:"error,omitempty"`
-	Attempt      int                      `json:"attempt"`
-	CreatedAt    time.Time                `json:"created_at"`
-	UpdatedAt    time.Time                `json:"updated_at"`
-	FinishedAt   *time.Time               `json:"finished_at,omitempty"`
+	Diagnostic   *ReauthDiagnostic `json:"diagnostic,omitempty"`
+	OAuthProfile string            `json:"oauth_profile"`
+	ID           int64             `json:"id"`
+	AccountID    int64             `json:"account_id"`
+	Status       string            `json:"status"`
+	Stage        string            `json:"stage"`
+	Error        string            `json:"error,omitempty"`
+	Attempt      int               `json:"attempt"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	FinishedAt   *time.Time        `json:"finished_at,omitempty"`
 }
 
 // OpenAIOAuthReauthStatus combines saved configuration and the latest task.
@@ -1267,6 +1267,9 @@ func safeReauthTask(record *OpenAIOAuthReauthTaskRecord) *OpenAIOAuthReauthTask 
 		return nil
 	}
 	_, diagnostic, _ := localProtocolError(record.Error)
+	if diagnostic == nil {
+		_, diagnostic, _ = sessionStudioError(record.Error)
+	}
 	return &OpenAIOAuthReauthTask{
 		Diagnostic: diagnostic,
 		ID:         record.ID, AccountID: record.AccountID, Status: record.Status, OAuthProfile: reauthTaskProfile(record),
@@ -1276,6 +1279,9 @@ func safeReauthTask(record *OpenAIOAuthReauthTaskRecord) *OpenAIOAuthReauthTask 
 }
 
 func sanitizeReauthError(raw string) string {
+	if safe, _, handled := sessionStudioError(raw); handled {
+		return safe
+	}
 	if safe, _, handled := localProtocolError(raw); handled {
 		return safe
 	}
