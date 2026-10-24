@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 
 import TokenGuardV2View from '../TokenGuardV2View.vue'
+import { getCredentialEncryption } from '@/api/admin/credentialEncryption'
 
 const api = vi.hoisted(() => ({
   listGuard: vi.fn(),
@@ -53,9 +54,11 @@ vi.mock('vue-i18n', async (importOriginal) => {
 })
 
 let wrapper: VueWrapper | undefined
+let restoreConfirmation: (() => void) | undefined
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(getCredentialEncryption).mockResolvedValue({ configured: true, source: 'server_config' })
   api.listGuard.mockResolvedValue({
     runtime_settings: { engine: 'local_worker', worker_concurrency: 3 },
     probe_interval_seconds: 1800,
@@ -110,7 +113,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  vi.restoreAllMocks()
+  restoreConfirmation?.()
+  restoreConfirmation = undefined
   wrapper?.unmount()
   wrapper = undefined
 })
@@ -415,6 +419,7 @@ describe('managed re-login availability', () => {
     api.listGuard.mockResolvedValue({ ...data, relogin_max_failures: 3, accounts: [exhausted] })
     api.resumeBudget.mockResolvedValue({ ...exhausted, relogin_fail_streak: 0, auto_relogin_exhausted: false })
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    restoreConfirmation = () => confirm.mockRestore()
     wrapper = mount(TokenGuardV2View, { global: { stubs: {
       AppLayout: { template: '<div><slot /></div>' }, SmartOpsNav: true, Pagination: true, OpenAITOTPDialog: true
     } } })
@@ -467,6 +472,23 @@ async function mountControls() {
   await flushPromises()
   return wrapper
 }
+
+it('loads the configured encryption fixture before allowing account editing', async () => {
+  const view = await mountControls()
+  const add = view.findAll('button').find(button => button.text() === 'tokenGuardV2.addAccount')!
+  expect(add.attributes('disabled')).toBeUndefined()
+  expect(getCredentialEncryption).toHaveBeenCalled()
+})
+
+it('still blocks account creation when encryption is actually unconfigured', async () => {
+  vi.mocked(getCredentialEncryption).mockResolvedValueOnce({ configured: false, source: 'unconfigured' })
+  const view = await mountControls()
+  const add = view.findAll('button').find(button => button.text() === 'tokenGuardV2.addAccount')!
+  expect(add.attributes('disabled')).toBeDefined()
+  await add.trigger('click')
+  expect(view.find('#token-guard-v2-editor').exists()).toBe(false)
+  expect(api.createGuard).not.toHaveBeenCalled()
+})
 
 it('moves engine and worker count into encryption settings and saves immediately', async () => {
   const view = await mountControls()

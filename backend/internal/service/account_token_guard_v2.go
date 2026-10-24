@@ -501,9 +501,8 @@ func (s *AccountTokenGuardV2Service) runProbe(ctx context.Context, record Accoun
 	switch state {
 	case AccountTokenGuardV2ProbeOK:
 		completion.FailStreak = 0
-		if record.ReloginFailStreak == 0 && !record.AutoReloginExhausted {
-			completion.CooldownUntil = nil
-		}
+		// The reconciler alone can clear a budget cooldown after a verified
+		// success. A plain OK must retain an explicit recovery's cooldown.
 	case AccountTokenGuardV2ProbeAuth:
 		completion.FailStreak++
 		completion.NextProbeAt = now.Add(time.Duration(rules.RetryIntervalSeconds) * time.Second)

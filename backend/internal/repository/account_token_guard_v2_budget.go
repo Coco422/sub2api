@@ -32,7 +32,7 @@ func reconcileReloginBudgetTx(ctx context.Context, tx *sql.Tx, record *service.A
         FROM openai_oauth_reauth_tasks task
         WHERE task.account_id=$1 AND task.id >= $2 AND task.oauth_profile='codex'
           AND NOT EXISTS (SELECT 1 FROM openai_totp_rotations rotation WHERE rotation.task_id=task.id)
-        ORDER BY task.id LIMIT $3 FOR UPDATE`, record.AccountID, record.LastCountedTaskID, reloginBudgetBatch)
+        ORDER BY task.id LIMIT $3 FOR UPDATE`, record.AccountID, record.LastCountedTaskID, reloginBudgetBatch+1)
 	if err != nil {
 		return nil, false, err
 	}
@@ -54,11 +54,13 @@ func reconcileReloginBudgetTx(ctx context.Context, tx *sql.Tx, record *service.A
 	if readErr != nil {
 		return nil, false, readErr
 	}
-	backlog := len(outcomes) == reloginBudgetBatch
-	if backlog && probeState == service.AccountTokenGuardV2ProbeOK {
-		probeState = service.AccountTokenGuardV2ProbePending
+	// One lookahead distinguishes exactly 100 rows from a real next page. The
+	// inclusive watermark row is harmless: the transition never recounts it.
+	backlog := len(outcomes) > reloginBudgetBatch
+	if backlog {
+		outcomes = outcomes[:reloginBudgetBatch]
 	}
-	updated, pending := service.AdvanceAccountReloginBudget(*record, outcomes, rules, probeAt, probeState)
+	updated, pending := service.AdvanceAccountReloginBudgetPage(*record, outcomes, rules, probeAt, probeState, !backlog)
 	_, err = tx.ExecContext(ctx, `UPDATE account_token_guard_v2_accounts
         SET relogin_fail_streak=$2,last_counted_task_id=$3,auto_relogin_exhausted=$4,cooldown_until=$5,updated_at=NOW()
         WHERE account_id=$1`, record.AccountID, updated.ReloginFailStreak, updated.LastCountedTaskID, updated.AutoReloginExhausted, updated.CooldownUntil)

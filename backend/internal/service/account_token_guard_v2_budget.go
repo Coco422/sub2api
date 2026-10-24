@@ -50,7 +50,16 @@ func ReloginBackoff(rules AccountTokenGuardV2Rules, failures int) time.Duration 
 // the watermark, so later completions cannot hide an out-of-order failure.
 // The repository serializes this transition with the guard row and task locks.
 func AdvanceAccountReloginBudget(record AccountTokenGuardV2Record, outcomes []AccountReloginOutcome, rules AccountTokenGuardV2Rules, probeAt time.Time, probeState string) (AccountTokenGuardV2Record, bool) {
+	return AdvanceAccountReloginBudgetPage(record, outcomes, rules, probeAt, probeState, true)
+}
+
+// A partial page can advance the accounting watermark using the real probe
+// result, but cannot prove that its last success is the latest task overall.
+// Keep the budget until a complete page confirms there is no later outcome.
+func AdvanceAccountReloginBudgetPage(record AccountTokenGuardV2Record, outcomes []AccountReloginOutcome, rules AccountTokenGuardV2Rules, probeAt time.Time, probeState string, historyComplete bool) (AccountTokenGuardV2Record, bool) {
 	rules = NormalizeReloginBudgetRules(rules)
+	watermark := record.LastCountedTaskID
+	hadFailureBudget := record.ReloginFailStreak > 0 || record.AutoReloginExhausted
 	ordered := append([]AccountReloginOutcome(nil), outcomes...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	var latest *AccountReloginOutcome
@@ -88,8 +97,9 @@ func AdvanceAccountReloginBudget(record AccountTokenGuardV2Record, outcomes []Ac
 	}
 	// A saved token is not a verified token. A probe started before success,
 	// an older success, or a newer active task must never reset the budget.
-	if probeState == AccountTokenGuardV2ProbeOK && !pending && latest != nil && latest.ID == record.LastCountedTaskID &&
-		latest.Status == OpenAIOAuthReauthStatusSucceeded && !latest.FinishedAt.After(probeAt) {
+	if historyComplete && probeState == AccountTokenGuardV2ProbeOK && !pending && latest != nil && latest.ID == record.LastCountedTaskID &&
+		latest.Status == OpenAIOAuthReauthStatusSucceeded && !latest.FinishedAt.After(probeAt) &&
+		(latest.ID > watermark || hadFailureBudget) {
 		record.ReloginFailStreak = 0
 		record.AutoReloginExhausted = false
 		record.CooldownUntil = nil

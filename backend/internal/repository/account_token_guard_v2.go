@@ -166,9 +166,7 @@ func (r *accountTokenGuardV2Repository) CompleteProbe(ctx context.Context, accou
 			last_probe_at = $6,
 			last_reauth_at = COALESCE($7, last_reauth_at),
 			next_probe_at = $8,
-			cooldown_until = CASE WHEN $9::timestamptz IS NULL
-                THEN CASE WHEN relogin_fail_streak > 0 OR auto_relogin_exhausted OR last_reauth_at > $6 THEN cooldown_until ELSE NULL END
-                ELSE GREATEST(cooldown_until, $9::timestamptz) END,
+			cooldown_until = GREATEST(cooldown_until, $9::timestamptz),
 			blocked_reason = $10,
 			lease_owner = NULL,
 			lease_until = NULL,
