@@ -36,9 +36,14 @@ const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } })
   const failures = []
-  page.on('pageerror', error => failures.push(error.name))
+  page.on('pageerror', error => failures.push(error.message))
+  page.on('console', message => { if (message.type() === 'error') failures.push(message.text()) })
   await page.goto('http://127.0.0.1:4179/', { waitUntil: 'networkidle' })
-  await page.getByTestId('quality-scope-conflict').waitFor()
+  try { await page.getByTestId('quality-scope-conflict').waitFor() } catch {
+    await page.screenshot({ path: path.join(output, 'render-failure-synthetic.png'), fullPage: true })
+    await fs.writeFile(path.join(output, 'render-failure.json'), JSON.stringify({ errors: failures, syntheticBody: await page.locator('body').innerText() }, null, 2))
+    throw new Error('synthetic_component_did_not_mount: ' + failures.join('; '))
+  }
   if (failures.length) throw new Error('component_render_error')
   await page.screenshot({ path: path.join(output, 'scope-conflict-preview.png'), fullPage: true })
   await page.getByTestId('quality-ownership-confirm').check()
