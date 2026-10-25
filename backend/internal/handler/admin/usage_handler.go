@@ -21,10 +21,11 @@ import (
 
 // UsageHandler handles admin usage-related requests
 type UsageHandler struct {
-	usageService   *service.UsageService
-	apiKeyService  *service.APIKeyService
-	adminService   service.AdminService
-	cleanupService *service.UsageCleanupService
+	trafficDelivery *service.TrafficDelivery
+	usageService    *service.UsageService
+	apiKeyService   *service.APIKeyService
+	adminService    service.AdminService
+	cleanupService  *service.UsageCleanupService
 }
 
 // NewUsageHandler creates a new admin usage handler
