@@ -223,6 +223,8 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 	}
 	// A removed membership still absent in a live group remains our restriction.
 	// An externally recreated membership is not evidence of model restoration.
+	// Group snapshots are preview-only: dropping them while retaining the target
+	// scope could let the next failed round remove a manually recreated membership.
 	if state.Groups != nil {
 		for _, expected := range state.Groups.Removed {
 			var exists bool
@@ -240,13 +242,13 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 			if !exists {
 				entry.Status = "group_missing"
 				entry.CurrentOwner = "absent"
-				entry.CanRelinquish = true
+				entry.CanRelinquish = false
 				entry.ChangedFields = []string{"group_exists"}
 			}
 			if current != nil {
 				entry.Status = "external_membership_present"
 				entry.CurrentOwner = "external"
-				entry.CanRelinquish = true
+				entry.CanRelinquish = false
 				expectedJSON, _ := json.Marshal(expected)
 				currentJSON, _ := json.Marshal(current)
 				entry.ChangedFields = append([]string{"membership_present"}, qualityChangedFields(expectedJSON, currentJSON)...)
@@ -280,15 +282,6 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 		if entry.Kind == "model" {
 			delete(state.Models.ModelApplied, entry.Model)
 			delete(state.Models.ModelRateLimits, entry.Model)
-		}
-		if entry.Kind == "group" {
-			kept := []qualityGroup{}
-			for _, g := range state.Groups.Removed {
-				if g.GroupID != entry.GroupID {
-					kept = append(kept, g)
-				}
-			}
-			state.Groups.Removed = kept
 		}
 	}
 	if state.Groups != nil && len(state.Groups.Removed) == 0 {

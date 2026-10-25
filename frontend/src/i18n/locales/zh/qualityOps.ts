@@ -457,7 +457,7 @@ export default {
   "bpsTargetGroupRequired": "已勾选「遇到 BPS 403 错误时自动调整分组」，请选择目标分组",
   "bpsRequiresProbe": "自动开关 BPS 策略需要原生状态探针。若要检测 BPS 回答质量，请选糖果题和「BPS 通道（只检测、记录结果）」。",
   "ownershipTitle": "隔离归属与模板切换",
-  "ownershipNotUnlock": "对账只处理旧归属，不解除模型、分组或其他真实限制，也不执行检测。",
+  "ownershipNotUnlock": "对账仅处理旧模型归属，不解除真实限制。分组仅预览；规则仍启用时，后续真实失败可按原策略重新施加缺失的限制。",
   "scopeConflictHelp": "新配置与仍受管的隔离范围不同。草稿保留，请先解决旧归属或等待原规则正常恢复，再保存新范围。",
   "previewOwnership": "重新预览归属",
   "savedScope": "原受管模型 / 目标组",

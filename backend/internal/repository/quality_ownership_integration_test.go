@@ -144,14 +144,13 @@ func TestQualityOwnershipGroupPresenceDoesNotDiscardMatchingModelOwnership(t *te
 	repo := f.plans.(service.QualityOwnershipRepository)
 	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
 	require.NoError(t, err)
-	require.Equal(t, 1, p.RelinquishableCount)
+	require.Zero(t, p.RelinquishableCount)
+	var before string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT state::text FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&before))
 	_, err = repo.QualityOwnership(ctx, f.plan.ID, &service.QualityOwnershipRequest{Confirm: true, Fence: p.Fence})
 	require.NoError(t, err)
-	var state string
-	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT state::text FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&state))
-	require.Contains(t, state, "model_applied")
-	require.Contains(t, state, "astra")
-	require.Contains(t, state, "sol")
-	require.NotContains(t, state, `"groups":`)
+	var after string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT state::text FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&after))
+	require.JSONEq(t, before, after)
 	require.Equal(t, 1, f.count(`SELECT count(*) FROM account_groups WHERE account_id=$1 AND priority=99`))
 }

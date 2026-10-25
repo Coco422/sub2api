@@ -457,7 +457,7 @@ export default {
   "bpsTargetGroupRequired": "Automatic group adjustment on BPS 403 is checked; choose a target group",
   "bpsRequiresProbe": "Automatic BPS switching requires a native state probe. To test BPS answer quality, choose a candy question and the BPS channel (record results only).",
   "ownershipTitle": "Isolation ownership and template changes",
-  "ownershipNotUnlock": "Reconciliation changes old ownership only. It does not unblock accounts, models or groups, or run a test.",
+  "ownershipNotUnlock": "Reconciliation changes old model ownership only, without lifting restrictions. Groups are preview-only. Enabled rules may apply new restrictions after a later real failure.",
   "scopeConflictHelp": "The draft differs from the managed isolation scope. Keep the draft, resolve ownership or wait for normal restoration before saving a new scope.",
   "previewOwnership": "Refresh ownership preview",
   "savedScope": "Managed models / groups",
