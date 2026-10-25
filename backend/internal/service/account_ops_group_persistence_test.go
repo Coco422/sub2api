@@ -80,7 +80,11 @@ func TestAccountOpsThresholdAccountsReusesGroupAccountRead(t *testing.T) {
 	require.Len(t, items, 1)
 	require.NotEmpty(t, items[0].GroupID)
 	require.Len(t, svc.currentConfig().Groups, 1)
-	require.Equal(t, 1, accounts.lists, "group reconciliation must reuse the account list loaded for the page")
+	require.Equal(t, 2, accounts.lists, "initial group persistence requires a fresh account snapshot")
+
+	_, err = svc.ThresholdAccounts(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 3, accounts.lists, "unchanged groups reuse the account list loaded for the page")
 }
 
 type accountOpsCountingBindingReader struct {

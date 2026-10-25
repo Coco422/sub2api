@@ -380,7 +380,7 @@ func (s *AccountOpsService) reconcileAccountOpsGroups(ctx context.Context, c *Ac
 	return changed
 }
 
-func (s *AccountOpsService) persistReconciledAccountOpsConfig(ctx context.Context, previous AccountOpsConfig, accounts []Account) (AccountOpsConfig, error) {
+func (s *AccountOpsService) persistReconciledAccountOpsConfig(ctx context.Context) (AccountOpsConfig, error) {
 	result := &opsConfigResult{}
 	ctx = context.WithValue(ctx, opsConfigResultKey{}, result)
 	update := func(lockedCtx context.Context) error {
@@ -388,13 +388,11 @@ func (s *AccountOpsService) persistReconciledAccountOpsConfig(ctx context.Contex
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(c, previous) {
-			// A concurrent editor may also have added accounts and their rules.
-			// Refresh the snapshot before deciding which rules still exist.
-			accounts, err = s.listAccountOpsAccounts(lockedCtx)
-			if err != nil {
-				return err
-			}
+		// Accounts may already be stale before the first config read; refresh
+		// under the lock before deciding which rules still exist.
+		accounts, err := s.listAccountOpsAccounts(lockedCtx)
+		if err != nil {
+			return err
 		}
 		if s.reconcileAccountOpsGroups(lockedCtx, &c, accounts) {
 			return s.saveConfig(lockedCtx, c)
@@ -432,9 +430,8 @@ func (s *AccountOpsService) ensureManualAccountOpsGroupsFromAccounts(ctx context
 	if err != nil {
 		return AccountOpsConfig{}, err
 	}
-	previous := c
 	if s.reconcileAccountOpsGroups(ctx, &c, accounts) {
-		c, err = s.persistReconciledAccountOpsConfig(ctx, previous, accounts)
+		c, err = s.persistReconciledAccountOpsConfig(ctx)
 		if err != nil {
 			return AccountOpsConfig{}, err
 		}

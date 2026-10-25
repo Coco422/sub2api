@@ -99,6 +99,35 @@ func TestAccountOpsGroupReconcilePreservesConcurrentConfigChanges(t *testing.T) 
 	require.Equal(t, 2, accounts.lists, "concurrently changed configuration requires a fresh account snapshot")
 }
 
+func TestAccountOpsGroupReconcilePreservesRulesAddedBeforeConfigRead(t *testing.T) {
+	svc, repo, accounts := accountOpsReconcileFixture(t)
+	ctx := context.Background()
+	staleAccounts, err := svc.listAccountOpsAccounts(ctx)
+	require.NoError(t, err)
+
+	// Another instance commits after the account read but before the first config read.
+	accounts.items[3] = &Account{ID: 3, Name: "concurrent", Type: AccountTypeAPIKey, Platform: PlatformOpenAI, Credentials: map[string]any{"base_url": "https://example.com/v1"}}
+	var current AccountOpsConfig
+	require.NoError(t, json.Unmarshal([]byte(repo.raw), &current))
+	current.Groups[0].AccountIDs = append(current.Groups[0].AccountIDs, 2, 3)
+	for _, id := range []int64{2, 3} {
+		current.BalanceThresholds = append(current.BalanceThresholds, copyBalanceRuleForAccount(current.BalanceThresholds[0], id))
+	}
+	raw, err := json.Marshal(current)
+	require.NoError(t, err)
+	repo.raw = string(raw)
+
+	got, err := svc.ensureManualAccountOpsGroupsFromAccounts(ctx, staleAccounts)
+
+	require.NoError(t, err)
+	require.Len(t, got.BalanceThresholds, 3, "a stale account snapshot must not delete the new account's rule")
+	require.Equal(t, []int64{1, 2, 3}, got.Groups[0].AccountIDs)
+	require.Zero(t, repo.writes, "the fresh snapshot already matches the persisted configuration")
+	require.Equal(t, string(raw), repo.raw)
+	require.Equal(t, got, svc.currentConfig())
+	require.Equal(t, 2, accounts.lists)
+}
+
 func TestAccountOpsGroupReconcileDoesNotPublishFailedCommit(t *testing.T) {
 	svc, repo, accounts := accountOpsReconcileFixture(t)
 	before := svc.currentConfig()
@@ -110,7 +139,7 @@ func TestAccountOpsGroupReconcileDoesNotPublishFailedCommit(t *testing.T) {
 	require.ErrorIs(t, err, repo.commitErr)
 	require.Equal(t, raw, repo.raw)
 	require.Equal(t, before, svc.currentConfig(), "uncommitted groups must not replace the active configuration")
-	require.Equal(t, 1, accounts.lists, "an unchanged configuration reuses the original account snapshot")
+	require.Equal(t, 2, accounts.lists, "persisting group changes requires a fresh account snapshot")
 }
 
 func TestAccountOpsGroupReconcileSkipsWriteIfAnotherInstanceAlreadyReconciled(t *testing.T) {
