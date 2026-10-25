@@ -98,8 +98,10 @@ func modelOwnershipEntry(model string, expected, current json.RawMessage, id int
 	case owner == "other_rule" || owner == "external":
 		entry.Status = "external_owner"
 		entry.CanRelinquish = true
-	default:
+	case owner == "this_rule":
 		entry.Status = "changed_same_owner"
+	default:
+		entry.Status = "unrecognized"
 	}
 	return entry
 }
@@ -149,6 +151,13 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 		if decoder.Decode(&state) != nil {
 			return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_UNSUPPORTED_STATE", "ownership contains unrecognized state; retain it for review")
 		}
+	}
+	// Never drop a legacy restriction simply because it is in a recognizable
+	// JSON field outside the supported composite Models/Groups ownership layout.
+	if state.PersistentModels || len(state.ModelApplied) > 0 || len(state.ModelRateLimits) > 0 || len(state.Removed) > 0 || state.PreviousConcurrency != nil || state.AppliedConcurrency != nil ||
+		(state.Groups != nil && (state.Groups.Action != "remove_groups" || len(state.Groups.ModelApplied) > 0 || len(state.Groups.ModelRateLimits) > 0 || state.Groups.Models != nil || state.Groups.Groups != nil)) ||
+		(state.Models != nil && (state.Models.Models != nil || state.Models.Groups != nil || len(state.Models.Removed) > 0)) {
+		return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_UNSUPPORTED_STATE", "retain unsupported ownership layout for review")
 	}
 	if state.Action != "" && state.Action != service.QualityActionIsolateModels {
 		return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_UNSUPPORTED_STATE", "only persistent model isolation supports reconciliation")

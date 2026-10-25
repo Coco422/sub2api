@@ -19,8 +19,8 @@ func TestQualityOwnershipClassifiesWithoutExposingArbitraryEntryFields(t *testin
 		{"other rule", json.RawMessage(`{"reason":"quality_rule:9"}`), "external_owner", true},
 		{"administrator", json.RawMessage(`{"reason":"administrator text containing private material"}`), "external_owner", true},
 		{"same marker changed", json.RawMessage(`{"reason":"quality_rule:7","isolated_at":"2026-02-01T00:00:00Z"}`), "changed_same_owner", false},
-		{"malformed", json.RawMessage(`[]`), "changed_same_owner", false},
-		{"missing marker", json.RawMessage(`{"isolated_at":"unchanged"}`), "changed_same_owner", false},
+		{"malformed", json.RawMessage(`[]`), "unrecognized", false},
+		{"missing marker", json.RawMessage(`{"isolated_at":"unchanged"}`), "unrecognized", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
