@@ -4,7 +4,6 @@ package repository
 
 import (
 	"context"
-	"fmt"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -81,5 +80,7 @@ func TestQualityOwnershipExternalMarkerIsKeptOnAccountAfterRelinquishingSnapshot
 	var reason string
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT extra->'quality_model_isolation'->'sol'->>'reason' FROM accounts WHERE id=$1`, f.account).Scan(&reason))
 	require.Equal(t, "quality_rule:999", reason)
-	require.Zero(t, f.count(`SELECT count(*) FROM account_quality_states WHERE plan_id=`+fmt.Sprint(f.plan.ID)))
+	var remaining int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT count(*) FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&remaining))
+	require.Zero(t, remaining)
 }
