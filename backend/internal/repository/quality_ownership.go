@@ -110,6 +110,8 @@ func modelOwnershipEntry(model string, expected, current json.RawMessage, id int
 // preview. Confirmation updates ownership and rule version only, never accounts,
 // groups, restrictions, concurrency or scheduler switches.
 func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id int64, request *service.QualityOwnershipRequest) (*service.QualityOwnershipPreview, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

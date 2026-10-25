@@ -19,12 +19,12 @@ const fixture=()=>({plan_id:7,account_id:42,rule_version:'synthetic-rule-v1',acc
 ...(reconciled?[]:[{kind:'model',model:'sample-sol',status:'missing',expected_present:true,current_present:false,expected_owner:'this_rule',current_owner:'absent',expected_digest:'b'.repeat(64),current_digest:'c'.repeat(64),changed_fields:['reason','isolated_at'],can_relinquish:true}])
 ]});export async function previewQualityOwnership(){return fixture()}export async function reconcileQualityOwnership(){reconciled=true;return fixture()}`
 const html = `<!doctype html><meta charset="utf-8"><div id="app"></div><script type="module">
-import {createApp} from 'vue';
+import {createApp,h} from 'vue';
 import {createI18n} from 'vue-i18n';
 import Review from '/src/components/admin/operations/QualityOwnershipReview.vue';
 import zh from '/src/i18n/locales/zh/qualityOps.ts';
 import '/src/style.css';
-createApp({components:{Review},setup:()=>({draftModels:["sample-sol"],draftGroups:[102]}),template:${JSON.stringify("<main class=\"mx-auto max-w-5xl space-y-4 p-6\"><h2 class=\"text-xl font-semibold\">质量规则切换 — 虚构数据组件验收</h2><p>草稿尚未保存：sample-sol / 组102；规则名称是显示标签。</p><Review :plan-id=\"7\" draft-action=\"isolate_models\" :draft-models=\"draftModels\" :draft-group-ids=\"draftGroups\" /></main>")}}).use(createI18n({legacy:false,locale:'zh',messages:{zh:{qualityOps:zh}}})).mount('#app');</script>`
+createApp({render:()=>h('main',{class:'mx-auto max-w-5xl space-y-4 p-6'},[h('h2',{class:'text-xl font-semibold'},'质量规则切换 — 虚构数据组件验收'),h('p','草稿尚未保存：sample-sol / 组102；规则名称是显示标签。'),h(Review,{planId:7,draftAction:'isolate_models',draftModels:['sample-sol'],draftGroupIds:[102]})])}).use(createI18n({legacy:false,locale:'zh',messages:{zh:{qualityOps:zh}}})).mount('#app');</script>`
 const server = await createServer({ root: frontend, configFile: false, plugins: [vue(), {
   name: 'quality-offline-fixture',
   resolveId(id) { if (id === 'virtual:quality-fixture') return '\0quality-fixture' },
