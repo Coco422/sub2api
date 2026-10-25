@@ -12,13 +12,20 @@
         <label for="traffic-date" class="input-label">{{ t('traffic.date') }}</label>
         <input id="traffic-date" :value="date || currentDate" type="date" class="input" @change="setDate" />
       </div>
-      <div v-if="admin">
-        <label for="traffic-user" class="input-label">{{ t('traffic.userId') }}</label>
-        <input id="traffic-user" v-model="draftUserId" type="number" min="1" step="1" class="input w-36" />
-      </div>
-      <div>
-        <label for="traffic-key" class="input-label">{{ t('traffic.keyId') }}</label>
-        <input id="traffic-key" v-model="draftKeyId" type="number" min="1" step="1" class="input w-36" />
+      <UsageFilters
+        v-if="admin"
+        :key="searchResetKey"
+        v-model="searchFilters"
+        identity-only
+        :show-actions="false"
+        :exporting="false"
+        start-date=""
+        end-date=""
+        @change="applyFilters"
+      />
+      <div v-else class="w-full sm:w-auto sm:min-w-[220px]">
+        <label for="traffic-key" class="input-label">{{ t('usage.apiKeyFilter') }}</label>
+        <Select id="traffic-key" v-model="searchFilters.api_key_id" :options="apiKeyOptions" searchable @change="applyFilters" />
       </div>
       <button class="btn btn-primary" type="submit" :disabled="loading">{{ t('traffic.apply') }}</button>
       <button class="btn btn-secondary" type="button" :disabled="loading" @click="load">{{ t('common.refresh') }}</button>
@@ -93,15 +100,18 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend, type ChartOptions } from 'chart.js'
 import { Bar } from 'vue-chartjs'
+import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
+import Select, { type SelectOption } from '@/components/common/Select.vue'
 import { getTraffic, formatTrafficBytes as bytes, type TrafficPeriod, type TrafficReport } from '@/api/traffic'
 
-const props = withDefaults(defineProps<{ admin?: boolean }>(), { admin: false })
+const props = withDefaults(defineProps<{ admin?: boolean; apiKeyOptions?: SelectOption[] }>(), { admin: false, apiKeyOptions: () => [] })
 const { t } = useI18n()
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 const periods: TrafficPeriod[] = ['day', 'week', 'month', 'year']
 const directions = ['upload_bytes', 'download_bytes'] as const
 const period = ref<TrafficPeriod>('month'), date = ref(''), page = ref(1)
-const draftUserId = ref(''), draftKeyId = ref('')
+const searchFilters = ref<{ user_id?: number; api_key_id?: number | null }>({ api_key_id: null })
+const searchResetKey = ref(0)
 const filters = ref<{ user_id?: number; api_key_id?: number }>({})
 const report = ref<TrafficReport | null>(null), loading = ref(false), error = ref('')
 let controller: AbortController | undefined
@@ -134,11 +144,10 @@ const chartOptions = computed<ChartOptions<'bar'>>(() => ({
 }))
 function setDate(event: Event) { date.value = (event.target as HTMLInputElement).value }
 function applyFilters() {
-  const user = Number(draftUserId.value), key = Number(draftKeyId.value)
-  if ((draftUserId.value && (!Number.isSafeInteger(user) || user < 1)) || (draftKeyId.value && (!Number.isSafeInteger(key) || key < 1))) { error.value = t('traffic.invalidFilter'); return }
+  const user = searchFilters.value.user_id, key = searchFilters.value.api_key_id
   filters.value = { ...(props.admin && user ? { user_id: user } : {}), ...(key ? { api_key_id: key } : {}) }
 }
-function reset() { draftUserId.value = ''; draftKeyId.value = ''; date.value = ''; period.value = 'month'; filters.value = {} }
+function reset() { searchFilters.value = { api_key_id: null }; searchResetKey.value++; date.value = ''; period.value = 'month'; filters.value = {} }
 function shift(direction: number) {
   if (!report.value) return
   const anchor = new Date(`${siteDate(report.value.start)}T00:00:00Z`)

@@ -215,7 +215,7 @@
         @update:pageSize="onErrorPageSize"
         @ipGeoBatchFailed="handleIpGeoBatchFailed"
       />
-      <TrafficPanel v-if="activeTab === 'traffic'" class="card" />
+      <TrafficPanel v-if="activeTab === 'traffic'" :api-key-options="apiKeyOptions" class="card" />
     </div>
   </AppLayout>
 

@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import TrafficPanel from '../TrafficPanel.vue'
+import Select from '@/components/common/Select.vue'
 import type { TrafficReport } from '@/api/traffic'
 
-const { getTraffic } = vi.hoisted(() => ({ getTraffic: vi.fn() }))
+const { getTraffic, searchUsers, searchApiKeys, listGroups } = vi.hoisted(() => ({
+  getTraffic: vi.fn(), searchUsers: vi.fn(), searchApiKeys: vi.fn(), listGroups: vi.fn()
+}))
+vi.mock('@/api/admin', () => ({ adminAPI: { usage: { searchUsers, searchApiKeys }, groups: { list: listGroups } } }))
 vi.mock('@/api/traffic', async importOriginal => ({ ...await importOriginal<typeof import('@/api/traffic')>(), getTraffic }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/api/client', () => ({ apiClient: { get: vi.fn() } }))
@@ -20,9 +24,13 @@ const fixture = (): TrafficReport => ({
     upload_bytes: 1024, download_bytes: 2048, status_code: 499, outcome: 'canceled', request_complete: false, measurement_version: 1 }]
 })
 let wrappers: ReturnType<typeof mount>[] = []
-afterEach(() => { wrappers.forEach(w => w.unmount()); wrappers = [] })
-beforeEach(() => { vi.clearAllMocks(); getTraffic.mockResolvedValue(fixture()) })
-const render = (admin = false) => { const wrapper = mount(TrafficPanel, { props: { admin } }); wrappers.push(wrapper); return wrapper }
+afterEach(() => { wrappers.forEach(w => w.unmount()); wrappers = []; vi.useRealTimers() })
+beforeEach(() => {
+  vi.clearAllMocks(); getTraffic.mockResolvedValue(fixture())
+  searchUsers.mockResolvedValue([{ id: 7, email: 'demo@example.test', deleted: false }])
+  searchApiKeys.mockResolvedValue([{ id: 8, name: 'Production key' }])
+})
+const render = (admin = false) => { const wrapper = mount(TrafficPanel, { props: { admin, apiKeyOptions: [{ value: null, label: 'All keys' }, { value: 8, label: 'Production key' }, { value: 9, label: 'Test key' }] }, global: { stubs: { Teleport: true } } }); wrappers.push(wrapper); return wrapper }
 
 describe('TrafficPanel', () => {
   it('renders traffic independently of token usage, with scope and partial results', async () => {
@@ -38,9 +46,16 @@ describe('TrafficPanel', () => {
   })
   it('queries calendar periods, moves through history, paginates and resets filters', async () => {
     const wrapper = render(true); await flushPromises()
-    await wrapper.get('#traffic-user').setValue('7')
-    await wrapper.get('#traffic-key').setValue('8')
-    await wrapper.get('form').trigger('submit'); await flushPromises()
+    vi.useFakeTimers()
+    const userInput = wrapper.get('input[placeholder="admin.usage.searchUserPlaceholder"]')
+    await userInput.trigger('focus'); await userInput.setValue('demo')
+    await vi.advanceTimersByTimeAsync(300); await flushPromises()
+    expect(searchUsers).toHaveBeenLastCalledWith('demo')
+    await wrapper.findAll('button').find(b => b.text().includes('demo@example.test'))!.trigger('click'); await flushPromises()
+    expect(searchApiKeys).toHaveBeenLastCalledWith(7, '')
+    await wrapper.get('input[placeholder="admin.usage.searchApiKeyPlaceholder"]').trigger('focus')
+    await wrapper.findAll('button').find(b => b.text().includes('Production key'))!.trigger('click'); await flushPromises()
+    expect(listGroups).not.toHaveBeenCalled()
     expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ user_id: 7, api_key_id: 8 }), expect.any(AbortSignal))
     const nextPage = wrapper.findAll('button').find(b => b.text() === 'traffic.next')!
     await nextPage.trigger('click'); await flushPromises()
@@ -52,6 +67,40 @@ describe('TrafficPanel', () => {
     await wrapper.findAll('button').find(b => b.text() === 'common.reset')!.trigger('click'); await flushPromises()
     expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ period: 'month', page: 1 }), expect.any(AbortSignal))
     expect(getTraffic.mock.lastCall?.[1]).not.toHaveProperty('user_id')
+    expect(getTraffic.mock.lastCall?.[1]).not.toHaveProperty('api_key_id')
+    expect(wrapper.get('input[placeholder="admin.usage.searchUserPlaceholder"]').element).toHaveProperty('value', '')
+    expect(wrapper.get('input[placeholder="admin.usage.searchApiKeyPlaceholder"]').element).toHaveProperty('value', '')
+  })
+  it('searches only the signed-in user’s key names and applies or clears their selection', async () => {
+    const wrapper = render(); await flushPromises()
+    const select = wrapper.getComponent(Select)
+    expect(select.props('searchable')).toBe(true)
+    expect(wrapper.get('#traffic-key').text()).toContain('All keys')
+    await wrapper.get('#traffic-key').trigger('click')
+    await wrapper.get('.select-search-input').setValue('Production')
+    expect(wrapper.findAll('[role="option"]').map(option => option.text())).toEqual(['Production key'])
+    await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
+    expect(getTraffic).toHaveBeenLastCalledWith(false, expect.objectContaining({ api_key_id: 8, page: 1 }), expect.any(AbortSignal))
+    expect(getTraffic.mock.lastCall?.[1]).not.toHaveProperty('user_id')
+    await wrapper.get('#traffic-key').trigger('click')
+    await wrapper.findAll('[role="option"]').find(option => option.text() === 'All keys')!.trigger('click'); await flushPromises()
+    expect(getTraffic.mock.lastCall?.[1]).not.toHaveProperty('api_key_id')
+    await wrapper.findAll('button').find(b => b.text() === 'common.reset')!.trigger('click')
+    expect(wrapper.get('#traffic-key').text()).toContain('All keys')
+    expect(searchUsers).not.toHaveBeenCalled()
+    expect(searchApiKeys).not.toHaveBeenCalled()
+  })
+  it('resets typed searches and cancels pending lookups', async () => {
+    vi.useFakeTimers()
+    const wrapper = render(true); await flushPromises()
+    await wrapper.get('input[placeholder="admin.usage.searchUserPlaceholder"]').setValue('pending user')
+    await wrapper.get('input[placeholder="admin.usage.searchApiKeyPlaceholder"]').setValue('pending key')
+    await wrapper.findAll('button').find(b => b.text() === 'common.reset')!.trigger('click')
+    await vi.advanceTimersByTimeAsync(300); await flushPromises()
+    expect(searchUsers).not.toHaveBeenCalled()
+    expect(searchApiKeys).not.toHaveBeenCalled()
+    expect(wrapper.get('input[placeholder="admin.usage.searchUserPlaceholder"]').element).toHaveProperty('value', '')
+    expect(wrapper.get('input[placeholder="admin.usage.searchApiKeyPlaceholder"]').element).toHaveProperty('value', '')
   })
   it('clears stale results on failure and distinguishes no records from historical collection', async () => {
     const wrapper = render(); await flushPromises()
