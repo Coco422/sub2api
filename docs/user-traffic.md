@@ -65,6 +65,6 @@ PostgreSQL 用例需要显式设置指向隔离测试实例的 `TRAFFIC_TEST_POS
 
 布局复核使用真实组件、项目样式及虚构本地数据，覆盖桌面和移动端深色布局；不代表生产数据或完整站点端到端验收。本地截图位于 `docs/screenshots/user-traffic/`，按仓库约定不入 Git，提交 PR 时作为附件上传。
 
-本次本地验证：流量专项后端测试与 `-race` 均通过，已显式启用隔离 PostgreSQL 用例；受影响的路由、middleware、handler 单元测试通过，repository 与 IP 风控测试在 `TMPDIR=/tmp` 下复测通过。前端关键测试集 108 个文件、1744 项测试通过，完整 ESLint、`vue-tsc --noEmit` 和 Vite 生产构建通过。新增前端用例已加入根 Makefile 关键测试集。
+本次本地验证：流量专项后端测试与 `-race` 均通过，已显式启用隔离 PostgreSQL 用例；受影响的路由、middleware、handler 单元测试通过，repository 与 IP 风控测试在 `TMPDIR=/tmp` 下复测通过。前端关键测试集 108 个文件、1751 项测试通过，完整 ESLint、`vue-tsc --noEmit` 和 Vite 生产构建通过。新增前端用例已加入根 Makefile 关键测试集。
 
-完整 `make -C backend test-unit` 仍因原有 `payment_recharge_bonus_test.go` 引用未定义的 `affiliateRebateBaseAmount` 编译失败。当前环境无 Docker 和 golangci-lint，未执行完整容器集成测试与该 lint。默认 pnpm 入口触发依赖和锁文件校验错误，前端验证直接调用现有 `node_modules/.bin` 工具，未改动依赖或锁文件。
+在目标仓库 `production` 基线 `f348dba4a` 上执行 `TMPDIR=/tmp make -C backend test-unit` 已通过；流量专项竞态与隔离 PostgreSQL 用例也在该基线上复测通过。当前环境无 Docker 和 golangci-lint，未执行完整容器集成测试与该 lint。默认 pnpm 入口触发依赖和锁文件校验错误，前端验证直接调用现有 `node_modules/.bin` 工具，未改动依赖或锁文件。
