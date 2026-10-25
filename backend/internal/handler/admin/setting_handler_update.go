@@ -1417,13 +1417,24 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return
 		}
 		for i, item := range items {
-			if strings.TrimSpace(item.Label) == "" {
+			items[i].Label = strings.TrimSpace(item.Label)
+			items[i].LabelZh = strings.TrimSpace(item.LabelZh)
+			items[i].LabelEn = strings.TrimSpace(item.LabelEn)
+			if items[i].Label == "" && items[i].LabelZh == "" && items[i].LabelEn == "" {
 				response.BadRequest(c, "Custom menu item label is required")
 				return
 			}
-			if len(item.Label) > maxMenuItemLabelLen {
+			if len(items[i].Label) > maxMenuItemLabelLen ||
+				len(items[i].LabelZh) > maxMenuItemLabelLen ||
+				len(items[i].LabelEn) > maxMenuItemLabelLen {
 				response.BadRequest(c, "Custom menu item label is too long (max 50 characters)")
 				return
+			}
+			if items[i].Label == "" {
+				items[i].Label = items[i].LabelZh
+				if items[i].Label == "" {
+					items[i].Label = items[i].LabelEn
+				}
 			}
 			urlTrimmed := strings.TrimSpace(item.URL)
 			if strings.HasPrefix(urlTrimmed, "md:") {
