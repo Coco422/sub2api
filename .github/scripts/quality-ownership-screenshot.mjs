@@ -9,6 +9,8 @@ const vueModule = requireFrontend('@vitejs/plugin-vue')
 const vue = vueModule.default || vueModule
 const requireBrowser = createRequire(path.join(process.env.PLAYWRIGHT_ROOT, 'package.json'))
 const { chromium } = requireBrowser('playwright')
+const tailwind = requireFrontend('tailwindcss')
+const autoprefixer = requireFrontend('autoprefixer')
 const output = process.env.QUALITY_SCREENSHOT_DIR
 await fs.mkdir(output, { recursive: true })
 const mockModule = `let reconciled=false;
@@ -28,7 +30,7 @@ const server = await createServer({ root: frontend, configFile: false, plugins: 
   resolveId(id) { if (id === 'virtual:quality-fixture') return '\0quality-fixture' },
   load(id) { if (id === '\0quality-fixture') return mockModule },
   configureServer(vite) { vite.middlewares.use((req, res, next) => { if (req.url === '/') { res.setHeader('Content-Type', 'text/html'); void vite.transformIndexHtml('/', html).then(value => res.end(value)); return } next() }) }
-}], resolve: { alias: [{ find: '@/api/admin/accountQuality', replacement: 'virtual:quality-fixture' }, { find: '@', replacement: path.join(frontend, 'src') }] }, server: { host: '127.0.0.1', port: 4179, strictPort: true }, optimizeDeps: { include: ['vue', 'vue-i18n'] } })
+}], resolve: { alias: [{ find: '@/api/admin/accountQuality', replacement: 'virtual:quality-fixture' }, { find: '@', replacement: path.join(frontend, 'src') }] }, css: { postcss: { plugins: [tailwind({ config: path.join(frontend, 'tailwind.config.js') }), autoprefixer()] } }, server: { host: '127.0.0.1', port: 4179, strictPort: true }, optimizeDeps: { include: ['vue', 'vue-i18n'] } })
 await server.listen()
 const browser = await chromium.launch({ headless: true })
 try {
