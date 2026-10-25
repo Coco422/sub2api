@@ -24,7 +24,7 @@ import {createI18n} from 'vue-i18n';
 import Review from '/src/components/admin/operations/QualityOwnershipReview.vue';
 import zh from '/src/i18n/locales/zh/qualityOps.ts';
 import '/src/style.css';
-createApp({components:{Review},template:'<main class="mx-auto max-w-5xl space-y-4 p-6"><h2 class="text-xl font-semibold">质量规则切换 — 虚构数据组件验收</h2><p>草稿尚未保存：sample-sol / 组102；规则名称是显示标签。</p><Review :plan-id="7" draft-action="isolate_models" :draft-models="[\'sample-sol\']" :draft-group-ids="[102]" /></main>'}).use(createI18n({legacy:false,locale:'zh',messages:{zh:{qualityOps:zh}}})).mount('#app');</script>`
+createApp({components:{Review},setup:()=>({draftModels:["sample-sol"],draftGroups:[102]}),template:${JSON.stringify("<main class=\"mx-auto max-w-5xl space-y-4 p-6\"><h2 class=\"text-xl font-semibold\">质量规则切换 — 虚构数据组件验收</h2><p>草稿尚未保存：sample-sol / 组102；规则名称是显示标签。</p><Review :plan-id=\"7\" draft-action=\"isolate_models\" :draft-models=\"draftModels\" :draft-group-ids=\"draftGroups\" /></main>")}}).use(createI18n({legacy:false,locale:'zh',messages:{zh:{qualityOps:zh}}})).mount('#app');</script>`
 const server = await createServer({ root: frontend, configFile: false, plugins: [vue(), {
   name: 'quality-offline-fixture',
   resolveId(id) { if (id === 'virtual:quality-fixture') return '\0quality-fixture' },
