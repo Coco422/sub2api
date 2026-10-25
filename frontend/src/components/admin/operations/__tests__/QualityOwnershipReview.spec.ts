@@ -16,7 +16,7 @@ describe('quality ownership explicit preview and confirmation', () => {
     expect(wrapper.get('[data-testid="quality-ownership-reconcile"]').attributes('disabled')).toBeDefined()
     await wrapper.get('[data-testid="quality-ownership-confirm"]').setValue(true)
     await wrapper.get('[data-testid="quality-ownership-reconcile"]').trigger('click'); await flushPromises()
-    expect(reconcileQualityOwnership).toHaveBeenCalledExactlyOnceWith(7, 'a'.repeat(64)); expect(previewQualityOwnership).toHaveBeenCalledTimes(2)
+    expect(reconcileQualityOwnership).toHaveBeenCalledTimes(1); expect(reconcileQualityOwnership).toHaveBeenCalledWith(7, 'a'.repeat(64)); expect(previewQualityOwnership).toHaveBeenCalledTimes(2)
     expect(wrapper.emitted('reconciled')).toHaveLength(1); expect(wrapper.text()).toContain('qualityOps.ownershipReconciled')
     wrapper.unmount()
   })
