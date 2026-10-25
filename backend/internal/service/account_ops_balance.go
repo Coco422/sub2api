@@ -338,6 +338,7 @@ func opsPickWindow(windows []AccountOpsUsageWindow, selected string) *AccountOps
 	}
 	return best
 }
+
 // Missing or stale samples cancel delivery without asserting that the account recovered.
 func (s *AccountOpsService) assessThreshold(ctx context.Context, a *Account, kind string, c AccountOpsConfig, now time.Time) (*AccountOpsEvent, string) {
 	if a == nil {

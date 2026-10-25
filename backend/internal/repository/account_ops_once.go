@@ -171,6 +171,7 @@ func (r *accountOpsRepository) completeTransition(ctx context.Context, e *servic
 	_, err := r.db.ExecContext(ctx, `UPDATE account_ops_threshold_events SET state=$3,lease='',lease_until=NULL,next_send_at=NOW()+($4*INTERVAL '1 second'),last_sent_at=CASE WHEN $3='sent' THEN NOW() ELSE last_sent_at END WHERE id=$1 AND lease=$2 AND state='sending' AND lease_until>NOW()`, e.ID, e.Lease, state, int64(delay/time.Second))
 	return err
 }
+
 // A transaction advisory lock coordinates full and scoped config updates across
 // replicas, including inserts into a previously absent settings row.
 func (r *accountOpsRepository) WithAccountOpsConfigLock(ctx context.Context, fn func(context.Context) error) error {
