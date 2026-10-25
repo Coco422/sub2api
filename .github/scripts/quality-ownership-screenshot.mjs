@@ -25,6 +25,7 @@ import Review from '/src/components/admin/operations/QualityOwnershipReview.vue'
 import zh from '/src/i18n/locales/zh/qualityOps.ts';
 import '/src/style.css';
 createApp({render:()=>h('main',{class:'mx-auto max-w-5xl space-y-4 p-6'},[h('h2',{class:'text-xl font-semibold'},'质量规则切换 — 虚构数据组件验收'),h('p','草稿尚未保存：sample-sol / 组102；规则名称是显示标签。'),h(Review,{planId:7,draftAction:'isolate_models',draftModels:['sample-sol'],draftGroupIds:[102]})])}).use(createI18n({legacy:false,locale:'zh',messages:{zh:{qualityOps:zh}}})).mount('#app');</script>`
+process.chdir(frontend)
 const server = await createServer({ root: frontend, configFile: false, plugins: [vue(), {
   name: 'quality-offline-fixture',
   resolveId(id) { if (id === 'virtual:quality-fixture') return '\0quality-fixture' },

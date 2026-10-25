@@ -83,6 +83,11 @@ func TestQualityOwnershipExternalMarkerIsKeptOnAccountAfterRelinquishingSnapshot
 	var remaining int
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT count(*) FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&remaining))
 	require.Zero(t, remaining)
+	// A later normal failed round still cannot take over the external entry.
+	f.claim()
+	require.Equal(t, "action_conflict", isolationRound(f, "failed", "passed"))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT extra->'quality_model_isolation'->'sol'->>'reason' FROM accounts WHERE id=$1`, f.account).Scan(&reason))
+	require.Equal(t, "quality_rule:999", reason)
 }
 
 func TestQualityOwnershipSameMarkerChangeCannotBeSilentlyRelinquished(t *testing.T) {
