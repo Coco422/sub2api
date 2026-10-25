@@ -9,12 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/service"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 func qualityDigest(value any) string {
@@ -46,12 +47,14 @@ func qualityEntryOwner(raw json.RawMessage, planID int64) (string, int64) {
 func canonicalQualityEntry(raw json.RawMessage) any {
 	var value any
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &value)
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		_ = decoder.Decode(&value)
 	}
 	return value
 }
 func qualityChangedFields(expected, current json.RawMessage) []string {
-	a, b := map[string]any{}, map[string]any{}
+	a, b := map[string]json.RawMessage{}, map[string]json.RawMessage{}
 	_ = json.Unmarshal(expected, &a)
 	_ = json.Unmarshal(current, &b)
 	names := map[string]bool{}
@@ -63,7 +66,7 @@ func qualityChangedFields(expected, current json.RawMessage) []string {
 	}
 	changes := map[string]bool{}
 	for k := range names {
-		if qualityDigest(a[k]) != qualityDigest(b[k]) {
+		if qualityDigest(canonicalQualityEntry(a[k])) != qualityDigest(canonicalQualityEntry(b[k])) || (len(a[k]) == 0) != (len(b[k]) == 0) {
 			switch k {
 			case "reason", "isolated_at", "rate_limited_at", "rate_limit_reset_at":
 				changes[k] = true

@@ -30,7 +30,7 @@
   </section>
 </template>
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { previewQualityOwnership, reconcileQualityOwnership, type QualityOwnershipPreview } from '@/api/admin/accountQuality'
 const props = defineProps<{ planId: number; draftModels?: string[]; draftGroupIds?: number[]; draftAction?: string }>()
@@ -38,6 +38,7 @@ const emit = defineEmits<{ reconciled: []; blocked: [value: boolean] }>()
 const { t } = useI18n()
 const preview = ref<QualityOwnershipPreview | null>(null), busy = ref(false), error = ref(''), confirmed = ref(false), reconciled = ref(false)
 let generation = 0
+onBeforeUnmount(() => { generation++ })
 const same = (a: readonly (string | number)[], b: readonly (string | number)[]) => JSON.stringify([...new Set(a)].sort()) === JSON.stringify([...new Set(b)].sort())
 const scopeConflict = computed(() => !!preview.value?.action && preview.value.action === 'isolate_models' && props.draftAction !== undefined &&
   (props.draftAction !== 'isolate_models' || !same(preview.value.models, props.draftModels || []) || !same(preview.value.group_ids, props.draftGroupIds || [])))

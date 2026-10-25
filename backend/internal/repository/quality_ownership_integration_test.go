@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -64,4 +65,21 @@ func TestQualityOwnershipConfirmationRejectsConcurrentRuleAccountAndStateChanges
 			require.Equal(t, "QUALITY_OWNERSHIP_PREVIEW_CHANGED", infraerrors.Reason(err))
 		})
 	}
+}
+
+func TestQualityOwnershipExternalMarkerIsKeptOnAccountAfterRelinquishingSnapshot(t *testing.T) {
+	ctx := context.Background()
+	f, _, _ := newQualityIsolationFixture(t)
+	isolationRound(f, "failed", "passed")
+	f.exec(`UPDATE accounts SET extra=jsonb_set(extra,'{quality_model_isolation,sol}', '{"reason":"quality_rule:999","isolated_at":"2026-01-01T00:00:00Z"}'),updated_at=clock_timestamp() WHERE id=$1`)
+	repo := f.plans.(service.QualityOwnershipRepository)
+	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, p.RelinquishableCount)
+	_, err = repo.QualityOwnership(ctx, f.plan.ID, &service.QualityOwnershipRequest{Confirm: true, Fence: p.Fence})
+	require.NoError(t, err)
+	var reason string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT extra->'quality_model_isolation'->'sol'->>'reason' FROM accounts WHERE id=$1`, f.account).Scan(&reason))
+	require.Equal(t, "quality_rule:999", reason)
+	require.Zero(t, f.count(`SELECT count(*) FROM account_quality_states WHERE plan_id=`+fmt.Sprint(f.plan.ID)))
 }
