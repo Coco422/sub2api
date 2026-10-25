@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -47,4 +48,19 @@ func TestCustomMenuLocalizedLabelsRoundTripThroughSettingsAPI(t *testing.T) {
 	require.Equal(t, "Help center", response.Data.CustomMenuItems[0]["label_en"])
 	require.Equal(t, "帮助中心", response.Data.CustomMenuItems[0]["label"])
 	require.Equal(t, "Legacy page", response.Data.CustomMenuItems[1]["label"])
+}
+
+func TestCustomMenuLocalizedLabelsUseCharacterLimit(t *testing.T) {
+	h, _ := newStepUpSwitchTestHandler(t, map[string]string{})
+	menuItem := func(label string) []map[string]any {
+		return []map[string]any{{
+			"id": "help", "label_zh": label, "url": "https://example.com/help", "visibility": "user",
+		}}
+	}
+
+	accepted := doUpdateSettings(t, h, map[string]any{"custom_menu_items": menuItem(strings.Repeat("界", 50))}, nil)
+	require.Equal(t, http.StatusOK, accepted.Code, accepted.Body.String())
+
+	rejected := doUpdateSettings(t, h, map[string]any{"custom_menu_items": menuItem(strings.Repeat("界", 51))}, nil)
+	require.Equal(t, http.StatusBadRequest, rejected.Code, rejected.Body.String())
 }

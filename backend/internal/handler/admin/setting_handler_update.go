@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
@@ -1424,9 +1425,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				response.BadRequest(c, "Custom menu item label is required")
 				return
 			}
-			if len(items[i].Label) > maxMenuItemLabelLen ||
-				len(items[i].LabelZh) > maxMenuItemLabelLen ||
-				len(items[i].LabelEn) > maxMenuItemLabelLen {
+			if utf8.RuneCountInString(items[i].Label) > maxMenuItemLabelLen ||
+				utf8.RuneCountInString(items[i].LabelZh) > maxMenuItemLabelLen ||
+				utf8.RuneCountInString(items[i].LabelEn) > maxMenuItemLabelLen {
 				response.BadRequest(c, "Custom menu item label is too long (max 50 characters)")
 				return
 			}
