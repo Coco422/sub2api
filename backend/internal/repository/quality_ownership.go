@@ -32,8 +32,8 @@ func qualityEntryOwner(raw json.RawMessage, planID int64) (string, int64) {
 		return "unrecognized", 0
 	}
 	var reason string
-	if json.Unmarshal(entry["reason"], &reason) != nil {
-		return "external", 0
+	if json.Unmarshal(entry["reason"], &reason) != nil || strings.TrimSpace(reason) == "" {
+		return "unrecognized", 0
 	}
 	id, err := strconv.ParseInt(strings.TrimPrefix(reason, "quality_rule:"), 10, 64)
 	if strings.HasPrefix(reason, "quality_rule:") && err == nil && id > 0 {
@@ -68,7 +68,7 @@ func qualityChangedFields(expected, current json.RawMessage) []string {
 	for k := range names {
 		if qualityDigest(canonicalQualityEntry(a[k])) != qualityDigest(canonicalQualityEntry(b[k])) || (len(a[k]) == 0) != (len(b[k]) == 0) {
 			switch k {
-			case "reason", "isolated_at", "rate_limited_at", "rate_limit_reset_at":
+			case "reason", "isolated_at", "rate_limited_at", "rate_limit_reset_at", "priority", "created_at", "allowed_models", "group_id", "account_id":
 				changes[k] = true
 			default:
 				changes["other_fields"] = true
@@ -236,7 +236,9 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 				entry.Status = "external_membership_present"
 				entry.CurrentOwner = "external"
 				entry.CanRelinquish = true
-				entry.ChangedFields = []string{"membership_present"}
+				expectedJSON, _ := json.Marshal(expected)
+				currentJSON, _ := json.Marshal(current)
+				entry.ChangedFields = append([]string{"membership_present"}, qualityChangedFields(expectedJSON, currentJSON)...)
 			}
 			view.Entries = append(view.Entries, entry)
 		}

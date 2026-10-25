@@ -84,3 +84,69 @@ func TestQualityOwnershipExternalMarkerIsKeptOnAccountAfterRelinquishingSnapshot
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT count(*) FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&remaining))
 	require.Zero(t, remaining)
 }
+
+func TestQualityOwnershipSameMarkerChangeCannotBeSilentlyRelinquished(t *testing.T) {
+	ctx := context.Background()
+	f, _, _ := newQualityIsolationFixture(t)
+	isolationRound(f, "failed", "passed")
+	f.exec(`UPDATE accounts SET extra=jsonb_set(extra,'{quality_model_isolation,sol,isolated_at}','"changed-by-administrator"'),updated_at=clock_timestamp() WHERE id=$1`)
+	repo := f.plans.(service.QualityOwnershipRepository)
+	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
+	require.NoError(t, err)
+	require.Zero(t, p.RelinquishableCount)
+	require.Equal(t, "changed_same_owner", p.Entries[0].Status)
+	var before string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT state::text FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&before))
+	_, err = repo.QualityOwnership(ctx, f.plan.ID, &service.QualityOwnershipRequest{Confirm: true, Fence: p.Fence})
+	require.NoError(t, err)
+	var after string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT state::text FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&after))
+	require.JSONEq(t, before, after)
+}
+func TestQualityOwnershipConcurrentConfirmationsCommitOnlyOneAndRejectOldRound(t *testing.T) {
+	ctx := context.Background()
+	f, _, _ := newQualityIsolationFixture(t)
+	isolationRound(f, "failed", "passed")
+	f.exec(`UPDATE accounts SET extra=extra #- '{quality_model_isolation,sol}',updated_at=clock_timestamp() WHERE id=$1`)
+	repo := f.plans.(service.QualityOwnershipRepository)
+	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
+	require.NoError(t, err)
+	errors := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, e := repo.QualityOwnership(ctx, f.plan.ID, &service.QualityOwnershipRequest{Confirm: true, Fence: p.Fence})
+			errors <- e
+		}()
+	}
+	successes, conflicts := 0, 0
+	for range 2 {
+		if e := <-errors; e == nil {
+			successes++
+		} else {
+			require.Equal(t, "QUALITY_OWNERSHIP_PREVIEW_CHANGED", infraerrors.Reason(e))
+			conflicts++
+		}
+	}
+	require.Equal(t, 1, successes)
+	require.Equal(t, 1, conflicts)
+	require.Equal(t, "stale_run", isolationRound(f, "passed", "passed"))
+}
+func TestQualityOwnershipGroupPresenceDoesNotDiscardMatchingModelOwnership(t *testing.T) {
+	ctx := context.Background()
+	f, group, _ := newQualityIsolationFixture(t)
+	isolationRound(f, "failed", "failed")
+	f.exec(`INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,99)`, group)
+	repo := f.plans.(service.QualityOwnershipRepository)
+	p, err := repo.QualityOwnership(ctx, f.plan.ID, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, p.RelinquishableCount)
+	_, err = repo.QualityOwnership(ctx, f.plan.ID, &service.QualityOwnershipRequest{Confirm: true, Fence: p.Fence})
+	require.NoError(t, err)
+	var state string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT state::text FROM account_quality_states WHERE plan_id=$1`, f.plan.ID).Scan(&state))
+	require.Contains(t, state, "model_applied")
+	require.Contains(t, state, "astra")
+	require.Contains(t, state, "sol")
+	require.NotContains(t, state, `"groups":`)
+	require.Equal(t, 1, f.count(`SELECT count(*) FROM account_groups WHERE account_id=$1 AND priority=99`))
+}
