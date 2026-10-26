@@ -424,7 +424,7 @@ func scorePriorityCandidate(c PrioritySchedulingConfig, item openAIAccountCandid
 
 func (s *defaultOpenAIAccountScheduler) applyPriorityScheduling(req OpenAIAccountScheduleRequest, plan *openAIAccountLoadPlan) bool {
 	c := s.service.prioritySchedulingRuntimeConfig()
-	if req.Platform != PlatformOpenAI || req.RequiredImageCapability != "" || !req.UseUpstreamTokenCost || !c.applies(req.GroupID, priorityHistoryModel(req)) {
+	if req.Platform != PlatformOpenAI || req.RequiredImageCapability != "" || !req.UseUpstreamTokenCost || !priorityApplies(c, req) {
 		return false
 	}
 	history := s.service.priorityHistory(req, c, plan.candidates)

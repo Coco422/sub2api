@@ -212,10 +212,20 @@ func TestPriorityObservationStickyPenaltyAndExpiry(t *testing.T) {
 	}
 }
 
+type observationMissingReader struct{ priorityReaderStub }
+
+func (r *observationMissingReader) ReadPrioritySchedulingSignals(context.Context, PrioritySchedulingQuery) (map[int64]PrioritySchedulingSignal, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return map[int64]PrioritySchedulingSignal{}, nil
+}
+
 func TestPriorityObservationQueryBudgetAndMissingData(t *testing.T) {
 	cfg := DefaultPrioritySchedulingConfig()
-	reader := &priorityReaderStub{signal: map[int64]PrioritySchedulingSignal{}}
-	svc := priorityGateway(cfg, reader)
+	reader := &observationMissingReader{}
+	svc := priorityGateway(cfg, &priorityReaderStub{})
+	svc.usageLogRepo = reader
 	pool := []openAIAccountCandidateScore{priorityCandidate(1, .1, 0)}
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -241,4 +251,22 @@ func TestPriorityObservationQueryBudgetAndMissingData(t *testing.T) {
 	for _, entry := range svc.priorityScheduling.entries {
 		require.Empty(t, entry.signals, "an absent reader row must not be fabricated as zero observations")
 	}
+}
+
+func TestPriorityObservationScopeCompatibility(t *testing.T) {
+	cfg := DefaultPrioritySchedulingConfig()
+	cfg.Enabled = true
+	group := int64(11)
+	cfg.GroupIDs = []int64{group}
+	req := OpenAIAccountScheduleRequest{GroupID: &group, RequestedModel: "route-model", HistoryModel: "public-alias"}
+	for _, model := range []string{"public-alias", "route-model"} {
+		cfg.Models = []string{model}
+		require.True(t, priorityApplies(cfg, req))
+	}
+	cfg.Models = []string{"distinct-model"}
+	require.False(t, priorityApplies(cfg, req))
+	cfg.Models = nil
+	other := int64(12)
+	req.GroupID = &other
+	require.False(t, priorityApplies(cfg, req))
 }

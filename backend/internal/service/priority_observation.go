@@ -31,6 +31,12 @@ func priorityHistoryModel(req OpenAIAccountScheduleRequest) string {
 	return strings.TrimSpace(req.RequestedModel)
 }
 
+// Public model scopes work before routing; retain legacy routing-model scopes
+// as a configuration alias only. Each history/attempt key remains exact.
+func priorityApplies(c PrioritySchedulingConfig, req OpenAIAccountScheduleRequest) bool {
+	return c.applies(req.GroupID, priorityHistoryModel(req)) || c.applies(req.GroupID, strings.TrimSpace(req.RequestedModel))
+}
+
 func priorityObservationFromContext(ctx context.Context, fallback string) priorityObservationIdentity {
 	identity, _ := ctx.Value(priorityObservationContextKey{}).(priorityObservationIdentity)
 	if identity.model == "" {
@@ -57,7 +63,7 @@ func (s *defaultOpenAIAccountScheduler) shouldYieldPriorityLatencySticky(req Ope
 		return false
 	}
 	cfg := s.service.prioritySchedulingRuntimeConfig()
-	if !cfg.applies(req.GroupID, priorityHistoryModel(req)) {
+	if !priorityApplies(cfg, req) {
 		return false
 	}
 	pool := []openAIAccountCandidateScore{{account: account}}

@@ -7,7 +7,7 @@ The immutable baseline is the production SHA from which this branch started.
 from pathlib import Path
 import subprocess
 
-BASE = '00788a470'
+BASE = '00788a4705152cb90aab089d352a494531e4664b'
 def function(source, prefix):
     start = source.index(prefix)
     # gofmt top-level functions end in a column-zero closing brace.

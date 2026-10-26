@@ -19,7 +19,7 @@ permissions:
 jobs:
   seams:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       GOMAXPROCS: '2'
       GOFLAGS: '-p=2'
@@ -54,6 +54,11 @@ jobs:
         run: |
           set -euo pipefail
           (cd backend && go test -tags=unit ./internal/service ./internal/handler -run '^(TestPriority|TestOpenAI.*Sticky|Test.*PreviousResponse|TestOpenAI.*Profit|TestOpenAI.*RPM|TestOpenAI.*Replay|TestOpenAI.*Failover)'  -count=1 -v -timeout=15m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/green.log"
+      - name: Race check asynchronous history and observation seams
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd backend && go test -race -tags=unit ./internal/service -run '^(TestPriorityObservation|TestPriorityHistory|TestPrioritySignalRefresh)' -count=1 -v -timeout=8m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/race.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
