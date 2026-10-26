@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	coderws "github.com/coder/websocket"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -404,4 +406,72 @@ func TestPriorityLatencyModesWSTurnRoutingIdentity(t *testing.T) {
 	var denied *OpenAITurnAdmissionError
 	require.ErrorAs(t, err, &denied)
 	require.Equal(t, "latency_penalty", denied.Reason, "use loaded route/public evidence, not a new upstream-model cache scope")
+}
+
+func TestPriorityLatencyModesPassthroughNewTurnAndOutput(t *testing.T) {
+	for _, initialStop := range []bool{false, true} {
+		t.Run(map[bool]string{false: "after output", true: "initial"}[initialStop], func(t *testing.T) {
+			control, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			control = WithPrioritySchedulingObservation(control, nil, "public-model", "/v1/responses")
+			control = WithOpenAIForwardModel(control, "gpt-5.1", false)
+			upstream := newStagedPassthroughConn()
+			svc := newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream)
+			cfg := DefaultPrioritySchedulingConfig()
+			cfg.Enabled = true
+			cfg.LatencyPenaltyMode = PriorityLatencyStop
+			svc.settingService = priorityGateway(cfg, &priorityReaderStub{}).settingService
+			svc.usageLogRepo = &latencyModeReader{noSamples: true}
+			account := passthroughLifecycleAccount()
+			req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, RequestedModel: "gpt-5.1", HistoryModel: "public-model", InboundEndpoint: "/v1/responses", UseUpstreamTokenCost: true}
+			require.Eventually(t, func() bool {
+				return svc.priorityHistory(req, cfg, []openAIAccountCandidateScore{{account: account}}).ready()
+			}, time.Second, time.Millisecond)
+			stop := func() {
+				setModeSignal(svc, req, account.ID, func(v *PrioritySchedulingSignal) {
+					bad := time.Now()
+					*v = PrioritySchedulingSignal{Samples: 20, P90TTFTMs: 16000, LatestBadLatencyAt: &bad}
+				})
+			}
+			if initialStop {
+				stop()
+			}
+			server, done := startPassthroughHookRecordingServer(t, control, svc, account, nil)
+			defer server.Close()
+			client := dialPassthroughLifecycleClient(t, server)
+			defer func() { _ = client.CloseNow() }()
+			if !initialStop {
+				requirePassthroughUpstreamWrite(t, upstream, time.Second)
+				upstream.Send(`{"type":"response.output_text.delta","response_id":"resp_mode_stream","delta":"first"}`)
+				delta, err := readPassthroughLifecycleFrame(t, client, time.Second)
+				require.NoError(t, err)
+				require.Contains(t, string(delta), "first")
+				stop()
+				upstream.Send(`{"type":"response.completed","response":{"id":"resp_mode_stream","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+				terminal, err := readPassthroughLifecycleFrame(t, client, time.Second)
+				require.NoError(t, err)
+				require.Contains(t, string(terminal), "response.completed", "an active penalty must not abort already emitted output")
+				require.Eventually(t, func() bool {
+					id, _ := svc.getOpenAIWSStateStore().GetResponseAccount(control, 0, "resp_mode_stream")
+					return id == account.ID
+				}, time.Second, time.Millisecond)
+				writeCtx, endWrite := context.WithTimeout(control, time.Second)
+				err = client.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","previous_response_id":"resp_mode_stream"}`))
+				endWrite()
+				require.NoError(t, err)
+			}
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, ErrPriorityLatencyUnavailable)
+			case <-time.After(3 * time.Second):
+				t.Fatal("stopped passthrough turn did not fail safely")
+			}
+			require.Empty(t, upstream.writes, "stopped generation must never be written to the provider")
+			if !initialStop {
+				id, err := svc.getOpenAIWSStateStore().GetResponseAccount(control, 0, "resp_mode_stream")
+				require.NoError(t, err)
+				require.Equal(t, account.ID, id, "temporary stop must retain provider response ownership")
+			}
+		})
+	}
 }
