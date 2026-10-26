@@ -261,6 +261,12 @@ func TestPoolCapacityRealQuotaAndModelRejectionStillIsolateOneAccountModel(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{
 				accounts: []service.Account{poolCapacityAccount(11, 1, true), poolCapacityAccount(12, 2, true)}}}
+			if tc.status == http.StatusNotFound {
+				// Explicit administrator policy retains missing-model isolation;
+				// default-pool no-cache behavior has its own regressions.
+				repo.accounts[0].Credentials["custom_error_codes_enabled"] = true
+				repo.accounts[0].Credentials["custom_error_codes"] = []any{float64(http.StatusNotFound)}
+			}
 			upstream := &poolCapacityTransport{reply: func(_ *http.Request, id int64) *http.Response {
 				if id == 11 {
 					return poolCapacityResponse(tc.status, "application/json", tc.body, "60")
