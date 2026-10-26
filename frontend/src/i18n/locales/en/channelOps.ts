@@ -49,7 +49,7 @@ export default {
   "errors": "Existing diagnostics",
   "quality": "Measured quality rounds",
   "qualityEditor": "Quality plans and editor",
-  "qualityNote": "Quality uses current account/group membership, not request group attribution or per-request intelligence. Public/recorded aliases cannot identify probe models; select an exact upstream model to filter quality. Passing requires a complete correct round; transport failures, partial rounds and skipped probes are inconclusive.",
+  "qualityNote": "Counted by plan + round + model; multi-model rounds appear separately. Quality uses current account/group membership, not request group attribution or per-request intelligence. Public/recorded aliases cannot identify probe models; select an exact upstream model to filter quality. Passing requires a complete correct round; transport failures, partial rounds and skipped probes are inconclusive.",
   "rounds": "Rounds",
   "passed": "Passed",
   "degraded": "Measured degradation",

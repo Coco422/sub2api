@@ -90,7 +90,7 @@ func (s *ChannelService) operationsRepository() (ChannelOperationsRepository, er
 	return repo, nil
 }
 func (s *ChannelService) OperationsCatalog(ctx context.Context, id int64, q ChannelOperationsQuery) (*ChannelOperationsCatalog, error) {
-	if id <= 0 || q.Page < 1 || q.UpstreamPage < 1 || q.PageSize < 1 || q.PageSize > 100 || len(q.Search) > 200 || len(q.UpstreamSearch) > 200 || q.UpstreamID < 0 {
+	if id <= 0 || q.Page < 1 || q.Page > 1000000 || q.UpstreamPage < 1 || q.UpstreamPage > 1000000 || q.PageSize < 1 || q.PageSize > 100 || len(q.Search) > 200 || len(q.UpstreamSearch) > 200 || q.UpstreamID < 0 {
 		return nil, ErrChannelOperationsValidation
 	}
 	if q.Membership != "all" && q.Membership != "assigned" && q.Membership != "unassigned" {
@@ -143,13 +143,13 @@ func (s *ChannelService) MutateOperations(ctx context.Context, id int64, m Chann
 	return repo.MutateChannelOperations(ctx, id, m)
 }
 func ValidateChannelOperationsFilter(f ChannelOperationsFilter) error {
-	if f.ChannelID < 0 || f.AccountID < 0 || f.UpstreamID < 0 || f.GroupID < 0 || f.QualityBefore < 0 || f.From.IsZero() || !f.Until.After(f.From) || f.Until.Sub(f.From) > 31*24*time.Hour || f.Until.After(time.Now().Add(time.Minute)) || len(f.Model) > 200 || f.Page < 1 || f.PageSize < 1 || f.PageSize > 100 {
+	if f.ChannelID < 0 || f.AccountID < 0 || f.UpstreamID < -1 || f.GroupID < 0 || f.QualityBefore < 0 || f.From.IsZero() || !f.Until.After(f.From) || f.Until.Sub(f.From) > 31*24*time.Hour || f.Until.After(time.Now().Add(time.Minute)) || len(f.Model) > 200 || f.Page < 1 || f.Page > 1000000 || f.PageSize < 1 || f.PageSize > 100 {
 		return ErrChannelOperationsValidation
 	}
 	if f.Dimension != "channel" && f.Dimension != "upstream" && f.Dimension != "account" {
 		return ErrChannelOperationsValidation
 	}
-	if f.ChannelID == 0 && (f.Dimension != "channel" || f.UpstreamID > 0 || f.AccountID > 0) {
+	if f.ChannelID == 0 && (f.UpstreamID != 0 || (f.Dimension != "channel" && !(f.Dimension == "account" && f.AccountID > 0))) {
 		return ErrChannelOperationsValidation
 	}
 	if f.ModelScope != "public" && f.ModelScope != "recorded" && f.ModelScope != "upstream" {

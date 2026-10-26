@@ -3,6 +3,9 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logredact"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -12,10 +15,10 @@ import (
 const channelOperationsUsageBase = `WITH base AS (
  SELECT u.*, COALESCE(m.upstream_id,0) AS operation_upstream_id,
  COALESCE(NULLIF(u.requested_model,''),u.model) AS public_model,
- (u.actual_cost>0 OR u.total_cost>0 OR u.account_stats_cost>0 OR u.input_tokens+u.output_tokens+u.cache_read_tokens+u.cache_creation_tokens>0) AS measured
+ (u.actual_cost>0 OR u.total_cost>0 OR u.account_stats_cost>0 OR u.input_tokens>0 OR u.output_tokens>0 OR u.cache_read_tokens>0 OR u.cache_creation_tokens>0) AS measured
  FROM usage_logs u LEFT JOIN channel_operation_members m ON m.channel_id=u.channel_id AND m.account_id=u.account_id
  WHERE u.created_at >= $1 AND u.created_at < $2
- AND ($3::bigint=0 OR u.channel_id=$3) AND ($4::bigint=0 OR m.upstream_id=$4)
+ AND ($3::bigint=0 OR u.channel_id=$3) AND ($4::bigint=0 OR m.upstream_id=$4 OR ($4=-1 AND m.upstream_id IS NULL))
  AND ($5::bigint=0 OR u.account_id=$5) AND ($6::bigint=0 OR u.group_id=$6)
  AND ($7='' OR CASE $8 WHEN 'public' THEN COALESCE(NULLIF(u.requested_model,''),u.model) WHEN 'recorded' THEN u.model WHEN 'upstream' THEN u.upstream_model END=$7)
 ), measured AS (
@@ -25,22 +28,22 @@ const channelOperationsUsageBase = `WITH base AS (
 )`
 
 const channelOperationsQualityBase = `WITH scoped AS (
- SELECT p.account_id,r.*,COALESCE(NULLIF(r.pelican_config->>'model_id',''),p.model_id) AS measured_model
+ SELECT p.account_id,r.*,NULLIF(r.pelican_config->>'model_id','') AS measured_model
  FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
  WHERE r.created_at >= $1 AND r.created_at < $2
  AND ($3::bigint=0 OR EXISTS (SELECT 1 FROM account_groups ag JOIN channel_groups cg ON cg.group_id=ag.group_id WHERE ag.account_id=p.account_id AND cg.channel_id=$3))
- AND ($4::bigint=0 OR EXISTS (SELECT 1 FROM channel_operation_members m WHERE m.account_id=p.account_id AND m.channel_id=$3 AND m.upstream_id=$4))
+ AND ($4::bigint=0 OR EXISTS (SELECT 1 FROM channel_operation_members m WHERE m.account_id=p.account_id AND m.channel_id=$3 AND m.upstream_id=$4) OR ($4=-1 AND NOT EXISTS (SELECT 1 FROM channel_operation_members m WHERE m.account_id=p.account_id AND m.channel_id=$3)))
  AND ($5::bigint=0 OR p.account_id=$5)
  AND ($6::bigint=0 OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id=p.account_id AND ag.group_id=$6))
- AND ($7='' OR COALESCE(NULLIF(r.pelican_config->>'model_id',''),p.model_id)=$7)
+ AND ($7='' OR NULLIF(r.pelican_config->>'model_id','')=$7)
  AND jsonb_typeof(r.pelican_config->'quality')='object'
 ), rounds AS (
  SELECT account_id,plan_id,COALESCE(NULLIF(quality_round_id,''),'legacy-'||id::text) AS round_key,measured_model,
  max(id) AS id,max(created_at) AS observed_at,count(*) AS probes,
  count(*) FILTER(WHERE status='success' AND quality_judgment->>'verdict'='correct') AS passed_probes,
  bool_or(status='failed' AND quality_judgment->>'verdict'='incorrect' AND error_message IN ('answer_mismatch','state_degraded') AND quality_action NOT IN ('','stale_run')) AS degraded,
- bool_and(status='success' AND quality_judgment->>'verdict'='correct' AND quality_action NOT IN ('','stale_run') AND quality_round_id<>'') AS passed,
- bool_and(COALESCE(pelican_config->>'parallel_count','1') ~ '^[1-8]$') AS valid_count,
+ bool_and(COALESCE(status='success' AND quality_judgment->>'verdict'='correct' AND quality_action NOT IN ('','stale_run') AND quality_round_id<>'',false)) AS passed,
+ bool_and((pelican_config->'parallel_count' IS NULL OR jsonb_typeof(pelican_config->'parallel_count')='number') AND COALESCE(pelican_config->>'parallel_count','1') ~ '^[1-8]$') AS valid_count,
  max(CASE WHEN COALESCE(pelican_config->>'parallel_count','1') ~ '^[1-8]$' THEN COALESCE(pelican_config->>'parallel_count','1')::int END) AS expected,
  jsonb_agg(DISTINCT NULLIF(quality_action,'')) AS actions
  FROM scoped GROUP BY account_id,plan_id,COALESCE(NULLIF(quality_round_id,''),'legacy-'||id::text),measured_model
@@ -54,6 +57,7 @@ func (r *channelRepository) operationsSection(ctx context.Context, query string,
 	defer cancel()
 	var raw []byte
 	if err := r.db.QueryRowContext(sectionCtx, query, args...).Scan(&raw); err != nil {
+		slog.WarnContext(sectionCtx, "channel operations query failed", "error", logredact.RedactText(err.Error()))
 		out.Error = "数据查询失败，请重试"
 		return out
 	}
@@ -87,7 +91,7 @@ func (r *channelRepository) ReadChannelOperations(ctx context.Context, f service
 		out.Quality = r.operationsSection(ctx, channelOperationsQualityBase+` SELECT jsonb_build_object('source','scheduled_test_results: frozen config / judgment / plan+round+model','scope','current_account_group_membership; not request group attribution','summary',(SELECT jsonb_build_object('rounds',count(*),'passed',count(*) FILTER(WHERE outcome='passed'),'degraded',count(*) FILTER(WHERE outcome='degraded'),'inconclusive',count(*) FILTER(WHERE outcome='inconclusive'),'latest_sample_at',max(observed_at)) FROM classified),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (SELECT id,account_id,plan_id,measured_model,observed_at,probes,passed_probes,expected,outcome,actions FROM classified WHERE ($8::bigint=0 OR id<$8) ORDER BY id DESC LIMIT $9)x),'[]'::jsonb),'has_more',(SELECT count(*)>$9 FROM classified WHERE ($8::bigint=0 OR id<$8)))`, qualityArgs...)
 	}
 	capacityArgs := []any{f.ChannelID, f.UpstreamID, f.AccountID, f.GroupID}
-	out.Capacity = r.operationsSection(ctx, `SELECT jsonb_build_object('source','accounts current configuration','scope','current_account_group_membership; model-independent; not live load','accounts',count(*),'schedulable',count(*) FILTER(WHERE a.schedulable AND a.status='active'),'configured_concurrency',COALESCE(sum(a.concurrency),0)) FROM accounts a WHERE a.deleted_at IS NULL AND ($1::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag JOIN channel_groups cg ON cg.group_id=ag.group_id WHERE ag.account_id=a.id AND cg.channel_id=$1)) AND ($2::bigint=0 OR EXISTS(SELECT 1 FROM channel_operation_members m WHERE m.account_id=a.id AND m.channel_id=$1 AND m.upstream_id=$2)) AND ($3::bigint=0 OR a.id=$3) AND ($4::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=a.id AND ag.group_id=$4))`, capacityArgs...)
+	out.Capacity = r.operationsSection(ctx, `SELECT jsonb_build_object('source','accounts current configuration','scope','current_account_group_membership; model-independent; not live load','accounts',count(*),'schedulable',count(*) FILTER(WHERE a.schedulable AND a.status='active'),'configured_concurrency',COALESCE(sum(a.concurrency),0)) FROM accounts a WHERE a.deleted_at IS NULL AND ($1::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag JOIN channel_groups cg ON cg.group_id=ag.group_id WHERE ag.account_id=a.id AND cg.channel_id=$1)) AND ($2::bigint=0 OR EXISTS(SELECT 1 FROM channel_operation_members m WHERE m.account_id=a.id AND m.channel_id=$1 AND m.upstream_id=$2) OR ($2=-1 AND NOT EXISTS(SELECT 1 FROM channel_operation_members m WHERE m.account_id=a.id AND m.channel_id=$1))) AND ($3::bigint=0 OR a.id=$3) AND ($4::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=a.id AND ag.group_id=$4))`, capacityArgs...)
 	return out
 }
 

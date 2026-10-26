@@ -1689,7 +1689,7 @@ async function confirmDelete() {
 
 // ── Lifecycle ──
 onMounted(() => {
-  const editId = Number(operationsRoute.query.edit_channel)
+  const editId = Number(operationsRoute?.query.edit_channel)
   if (Number.isSafeInteger(editId) && editId > 0) {
     void adminAPI.channels.getById(editId).then(openEditDialog).catch(() => appStore.showError(t('channelOps.failed')))
   }

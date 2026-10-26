@@ -21,9 +21,9 @@
 - 用量直接读取 `usage_logs.channel_id`，时间为 `[from,to)`，最多 31 天。旧记录缺少 channel_id 时不猜测归属。公共模型筛选使用 `COALESCE(NULLIF(requested_model,''),model)`；已记录模型使用 `model`；上游模型使用 `upstream_model`。不会把 capability 当 ingress 端点，不复用优先调度快照或已知错误的模型查询。
 - 模型谱系显示 public / recorded / upstream 与原始 mapping_chain。`model` 不能保证等于 routing model；没有可靠持久化字段时不声称已知 routing model。
 - TTFT 是持久化 `first_token_ms` 的历史转发口径，仅流式且有 token/费用证据的请求；展示 p50/p90/p95、有效/未知数量。总耗时独立用 `duration_ms`；NULL/非正数不当作零。此口径不是端到端或纯上游网络延迟。
-- 上游统计按当前人工归属回看历史，改派后历史会重分组；未分配账号保留单独桶，渠道总数不因未分配而丢失。当前配置并发只是容量上限，不是实时负载。
+- 上游统计按当前人工归属回看历史，改派后历史会重分组；未分配账号保留单独桶（upstream_id=-1 下钻），渠道总数不因未分配而丢失。当前配置并发只是容量上限，不是实时负载。
 - 质量从 `scheduled_test_results` 的冻结配置、judgment 和 round_id 读取，按 plan+round 去重。通过需完整轮次全部 correct+success；降级需明确 incorrect 且 answer_mismatch/state_degraded；缺失、并发轮未完成、传输失败与 skipped 为不确定。质量不等于每个请求的智能水平，错误不自动当降智。
-- 质量没有请求 group/channel 维度：按当前渠道/分组账号范围选择，明确标记为当前账号范围。模型筛选只匹配结果快照模型；它不与公开别名自动等价，选择 public/recorded 筛选时质量为范围不支持。
+- 质量没有请求 group/channel 维度：按当前渠道/分组账号范围选择，明确标记为当前账号范围。模型筛选只匹配结果快照模型，快照缺失不回填当前计划模型；它不与公开别名自动等价，选择 public/recorded 筛选时质量为范围不支持。
 - 分别返回 usage/quality 查询状态、查询时间、最新样本时间、来源、窗口和范围限制。成功无样本与查询失败不同；失败不显示成 0。分页统计不能截断汇总分母。没有可信全请求错误分母时错误率显示不支持，提供既有错误诊断入口。
 - 质量历史可进入已有质量计划编辑器（选中 plan），不新建默认付费任务。
 

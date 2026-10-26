@@ -45,13 +45,13 @@ func (r *channelRepository) ChannelOperationsCatalog(ctx context.Context, id int
 	if err != nil {
 		return nil, err
 	}
-	predicate := ` FROM accounts a LEFT JOIN channel_operation_members m ON m.account_id=a.id AND m.channel_id=$1 WHERE a.deleted_at IS NULL AND (` + channelOperationEligible + ` OR m.account_id IS NOT NULL) AND ($2='' OR a.name ILIKE '%' || $2 || '%' OR a.id::text=$2) AND ($3='all' OR ($3='assigned' AND m.account_id IS NOT NULL) OR ($3='unassigned' AND m.account_id IS NULL)) AND ($4::bigint=0 OR m.upstream_id=$4)`
+	predicate := ` FROM accounts a LEFT JOIN channel_operation_members m ON m.account_id=a.id AND m.channel_id=$1 WHERE ((a.deleted_at IS NULL AND ` + channelOperationEligible + `) OR m.account_id IS NOT NULL) AND ($2='' OR a.name ILIKE '%' || $2 || '%' OR a.id::text=$2) AND ($3='all' OR ($3='assigned' AND m.account_id IS NOT NULL) OR ($3='unassigned' AND m.account_id IS NULL)) AND ($4::bigint=0 OR m.upstream_id=$4)`
 	args := []any{id, q.Search, q.Membership, q.UpstreamID}
 	if err = tx.QueryRowContext(ctx, `SELECT count(*)`+predicate, args...).Scan(&out.Total); err != nil {
 		return nil, err
 	}
 	args = append(args, q.PageSize, (q.Page-1)*q.PageSize)
-	rows, err = tx.QueryContext(ctx, `SELECT a.id,a.name,a.platform,a.status,a.schedulable,a.concurrency,COALESCE(m.upstream_id,0),`+channelOperationEligible+predicate+` ORDER BY a.id LIMIT $5 OFFSET $6`, args...)
+	rows, err = tx.QueryContext(ctx, `SELECT a.id,a.name,a.platform,a.status,a.schedulable,a.concurrency,COALESCE(m.upstream_id,0),(a.deleted_at IS NULL AND `+channelOperationEligible+`)`+predicate+` ORDER BY a.id LIMIT $5 OFFSET $6`, args...)
 	if err != nil {
 		return nil, err
 	}

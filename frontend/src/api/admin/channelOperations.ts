@@ -8,7 +8,7 @@ export interface Metrics { requests: number; samples: number; unknown_samples: n
 export interface UsageRow extends Metrics { dimension_id: number; name: string }
 export interface Lineage { public_model: string; recorded_model: string; upstream_model: string | null; model_mapping_chain: string | null; samples: number }
 export interface Usage { source: string; attribution: string; latency_measurement: string; summary: Metrics; total: number; rows: UsageRow[]; lineage: Lineage[]; lineage_total: number; error_rate: null; error_scope: string }
-export interface QualityRound { id: number; account_id: number; plan_id: number; measured_model: string; observed_at: string; probes: number; passed_probes: number; expected: number | null; outcome: 'passed' | 'degraded' | 'inconclusive'; actions: Array<string | null> }
+export interface QualityRound { id: number; account_id: number; plan_id: number; measured_model: string | null; observed_at: string; probes: number; passed_probes: number; expected: number | null; outcome: 'passed' | 'degraded' | 'inconclusive'; actions: Array<string | null> }
 export interface Quality { source: string; scope: string; summary: { rounds: number; passed: number; degraded: number; inconclusive: number; latest_sample_at: string | null }; rows: QualityRound[]; has_more: boolean }
 export interface Capacity { source: string; scope: string; accounts: number; schedulable: number; configured_concurrency: number }
 export interface Section<T> { status: 'ready' | 'query_failed' | 'unsupported_scope'; data: T | null; error?: string; queried_at: string }

@@ -1,0 +1,416 @@
+//go:build integration
+
+package repository
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/migrations"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+)
+
+type channelOperationsFixture struct {
+	repo                                         *channelRepository
+	channel, group, account, outsider, user, key int64
+}
+
+func newChannelOperationsFixture(t *testing.T) *channelOperationsFixture {
+	t.Helper()
+	ctx := context.Background()
+	f := &channelOperationsFixture{repo: &channelRepository{db: integrationDB}}
+	ch := &service.Channel{Name: fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()), Status: service.StatusActive, BillingModelSource: service.BillingModelSourceRequested}
+	require.NoError(t, f.repo.Create(ctx, ch))
+	f.channel = ch.ID
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO groups(name,platform) VALUES($1,'openai') RETURNING id`, fmt.Sprintf("operations-%d", f.channel)).Scan(&f.group))
+	require.NoError(t, f.repo.SetGroupIDs(ctx, f.channel, []int64{f.group}))
+	a := mustCreateAccount(t, integrationEntClient, &service.Account{Name: "Operations account", Platform: service.PlatformOpenAI, Credentials: map[string]any{"api_key": "synthetic-fixture-only"}})
+	f.account = a.ID
+	a = mustCreateAccount(t, integrationEntClient, &service.Account{Name: "Outside account", Platform: service.PlatformOpenAI})
+	f.outsider = a.ID
+	_, err := integrationDB.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, f.account, f.group)
+	require.NoError(t, err)
+	u := mustCreateUser(t, integrationEntClient, &service.User{Email: fmt.Sprintf("operations-%d@test.invalid", f.channel)})
+	f.user = u.ID
+	k := mustCreateApiKey(t, integrationEntClient, &service.APIKey{UserID: u.ID, Key: fmt.Sprintf("operations-fixture-%d", f.channel), Name: "Operations fixture"})
+	f.key = k.ID
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE account_id IN ($1,$2)`, f.account, f.outsider)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM usage_logs WHERE account_id IN ($1,$2)`, f.account, f.outsider)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id IN ($1,$2)`, f.account, f.outsider)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, f.user)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM channels WHERE id=$1`, f.channel)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM groups WHERE id=$1`, f.group)
+	})
+	return f
+}
+func (f *channelOperationsFixture) catalog(t *testing.T) *service.ChannelOperationsCatalog {
+	t.Helper()
+	out, err := f.repo.ChannelOperationsCatalog(context.Background(), f.channel, service.ChannelOperationsQuery{Page: 1, PageSize: 20, UpstreamPage: 1, Membership: "all"})
+	require.NoError(t, err)
+	return out
+}
+func (f *channelOperationsFixture) mutate(t *testing.T, m service.ChannelOperationsMutation) error {
+	t.Helper()
+	revision := f.catalog(t).Revision
+	m.Revision = &revision
+	_, err := f.repo.MutateChannelOperations(context.Background(), f.channel, m)
+	return err
+}
+func (f *channelOperationsFixture) upstream(t *testing.T, name string) int64 {
+	t.Helper()
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "create_upstream", Name: name}))
+	var id int64
+	require.NoError(t, integrationDB.QueryRow(`SELECT id FROM channel_operation_upstreams WHERE channel_id=$1 AND name=$2`, f.channel, name).Scan(&id))
+	return id
+}
+func TestChannelOperationsMembershipValidationConflictAndDetach(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	ctx := context.Background()
+	u1 := f.upstream(t, "First")
+	u2 := f.upstream(t, "Second")
+	require.ErrorIs(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.outsider, UpstreamID: u1}), service.ErrChannelOperationsValidation)
+	// A canonical channel's upstream cannot be attached through another channel.
+	other := newChannelOperationsFixture(t)
+	require.ErrorIs(t, other.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: other.account, UpstreamID: u1}), service.ErrChannelOperationsValidation)
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: u1}))
+	require.ErrorIs(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: u2}), service.ErrChannelOperationsConflict)
+	require.ErrorIs(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: u2, ExpectedUpstreamID: u1}), service.ErrChannelOperationsValidation)
+	revision := f.catalog(t).Revision
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "update_upstream", UpstreamID: u1, Name: "Renamed"}))
+	_, err := f.repo.MutateChannelOperations(ctx, f.channel, service.ChannelOperationsMutation{Action: "detach", AccountID: f.account, ExpectedUpstreamID: u1, Confirm: true, Revision: &revision})
+	require.ErrorIs(t, err, service.ErrChannelOperationsConflict)
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: u2, ExpectedUpstreamID: u1, Confirm: true}))
+	// Current group edits do not erase stale memberships; they remain detachable.
+	_, err = integrationDB.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1`, f.account)
+	require.NoError(t, err)
+	got := f.catalog(t)
+	require.Len(t, got.Accounts, 1)
+	require.False(t, got.Accounts[0].Eligible)
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "detach", AccountID: f.account, ExpectedUpstreamID: u2, Confirm: true}))
+	require.Empty(t, f.catalog(t).Accounts)
+	var credentials string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT credentials->>'api_key' FROM accounts WHERE id=$1`, f.account).Scan(&credentials))
+	require.Equal(t, "synthetic-fixture-only", credentials)
+}
+func TestChannelOperationsConcurrentChangesHaveOneWinner(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	revision := f.catalog(t).Revision
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for _, name := range []string{"A", "B"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			_, err := f.repo.MutateChannelOperations(context.Background(), f.channel, service.ChannelOperationsMutation{Action: "create_upstream", Name: name, Revision: &revision})
+			results <- err
+		}(name)
+	}
+	wg.Wait()
+	close(results)
+	success, conflict := 0, 0
+	for err := range results {
+		if err == nil {
+			success++
+		} else {
+			require.ErrorIs(t, err, service.ErrChannelOperationsConflict)
+			conflict++
+		}
+	}
+	require.Equal(t, 1, success)
+	require.Equal(t, 1, conflict)
+	require.Equal(t, int64(1), f.catalog(t).UpstreamTotal)
+}
+func TestChannelOperationsCatalogPaginationSoftDeleteAndChannelDelete(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	u1 := f.upstream(t, "A")
+	_ = f.upstream(t, "B")
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: u1}))
+	q := service.ChannelOperationsQuery{Page: 1, PageSize: 1, UpstreamPage: 2, Membership: "assigned", Search: fmt.Sprint(f.account)}
+	page, err := f.repo.ChannelOperationsCatalog(context.Background(), f.channel, q)
+	require.NoError(t, err)
+	require.Len(t, page.Upstreams, 1)
+	require.Equal(t, "B", page.Upstreams[0].Name)
+	require.Equal(t, int64(2), page.UpstreamTotal)
+	require.Equal(t, int64(1), page.Total)
+	q.Page = 2
+	page, err = f.repo.ChannelOperationsCatalog(context.Background(), f.channel, q)
+	require.NoError(t, err)
+	require.Empty(t, page.Accounts)
+	require.Equal(t, int64(1), page.Total)
+	_, err = integrationDB.Exec(`UPDATE accounts SET deleted_at=NOW() WHERE id=$1`, f.account)
+	require.NoError(t, err)
+	page = f.catalog(t)
+	require.Len(t, page.Accounts, 1)
+	require.False(t, page.Accounts[0].Eligible)
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "delete_upstream", UpstreamID: u1, Confirm: true}))
+	require.Zero(t, f.catalog(t).Total)
+	require.NoError(t, f.repo.Delete(context.Background(), f.channel))
+	var n int
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM accounts WHERE id=$1`, f.account).Scan(&n))
+	require.Equal(t, 1, n)
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM account_groups WHERE account_id=$1`, f.account).Scan(&n))
+	require.Equal(t, 1, n)
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM channel_operation_upstreams WHERE channel_id=$1`, f.channel).Scan(&n))
+	require.Zero(t, n)
+}
+func TestChannelOperationsMigrationReplayIsAdditive(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	u := f.upstream(t, "Kept")
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: u}))
+	raw, err := migrations.FS.ReadFile("309_channel_operations.sql")
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		tx, err := integrationDB.Begin()
+		require.NoError(t, err)
+		_, err = tx.Exec(string(raw))
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit())
+	}
+	got := f.catalog(t)
+	require.Equal(t, int64(2), got.Revision)
+	require.Len(t, got.Accounts, 1)
+	require.Equal(t, u, got.Accounts[0].UpstreamID)
+}
+
+type operationsUsageData struct {
+	Summary struct {
+		Requests, Samples int
+		Unknown           int      `json:"unknown_samples"`
+		P50               *float64 `json:"p50_ms"`
+	}
+	Total int
+	Rows  []struct {
+		DimensionID int64 `json:"dimension_id"`
+		Requests    int
+	}
+	Lineage []struct {
+		Public   string `json:"public_model"`
+		Recorded string `json:"recorded_model"`
+		Upstream string `json:"upstream_model"`
+	}
+}
+
+func (f *channelOperationsFixture) usage(t *testing.T, filter service.ChannelOperationsFilter) operationsUsageData {
+	t.Helper()
+	snapshot := f.repo.ReadChannelOperations(context.Background(), filter)
+	require.Equal(t, "ready", snapshot.Usage.Status, string(snapshot.Usage.Data))
+	var out operationsUsageData
+	require.NoError(t, json.Unmarshal(snapshot.Usage.Data, &out))
+	return out
+}
+func (f *channelOperationsFixture) filter() service.ChannelOperationsFilter {
+	return service.ChannelOperationsFilter{ChannelID: f.channel, GroupID: f.group, From: time.Now().Add(-time.Hour), Until: time.Now(), ModelScope: "public", Dimension: "upstream", Page: 1, PageSize: 20}
+}
+func (f *channelOperationsFixture) addUsage(t *testing.T, model, public, upstream string, ttft *int, stream bool, tokens int, at time.Time, group, channel *int64) {
+	t.Helper()
+	duration := 500
+	_, err := NewUsageLogRepository(integrationEntClient, integrationDB).Create(context.Background(), &service.UsageLog{UserID: f.user, APIKeyID: f.key, AccountID: f.account, RequestID: fmt.Sprintf("ops-%d", time.Now().UnixNano()), Model: model, RequestedModel: public, UpstreamModel: upstream, FirstTokenMs: ttft, DurationMs: &duration, Stream: stream, InputTokens: tokens, CreatedAt: at, GroupID: group, ChannelID: channel})
+	require.NoError(t, err)
+}
+func TestChannelOperationsUsageIdentityBoundariesAndUnassignedDenominator(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	filter := f.filter()
+	filter.From = filter.From.Truncate(time.Microsecond)
+	filter.Until = filter.Until.Truncate(time.Microsecond)
+	fast, slow := 100, 1000
+	at := filter.From.Add(time.Minute)
+	f.addUsage(t, "routing", "public", "provider", &fast, true, 10, at, &f.group, &f.channel)
+	f.addUsage(t, "routing", "public", "provider", &slow, true, 10, at, &f.group, &f.channel)
+	f.addUsage(t, "routing", "public", "provider", nil, true, 10, at, &f.group, &f.channel)
+	f.addUsage(t, "routing", "public", "provider", &slow, false, 10, at, &f.group, &f.channel)
+	f.addUsage(t, "routing", "public", "provider", &slow, true, 0, at, &f.group, &f.channel)            // zero-cost placeholder has no latency evidence
+	f.addUsage(t, "routing", "public", "provider", &fast, true, 10, filter.Until, &f.group, &f.channel) // exclusive until
+	f.addUsage(t, "routing", "public", "provider", &fast, true, 10, filter.From.Add(-time.Second), &f.group, &f.channel)
+	f.addUsage(t, "routing", "public", "provider", &fast, true, 10, at, nil, &f.channel) // group filter excludes
+	f.addUsage(t, "routing", "public", "provider", &fast, true, 10, at, &f.group, nil)   // no historical channel: never guess
+	filter.Model = "public"
+	got := f.usage(t, filter)
+	require.Equal(t, 5, got.Summary.Requests)
+	require.Equal(t, 2, got.Summary.Samples)
+	require.Equal(t, 1, got.Summary.Unknown)
+	require.NotNil(t, got.Summary.P50)
+	require.InDelta(t, 550, *got.Summary.P50, .01)
+	require.Equal(t, int64(0), got.Rows[0].DimensionID)
+	filter.Model = "routing"
+	require.Zero(t, f.usage(t, filter).Summary.Requests)
+	filter.ModelScope = "recorded"
+	require.Equal(t, 5, f.usage(t, filter).Summary.Requests)
+	filter.ModelScope = "upstream"
+	filter.Model = "provider"
+	require.Equal(t, 5, f.usage(t, filter).Summary.Requests)
+	filter.UpstreamID = -1
+	require.Equal(t, 5, f.usage(t, filter).Summary.Requests)
+	u := f.upstream(t, "Classified")
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: u}))
+	require.Zero(t, f.usage(t, filter).Summary.Requests)
+	filter.UpstreamID = u
+	require.Equal(t, 5, f.usage(t, filter).Summary.Requests)
+	filter.UpstreamID = 0
+	got = f.usage(t, filter)
+	require.Equal(t, 5, got.Summary.Requests)
+	require.Equal(t, u, got.Rows[0].DimensionID)
+	filter.Page = 2
+	got = f.usage(t, filter)
+	require.Empty(t, got.Rows)
+	require.Equal(t, 1, got.Total)
+	require.Equal(t, 5, got.Summary.Requests)
+	filter.Model = "absent"
+	got = f.usage(t, filter)
+	require.Zero(t, got.Summary.Requests)
+	require.Nil(t, got.Summary.P50)
+}
+
+func TestChannelOperationsQualityMeasuredRoundHistoryAndScope(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	ctx := context.Background()
+	filter := f.filter()
+	filter.ModelScope = "upstream"
+	filter.Model = "provider-model"
+	var plan int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,pelican_config) VALUES($1,'edited-current-plan','*/30 * * * *',false,'{"quality":{}}') RETURNING id`, f.account).Scan(&plan))
+	at := filter.From.Add(time.Minute)
+	probe := func(round, status, verdict, action, message, model string, parallel any) {
+		t.Helper()
+		cfg, _ := json.Marshal(map[string]any{"quality": map[string]any{}, "model_id": model, "parallel_count": parallel})
+		var judgment any
+		if verdict != "" {
+			raw, _ := json.Marshal(map[string]string{"verdict": verdict})
+			judgment = string(raw)
+		}
+		_, err := integrationDB.ExecContext(ctx, `INSERT INTO scheduled_test_results(plan_id,status,started_at,finished_at,created_at,pelican_config,quality_round_id,quality_action,quality_judgment,error_message) VALUES($1,$2,$3,$3,$3,$4,$5,$6,$7,$8)`, plan, status, at, string(cfg), round, action, judgment, message)
+		require.NoError(t, err)
+	}
+	for i := 0; i < 2; i++ {
+		probe("pass", "success", "correct", "passed", "", "provider-model", 2)
+	}
+	probe("degraded", "success", "correct", "failure_counted:1/2", "", "provider-model", 2)
+	probe("degraded", "failed", "incorrect", "failure_counted:1/2", "answer_mismatch", "provider-model", 2)
+	probe("partial", "success", "correct", "passed", "", "provider-model", 2)
+	probe("transport", "success", "correct", "inconclusive", "", "provider-model", 2)
+	probe("transport", "failed", "inconclusive", "inconclusive", "timeout", "provider-model", 2)
+	probe("missing-verdict", "success", "correct", "passed", "", "provider-model", 2)
+	probe("missing-verdict", "success", "", "passed", "", "provider-model", 2)
+	probe("stale", "success", "correct", "stale_run", "", "provider-model", 1)
+	probe("bad-count", "success", "correct", "passed", "", "provider-model", "1")
+	probe("multi-model", "success", "correct", "passed", "", "other-provider", 1)
+	probe("no-frozen-model", "success", "correct", "passed", "", "", 1)
+	type data struct {
+		Summary struct{ Rounds, Passed, Degraded, Inconclusive int }
+		Rows    []struct {
+			ID      int64
+			Model   string `json:"measured_model"`
+			Outcome string
+		}
+		More bool `json:"has_more"`
+	}
+	read := func() data {
+		t.Helper()
+		snapshot := f.repo.ReadChannelOperations(ctx, filter)
+		require.Equal(t, "ready", snapshot.Quality.Status, string(snapshot.Quality.Data))
+		var out data
+		require.NoError(t, json.Unmarshal(snapshot.Quality.Data, &out))
+		return out
+	}
+	got := read()
+	require.Equal(t, 7, got.Summary.Rounds)
+	require.Equal(t, 1, got.Summary.Passed)
+	require.Equal(t, 1, got.Summary.Degraded)
+	require.Equal(t, 5, got.Summary.Inconclusive)
+	// The frozen result model is authoritative even when the plan is edited/disabled.
+	filter.Model = "edited-current-plan"
+	require.Zero(t, read().Summary.Rounds)
+	filter.Model = "provider-model"
+	filter.ModelScope = "public"
+	snapshot := f.repo.ReadChannelOperations(ctx, filter)
+	require.Equal(t, "unsupported_scope", snapshot.Quality.Status)
+	require.JSONEq(t, "null", string(snapshot.Quality.Data))
+	filter.ModelScope = "upstream"
+	filter.PageSize = 2
+	got = read()
+	require.Len(t, got.Rows, 2)
+	require.True(t, got.More)
+	require.Equal(t, 7, got.Summary.Rounds)
+	filter.QualityBefore = got.Rows[1].ID
+	older := read()
+	require.Len(t, older.Rows, 2)
+	require.Less(t, older.Rows[0].ID, got.Rows[1].ID)
+	require.Equal(t, 7, older.Summary.Rounds)
+	filter.GroupID = f.group + 999999
+	require.Zero(t, read().Summary.Rounds)
+	filter.GroupID = f.group
+	filter.UpstreamID = -1
+	require.Equal(t, 7, read().Summary.Rounds)
+	upstream := f.upstream(t, "Quality upstream")
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: upstream}))
+	require.Zero(t, read().Summary.Rounds)
+	filter.UpstreamID = upstream
+	require.Equal(t, 7, read().Summary.Rounds)
+}
+
+// Actual HTTP handler -> canonical service -> PostgreSQL; no mocked persistence.
+func TestChannelOperationsHTTPPostgresWorkflow(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	h := admin.NewChannelHandler(service.NewChannelService(f.repo, nil, nil, nil, nil), nil, nil)
+	router := gin.New()
+	router.POST("/channels", h.Create)
+	router.GET("/channels/:id", h.GetByID)
+	router.PUT("/channels/:id", h.Update)
+	router.DELETE("/channels/:id", h.Delete)
+	router.POST("/channels/:id/operations", h.MutateOperations)
+	router.GET("/channels/:id/operations", h.OperationsCatalog)
+	router.GET("/snapshot", h.OperationsSnapshot)
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		return w
+	}
+	base := fmt.Sprintf("/channels/%d", f.channel)
+	w := request("POST", base+"/operations", `{"action":"create_upstream","revision":0,"name":"HTTP Provider"}`)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	upstream := f.catalog(t).Upstreams[0].ID
+	w = request("POST", base+"/operations", fmt.Sprintf(`{"action":"assign","revision":1,"upstream_id":%d,"account_id":%d}`, upstream, f.account))
+	require.Equal(t, 200, w.Code, w.Body.String())
+	w = request("GET", base+"/operations?page_size=1&membership=assigned", "")
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"revision":2`)
+	require.NotContains(t, w.Body.String(), "synthetic-fixture-only")
+	require.NotContains(t, w.Body.String(), "credentials")
+	w = request("POST", base+"/operations", fmt.Sprintf(`{"action":"detach","revision":1,"expected_upstream_id":%d,"account_id":%d,"confirm":true}`, upstream, f.account))
+	require.Equal(t, 409, w.Code)
+	w = request("POST", base+"/operations", fmt.Sprintf(`{"action":"detach","revision":2,"expected_upstream_id":%d,"account_id":%d}`, upstream, f.account))
+	require.Equal(t, 400, w.Code)
+	w = request("POST", base+"/operations", fmt.Sprintf(`{"action":"detach","revision":2,"expected_upstream_id":%d,"account_id":%d,"confirm":true}`, upstream, f.account))
+	require.Equal(t, 200, w.Code)
+	w = request("PUT", base, `{"name":"HTTP renamed channel","description":"Basic edit preserves group bindings"}`)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	channel, err := f.repo.GetByID(context.Background(), f.channel)
+	require.NoError(t, err)
+	require.Equal(t, []int64{f.group}, channel.GroupIDs)
+	w = request("GET", "/snapshot?channel_id="+fmt.Sprint(f.channel)+"&from="+time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+"&until="+time.Now().UTC().Format(time.RFC3339), "")
+	require.Equal(t, 200, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), `"status":"ready"`)
+	w = request("DELETE", base, "")
+	require.Equal(t, 200, w.Code, w.Body.String())
+	var n int
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM accounts WHERE id=$1`, f.account).Scan(&n))
+	require.Equal(t, 1, n)
+	// The canonical create endpoint remains usable with conservative defaults.
+	name := fmt.Sprintf("HTTP-created-%d", time.Now().UnixNano())
+	w = request("POST", "/channels", fmt.Sprintf(`{"name":%q}`, name))
+	require.Equal(t, 200, w.Code, w.Body.String())
+	_, err = integrationDB.Exec(`DELETE FROM channels WHERE name=$1`, name)
+	require.NoError(t, err)
+}
