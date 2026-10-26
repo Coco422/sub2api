@@ -160,7 +160,7 @@ func ValidateChannelOperationsFilter(f ChannelOperationsFilter) error {
 	if f.Dimension != "channel" && f.Dimension != "upstream" && f.Dimension != "account" {
 		return ErrChannelOperationsValidation
 	}
-	if f.ChannelID == 0 && (f.UpstreamID != 0 || (f.Dimension != "channel" && !(f.Dimension == "account" && f.AccountID > 0))) {
+	if f.ChannelID == 0 && (f.UpstreamID != 0 || (f.Dimension != "channel" && (f.Dimension != "account" || f.AccountID <= 0))) {
 		return ErrChannelOperationsValidation
 	}
 	if f.ModelScope != "public" && f.ModelScope != "recorded" && f.ModelScope != "upstream" {
