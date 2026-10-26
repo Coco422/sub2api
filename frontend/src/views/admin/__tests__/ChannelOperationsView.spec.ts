@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { AxiosError, AxiosHeaders } from 'axios'
+import { apiClient } from '@/api/client'
 import ChannelOperationsView from '../ChannelOperationsView.vue'
 import * as channels from '@/api/admin/channels'
 import * as ops from '@/api/admin/channelOperations'
 
 const state = vi.hoisted(() => ({ query: {} as Record<string, string>, replace: vi.fn() }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: state.query }), useRouter: () => ({ replace: state.replace }), RouterLink: { props: ['to'], template: '<a><slot /></a>' } }))
+vi.mock('@/i18n', () => ({ getLocale: () => 'zh-CN' }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
 vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
@@ -26,6 +29,28 @@ beforeEach(() => {
   vi.mocked(channels.update).mockResolvedValue(channel); vi.mocked(channels.create).mockResolvedValue(channel)
   vi.mocked(ops.catalog).mockResolvedValue(structuredClone(catalog)); vi.mocked(ops.snapshot).mockImplementation(async () => snapshot()); vi.mocked(ops.mutate).mockResolvedValue({ revision: 43 })
 })
+
+async function enterPagedAccountDrilldown(w: ReturnType<typeof mount>) {
+  const form = w.findAll('form')[1]
+  await form.get('input[type="number"]').setValue(11); await form.trigger('submit'); await flushPromises()
+  await button(w, 'channelOps.byAccount').trigger('click'); await flushPromises()
+  await button(w, 'Provider (#3) · 1').trigger('click'); await flushPromises()
+  await button(w, '#9').trigger('click'); await flushPromises()
+  await w.get('[data-testid="usage-next"]').trigger('click'); await flushPromises()
+  await w.get('[data-testid="upstream-next"]').trigger('click'); await flushPromises()
+  await w.get('[data-testid="member-next"]').trigger('click'); await flushPromises()
+  await button(w, 'channelOps.older').trigger('click'); await flushPromises()
+  expect(ops.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({ channel_id: 7, upstream_id: 3, account_id: 9, group_id: 11, page: 2, quality_before: 99 }), expect.anything())
+}
+function mockPagedScope() {
+  vi.mocked(ops.catalog).mockResolvedValue({ ...structuredClone(catalog), total: 100, upstream_total: 100 })
+  vi.mocked(ops.snapshot).mockImplementation(async query => {
+    const value = snapshot(); value.usage.data!.total = 100
+    value.scope = { channel_id: query.channel_id, upstream_id: query.upstream_id, account_id: query.account_id, group_id: query.group_id, model: query.model, model_scope: query.model_scope, dimension: query.dimension }
+    return value
+  })
+}
+
 describe('channel operations workflow', () => {
   it('shows measured samples, current data scope and allows unassigned account drilldown without losing the channel denominator', async () => {
     const w = mount(ChannelOperationsView); await flushPromises()
@@ -53,10 +78,27 @@ describe('channel operations workflow', () => {
     expect(channels.remove).not.toHaveBeenCalled(); w.unmount()
   })
   it('refreshes catalog after conflicts and leaves an actionable error instead of silently overwriting', async () => {
-    vi.mocked(ops.mutate).mockRejectedValue({ response: { status: 409 } })
-    const w = mount(ChannelOperationsView); await flushPromises()
-    await button(w, 'channelOps.detach').trigger('click'); await button(w, 'channelOps.confirm').trigger('click'); await flushPromises()
-    expect(w.text()).toContain('channelOps.conflict'); expect(ops.catalog).toHaveBeenCalledTimes(2); expect(ops.mutate).toHaveBeenCalledTimes(1); w.unmount()
+    const realOps = await vi.importActual<typeof import('@/api/admin/channelOperations')>('@/api/admin/channelOperations')
+    const originalAdapter = apiClient.defaults.adapter
+    const normalized: unknown[] = []
+    const interceptor = apiClient.interceptors.response.use(undefined, error => { normalized.push(error); return Promise.reject(error) })
+    apiClient.defaults.adapter = async config => {
+      throw new AxiosError('Conflict', AxiosError.ERR_BAD_REQUEST, config, undefined, {
+        status: 409, statusText: 'Conflict', config, headers: new AxiosHeaders(),
+        data: { code: 409, reason: 'CHANNEL_OPERATIONS_CONFLICT', message: 'Configuration changed' }
+      })
+    }
+    vi.mocked(ops.mutate).mockImplementation(realOps.mutate)
+    const w = mount(ChannelOperationsView)
+    try {
+      await flushPromises()
+      await button(w, 'channelOps.detach').trigger('click'); await button(w, 'channelOps.confirm').trigger('click'); await flushPromises()
+      expect(normalized).toHaveLength(1)
+      expect(normalized[0]).toMatchObject({ status: 409, reason: 'CHANNEL_OPERATIONS_CONFLICT' })
+      expect(normalized[0]).not.toHaveProperty('response')
+      expect(w.text()).toContain('channelOps.conflict')
+      expect(ops.catalog).toHaveBeenCalledTimes(2); expect(ops.mutate).toHaveBeenCalledTimes(1)
+    } finally { w.unmount(); apiClient.defaults.adapter = originalAdapter; apiClient.interceptors.response.eject(interceptor) }
   })
   it('updates only edited canonical basic fields and preserves billing/mappings/groups by omitting them', async () => {
     const w = mount(ChannelOperationsView); await flushPromises()
@@ -101,6 +143,46 @@ describe('channel operations workflow', () => {
     expect(button(w, 'channelOps.assign').attributes('disabled')).toBeDefined()
     expect(button(w, 'channelOps.detach').attributes('disabled')).toBeUndefined()
     expect(w.text()).toContain('channelOps.ineligible'); w.unmount()
+  })
+  it('awaits a clean channel switch when creating from a paged upstream/account drilldown', async () => {
+    mockPagedScope()
+    const created = { ...channel, id: 17, name: 'New channel', group_ids: [] }
+    vi.mocked(channels.create).mockResolvedValue(created)
+    vi.mocked(channels.getById).mockImplementation(async id => id === 17 ? created : channel)
+    const w = mount(ChannelOperationsView); await flushPromises()
+    await enterPagedAccountDrilldown(w)
+    await w.get('[data-testid="new-channel"]').trigger('click')
+    await w.get('[data-testid="dialog"] input').setValue('New channel')
+    const callCount = vi.mocked(ops.snapshot).mock.calls.length
+    await w.get('[data-testid="dialog"] form').trigger('submit'); await flushPromises()
+    const next = vi.mocked(ops.snapshot).mock.calls.slice(callCount)
+    expect(next).toHaveLength(1)
+    expect(next[0][0]).toMatchObject({ channel_id: 17, upstream_id: 0, account_id: 0, group_id: 0, page: 1, quality_before: 0, dimension: 'upstream' })
+    expect(ops.catalog).toHaveBeenLastCalledWith(17, expect.objectContaining({ page: 1, upstream_page: 1 }), expect.anything())
+    expect(w.get('[data-testid="applied-scope"]').text()).toContain('#17')
+    // accountMode must also be clear when the old account/upstream are removed.
+    expect(button(w, 'channelOps.byAccount').exists()).toBe(true)
+    w.unmount()
+  })
+  it('keeps same-channel edit drilldown, group, pagination and quality cursor', async () => {
+    mockPagedScope()
+    const w = mount(ChannelOperationsView); await flushPromises()
+    await enterPagedAccountDrilldown(w)
+    await w.get('[data-testid="edit-channel"]').trigger('click')
+    await w.get('[data-testid="dialog"] input').setValue('Renamed')
+    await w.get('[data-testid="dialog"] form').trigger('submit'); await flushPromises()
+    expect(ops.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({ channel_id: 7, upstream_id: 3, account_id: 9, group_id: 11, page: 2, quality_before: 99, dimension: 'account' }), expect.anything())
+    expect(ops.catalog).toHaveBeenLastCalledWith(7, expect.objectContaining({ page: 2, upstream_page: 2 }), expect.anything())
+    w.unmount()
+  })
+  it('preserves account display mode when editing the current channel', async () => {
+    const w = mount(ChannelOperationsView); await flushPromises()
+    await button(w, 'channelOps.byAccount').trigger('click'); await flushPromises()
+    await w.get('[data-testid="edit-channel"]').trigger('click')
+    await w.get('[data-testid="dialog"] form').trigger('submit'); await flushPromises()
+    expect(ops.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({ channel_id: 7, upstream_id: 0, account_id: 0, dimension: 'account' }), expect.anything())
+    expect(button(w, 'channelOps.byUpstream').exists()).toBe(true)
+    w.unmount()
   })
   it('rejects a late response from the previous channel selection', async () => {
     let resolve!: (value: ops.Snapshot) => void
