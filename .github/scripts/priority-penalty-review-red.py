@@ -18,6 +18,7 @@ if len(sys.argv) == 1:
 else:
     raw = Path(sys.argv[1]).read_text()
     assert not re.search(r'build failed|undefined:|syntax error|setup failed|panic:', raw, re.I), 'not a behavioral red result'
+    assert 'precondition: first supplier failure must enter second account acquisition' not in raw, 'handler did not reach the late-admission seam'
     expected = {
         'NativeLease': 'native lease wait must recheck stop before generation write',
         'LateSelection': 'late stop must retain dedicated temporary-unavailable cause',

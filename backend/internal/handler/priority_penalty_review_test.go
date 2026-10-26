@@ -52,7 +52,9 @@ func TestPriorityPenaltyReviewHandlerFailover(t *testing.T) {
 				repo.accounts = append(repo.accounts, service.Account{ID: id, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, GroupIDs: []int64{3131}, Priority: int(id), Concurrency: 1, Credentials: map[string]any{"access_token": fmt.Sprintf("test-token-%d", id), "chatgpt_account_id": fmt.Sprintf("test-account-%d", id)}, Extra: map[string]any{"openai_excel_bps": true}})
 			}
 			upstream := &excelBPSFailoverUpstream{answer: func(int) *http.Response {
-				return &http.Response{StatusCode: 503, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"previous synthetic supplier failure"}}`))}
+				response := excelBPS429("1")
+				response.Body = io.NopCloser(strings.NewReader(`{"error":{"code":"basispoints_rate_limited","message":"previous synthetic supplier failure"}}`))
+				return response
 			}, onDo: func(int) { slots.failed = true }}
 			gateway := service.NewOpenAIGatewayService(repo, nil, penaltyModeUsage{}, nil, nil, nil, nil, nil, cfg, nil, concurrency, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, settings, nil)
 			t.Cleanup(func() { _ = gateway.CloseExcelBPSImages() })
@@ -87,7 +89,8 @@ func TestPriorityPenaltyReviewHandlerFailover(t *testing.T) {
 			} else {
 				h.Responses(c)
 			}
-			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+			require.Contains(t, slots.acquired, int64(2), "precondition: first supplier failure must enter second account acquisition")
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code, "late policy rejection must replace previous supplier error: %s", rec.Body.String())
 			require.Contains(t, rec.Body.String(), "temporarily_unavailable", "late policy rejection must replace previous supplier error")
 			require.NotContains(t, rec.Body.String(), "previous synthetic supplier failure")
 			require.Equal(t, "5", rec.Header().Get("Retry-After"))
