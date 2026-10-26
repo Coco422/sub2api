@@ -11,6 +11,7 @@ on:
       - 'frontend/src/**/modelBilling*'
       - 'frontend/src/views/admin/AutoConfigView.vue'
       - '.github/workflows/model-billing-groups.yml'
+      - '.github/scripts/model-billing-groups-browser.mjs'
 permissions:
   contents: read
 jobs:
@@ -57,3 +58,20 @@ jobs:
           src/utils/__tests__/modelBilling.spec.ts
           src/i18n/__tests__/localeKeyCompleteness.spec.ts
           --maxWorkers=1 --minWorkers=1
+
+      - name: Install isolated browser for offline real-page checks
+        run: |
+          npm install --prefix "$RUNNER_TEMP/model-billing-browser" --no-save --ignore-scripts playwright@1.56.1
+          "$RUNNER_TEMP/model-billing-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Exercise real page with synthetic local HTTP and capture desktop/mobile
+        env:
+          NODE_OPTIONS: --max-old-space-size=1024
+          PLAYWRIGHT_ROOT: ${{ runner.temp }}/model-billing-browser/node_modules/playwright
+          MODEL_BILLING_SCREENSHOT_DIR: ${{ runner.temp }}/model-billing-screenshots
+        run: node .github/scripts/model-billing-groups-browser.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: model-billing-groups-ui-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/model-billing-screenshots
+          if-no-files-found: error
