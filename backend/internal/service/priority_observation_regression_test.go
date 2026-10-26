@@ -103,7 +103,7 @@ func TestPriorityObservationCompletedCallFreshness(t *testing.T) {
 	entry := svc.priorityScheduling.entries[priorityHistoryKey(req, cfg)]
 	require.LessOrEqual(t, entry.expires.Sub(entry.observed), 5*time.Second, "completed persistence after an empty read must become visible within the cold refresh budget")
 	entry.expires = time.Now().Add(-time.Second)
-	svc.priorityScheduling.nextRefresh = time.Time{}
+	svc.priorityScheduling.launches = [2]time.Time{}
 	svc.priorityScheduling.mu.Unlock()
 	// The reader now represents completed, persisted usage; no live/in-flight
 	// timing is injected into the cache and nil TTFT stays unknown.
@@ -243,7 +243,7 @@ func TestPriorityObservationQueryBudgetAndMissingData(t *testing.T) {
 		return svc.priorityScheduling.active == 0
 	}, time.Second, time.Millisecond)
 	reader.mu.Lock()
-	require.Equal(t, 1, reader.calls, "global launch gap bounds a burst across distinct scopes")
+	require.Equal(t, 2, reader.calls, "global rolling budget permits two initial workers and bounds cross-scope bursts")
 	reader.mu.Unlock()
 	svc.priorityScheduling.mu.Lock()
 	defer svc.priorityScheduling.mu.Unlock()

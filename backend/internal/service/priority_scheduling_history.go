@@ -14,13 +14,13 @@ import (
 )
 
 const (
-	priorityHistoryTTL         = 30 * time.Second
-	priorityHistoryColdTTL     = 5 * time.Second
-	priorityHistoryLaunchGap   = 500 * time.Millisecond
-	priorityHistoryMaxAge      = 2 * time.Minute
-	priorityHistoryRetry       = 5 * time.Second
-	priorityHistoryMaxScopes   = 32
-	priorityHistoryMaxAccounts = 2000
+	priorityHistoryTTL          = 30 * time.Second
+	priorityHistoryColdTTL      = 5 * time.Second
+	priorityHistoryLaunchWindow = time.Second
+	priorityHistoryMaxAge       = 2 * time.Minute
+	priorityHistoryRetry        = 5 * time.Second
+	priorityHistoryMaxScopes    = 32
+	priorityHistoryMaxAccounts  = 2000
 )
 
 type prioritySignalEntry struct {
@@ -35,7 +35,8 @@ type prioritySignalEntry struct {
 type prioritySchedulingState struct {
 	mu          sync.Mutex
 	entries     map[string]*prioritySignalEntry
-	nextRefresh time.Time
+	launches    [2]time.Time
+	launchIndex int
 	active      int
 	latestInput *prioritySnapshotInput
 }
@@ -152,7 +153,7 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 		}
 	}
 	due := now.After(entry.expires) || (missing && entry.failure == "" && now.Sub(entry.attempted) >= time.Second)
-	if !entry.refreshing && due && state.active < 2 && !now.Before(state.nextRefresh) {
+	if !entry.refreshing && due && state.active < 2 && now.Sub(state.launches[state.launchIndex]) >= priorityHistoryLaunchWindow {
 		ids := make([]int64, 0, len(entry.accounts))
 		for id := range entry.accounts {
 			ids = append(ids, id)
@@ -165,7 +166,8 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 			group = &value
 		}
 		query := PrioritySchedulingQuery{LatencyPercentile: c.LatencyPercentile, LatencyMeasurement: c.LatencyMeasurement, TargetTTFTMs: c.TargetTTFTMs, AccountIDs: ids, Model: priorityHistoryModel(req), QualityModel: strings.TrimSpace(req.RequestedModel), GroupID: group, UsageUntil: now, UsageSince: now.Add(-time.Duration(c.WindowMinutes) * time.Minute), QualitySince: now.Add(-time.Duration(c.QualityMaxAgeHours) * time.Hour)}
-		state.nextRefresh = now.Add(priorityHistoryLaunchGap)
+		state.launches[state.launchIndex] = now
+		state.launchIndex = (state.launchIndex + 1) % len(state.launches)
 		entry.refreshing = true
 		entry.attempted = now
 		state.active++
@@ -211,7 +213,7 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 			entry.observed = time.Now()
 			// A completed call may commit just after the previous read. Revisit
 			// cold accounts without billing hooks, synthetic samples or a query per
-			// completion. Two workers, 32 scopes and the global launch gap bound SQL.
+			// completion. Two workers, 32 scopes and the global rolling launch budget bound SQL.
 			ttl := priorityHistoryTTL
 			for _, signal := range entry.signals {
 				if max(signal.Samples+signal.LatencyUnknownSamples, signal.ProfitSamples) < c.MinSamples {
