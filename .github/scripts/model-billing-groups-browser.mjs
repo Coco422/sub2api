@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 const root = process.cwd(), frontend = path.join(root, 'frontend')
+const head = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim()
 const requireFrontend = createRequire(path.join(frontend, 'package.json'))
 const { createServer } = requireFrontend('vite')
 const vueModule = requireFrontend('@vitejs/plugin-vue')
@@ -128,7 +129,7 @@ try {
   await open('?lang=en')
   await page.getByTestId('model-billing').screenshot({path:path.join(output,'missing-id-retained-en.png')})
   assert.deepEqual(errors,[]);assert.deepEqual(external,[])
-  await fs.writeFile(path.join(output,'verification.json'),JSON.stringify({head:process.env.GITHUB_SHA,baselineSHA,synthetic:true,actualPage:'AutoConfigView.vue',actualApiModules:true,apiRequests:requests,saves,externalRequests:external,pageErrors:errors,checks:['two pages loaded','independent selection','save and reload','discard unsaved changes','clear applies all','2FA and other settings retained','partial page failure retains IDs','retry and unavailable ID warning','mobile no overflow','Chinese and English']},null,2))
+  await fs.writeFile(path.join(output,'verification.json'),JSON.stringify({head,baselineSHA,synthetic:true,actualPage:'AutoConfigView.vue',actualApiModules:true,apiRequests:requests,saves,externalRequests:external,pageErrors:errors,checks:['two pages loaded','independent selection','save and reload','discard unsaved changes','clear applies all','2FA and other settings retained','partial page failure retains IDs','retry and unavailable ID warning','mobile no overflow','Chinese and English']},null,2))
 } catch(error) {
   await fs.writeFile(path.join(output,'failure.json'),JSON.stringify({error:String(error),errors,external,requests},null,2))
   throw error
