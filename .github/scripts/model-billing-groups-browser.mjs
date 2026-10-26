@@ -16,7 +16,9 @@ const output = process.env.MODEL_BILLING_SCREENSHOT_DIR
 await fs.mkdir(output, { recursive: true })
 const baselineSHA = '973d4bbd0064121a5533e0d3232ece6043f0d5fc'
 const baselinePath = path.join(frontend,'src/views/admin/ModelBillingBaseline.vue')
+const baselineLocalePath = path.join(frontend,'src/views/admin/ModelBillingBaselineLocale.ts')
 await fs.writeFile(baselinePath,execFileSync('git',['show',baselineSHA+':frontend/src/views/admin/AutoConfigView.vue'],{cwd:root}))
+await fs.writeFile(baselineLocalePath,execFileSync('git',['show',baselineSHA+':frontend/src/i18n/locales/zh/autoConfig.ts'],{cwd:root}))
 const virtual = {
   'fixture:auth': `export const useAuthStore=()=>({user:{id:1,role:'admin'}})`,
   'fixture:layout': `import {h} from 'vue';export default {setup:(_,ctx)=>()=>h('main',{class:'mx-auto max-w-6xl p-5'},ctx.slots.default?.())}`,
@@ -32,6 +34,7 @@ import {defaultOpenAITwoFAAdmissionConfig} from '/src/utils/openaiTwoFAAdmission
 import '/src/style.css';
 window.fixture={enabled:false,platform:'openai',priority:50,load_factor:1,concurrency:3,cost_multiplier:0.07,group_ids:[],upgrade_enabled:false,upgrade_group_ids:[],successes_per_step:20,upgrade_step:1,max_concurrency:100,cooldown_seconds:60,revision:'synthetic',excel_bps:defaultExcelBPSDefaults(),openai_two_fa_admission:defaultOpenAITwoFAAdmissionConfig(),model_mappings:[{from:'gpt-5.4',to:'gpt-5.5'}],model_billing:{enabled:true,rules:[{model:'gpt-6-luna*',multiplier:10,group_ids:[5]},{model:'claude-*',multiplier:3,group_ids:[6]}]}};
 const lang=new URLSearchParams(location.search).get('lang')||'zh';await loadLocaleMessages(lang);i18n.global.locale.value=lang;
+if(new URLSearchParams(location.search).has('baseline')){const {default:autoConfig}=await import('/src/views/admin/ModelBillingBaselineLocale.ts');i18n.global.mergeLocaleMessage('zh',{autoConfig})}
 createApp(Page).use(i18n).mount('#app');</script>`
 process.chdir(frontend)
 const server = await createServer({
@@ -133,4 +136,4 @@ try {
 } catch(error) {
   await fs.writeFile(path.join(output,'failure.json'),JSON.stringify({error:String(error),errors,external,requests},null,2))
   throw error
-} finally {await browser.close();await server.close();await fs.rm(baselinePath,{force:true})}
+} finally {await browser.close();await server.close();await fs.rm(baselinePath,{force:true});await fs.rm(baselineLocalePath,{force:true})}
