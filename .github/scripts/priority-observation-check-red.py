@@ -10,7 +10,7 @@ expected = {
  'Endpoint': ('actual Responses ingress must survive CC capability fallback', 'expected: 1', 'actual  : 0'),
  'History': ('persisted requested_model must be read with the public identity', 'public-alias', 'channel-route'),
  'Mapping': ('forward and scheduler identities must normalize the same mapping', '"route-model"', '" route-model "'),
- 'Freshness': ('an empty completed read must not hide new-account persistence for 30 seconds', '30000000000', '5000000000'),
+ 'Freshness': ('an empty completed read must not hide new-account persistence for 30 seconds', '"30s" is not less than or equal to "5s"'),
  'Sticky': ('ordinary sticky cannot bypass a current measured penalty', 'expected: 2', 'actual  : 1'),
  'HardStop': ('all matching accounts are stopped; prohibited capacity must never be used', 'Expected nil, but got:'),
 }
