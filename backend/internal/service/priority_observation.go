@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"slices"
 	"strings"
+	"time"
 )
 
 // Observation identity is captured before channel routing. It must never drive
@@ -46,4 +48,24 @@ func priorityRequestAttemptKey(req OpenAIAccountScheduleRequest, accountID int64
 		key.groupID, key.hasGroup = *req.GroupID, true
 	}
 	return key
+}
+
+// A miss schedules a bounded asynchronous read, so sessions consisting only of
+// sticky requests also acquire evidence. Missing evidence never means slow.
+func (s *defaultOpenAIAccountScheduler) shouldYieldPriorityLatencySticky(req OpenAIAccountScheduleRequest, account *Account) bool {
+	if s == nil || s.service == nil || account == nil || req.DisableStickyEscape || req.PreserveStickyBinding || req.EncryptedReasoning || req.GuardianParentAccountID > 0 || strings.TrimSpace(req.PreviousResponseID) != "" || req.Platform != PlatformOpenAI || !req.UseUpstreamTokenCost || req.RequiredImageCapability != "" {
+		return false
+	}
+	cfg := s.service.prioritySchedulingRuntimeConfig()
+	if !cfg.applies(req.GroupID, priorityHistoryModel(req)) {
+		return false
+	}
+	pool := []openAIAccountCandidateScore{{account: account}}
+	history := s.service.priorityHistory(req, cfg, pool)
+	signal, known := history.signals[account.ID]
+	if !known {
+		return false
+	}
+	score := scorePriorityCandidate(cfg, pool[0], signal, time.Now())
+	return slices.Contains(score.Reasons, "latency_above_target")
 }

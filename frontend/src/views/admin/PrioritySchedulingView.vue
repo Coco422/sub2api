@@ -123,15 +123,25 @@ async function loadSnapshot(attempt: number) {
     const value = await getPrioritySnapshot()
     if (active(version)) {
       snapshot.value = value
-      // A bounded follow-up picks up the asynchronous result without requiring
-      // another billable request. Unmount/logout cancels further reads.
-      if ((value?.history_refreshing || value?.history_status === 'loading' || value?.history_status === 'partial') && attempt < 3) {
-        historyTimer = setTimeout(() => { if (active(version)) void loadSnapshot(attempt + 1) }, 1000)
+      // Short follow-ups collect an in-flight query; subsequent polling sees
+      // usage committed after a successful empty read. Only one timer/request
+      // exists, and hidden tabs pause reads. Backend cache bounds SQL work.
+      if (value) {
+        const pending = value.history_refreshing || value.history_status === 'loading' || value.history_status === 'partial'
+        scheduleHistoryRefresh(version, pending && attempt < 3 ? 1000 : 5000, pending ? attempt + 1 : 0)
       }
     }
   }
-  catch { if (active(version)) snapshotError.value = t('priorityScheduling.error') }
+  catch { if (active(version)) { snapshotError.value = t('priorityScheduling.error'); if (snapshot.value) scheduleHistoryRefresh(version, 15000, 0) } }
   finally { if (active(version)) refreshing.value = false }
+}
+function scheduleHistoryRefresh(version: number, delay: number, attempt: number) {
+  stopHistoryRefresh()
+  historyTimer = setTimeout(() => {
+    if (!active(version)) return
+    if (document.visibilityState === 'hidden') { scheduleHistoryRefresh(version, 5000, attempt); return }
+    void loadSnapshot(attempt)
+  }, delay)
 }
 watch(() => auth.user ? `${auth.user.id}:${auth.user.role}` : '', () => { stopHistoryRefresh(); generation++; draft.value = null; snapshot.value = null; groups.value = modelsText.value = error.value = notice.value = snapshotError.value = ''; loading.value = saving.value = refreshing.value = false }, { flush: 'sync' })
 onMounted(() => { void load(); void refresh() })

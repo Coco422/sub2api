@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -89,4 +90,132 @@ func TestPriorityObservationAttemptGroupAndAliasIsolation(t *testing.T) {
 	group = 12
 	require.Equal(t, int64(11), scope.groupID, "observer owns group value")
 	require.Zero(t, scheduler.priorityErrorEvidence(req, cfg, 1, time.Now()).Successes)
+}
+
+func TestPriorityObservationCompletedCallFreshness(t *testing.T) {
+	cfg := DefaultPrioritySchedulingConfig()
+	reader := &priorityReaderStub{signal: map[int64]PrioritySchedulingSignal{1: {}}}
+	svc := priorityGateway(cfg, reader)
+	req := OpenAIAccountScheduleRequest{RequestedModel: "gpt-test", HistoryModel: "public-alias"}
+	pool := []openAIAccountCandidateScore{priorityCandidate(1, .1, 0)}
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, time.Second, time.Millisecond)
+	svc.priorityScheduling.mu.Lock()
+	entry := svc.priorityScheduling.entries[priorityHistoryKey(req, cfg)]
+	require.LessOrEqual(t, entry.expires.Sub(entry.observed), 5*time.Second, "completed persistence after an empty read must become visible within the cold refresh budget")
+	entry.expires = time.Now().Add(-time.Second)
+	svc.priorityScheduling.nextRefresh = time.Time{}
+	svc.priorityScheduling.mu.Unlock()
+	// The reader now represents completed, persisted usage; no live/in-flight
+	// timing is injected into the cache and nil TTFT stays unknown.
+	reader.mu.Lock()
+	reader.signal = map[int64]PrioritySchedulingSignal{1: {Samples: 1, P90TTFTMs: 1200, LatencyUnknownSamples: 1, ProfitSamples: 2}}
+	reader.mu.Unlock()
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).signals[1].Samples == 1 }, time.Second, time.Millisecond)
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); svc.priorityHistory(req, cfg, pool) }()
+	}
+	wg.Wait()
+	reader.mu.Lock()
+	require.Equal(t, 2, reader.calls, "polls share two real completed reads")
+	reader.mu.Unlock()
+	got := svc.priorityHistory(req, cfg, pool).signals[1]
+	require.Equal(t, 1, got.LatencyUnknownSamples)
+}
+
+func TestPriorityObservationStickyPenaltyAndExpiry(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	cfg := DefaultPrioritySchedulingConfig()
+	cfg.Enabled = true
+	cfg.Models = []string{"public-alias"}
+	group := int64(11)
+	cfg.GroupIDs = []int64{group}
+	badAt := time.Now().Add(-time.Minute)
+	reader := &priorityReaderStub{signal: map[int64]PrioritySchedulingSignal{
+		1: {Samples: 20, P90TTFTMs: 20000, LatestBadLatencyAt: &badAt, QualitySamples: 10, QualityPassed: 10},
+		2: {Samples: 20, P90TTFTMs: 500, QualitySamples: 10, QualityPassed: 10},
+	}}
+	svc := priorityGateway(cfg, reader)
+	pool := []openAIAccountCandidateScore{priorityCandidate(1, .1, 0), priorityCandidate(2, 1, 0)}
+	accounts := make([]Account, 0, 2)
+	for _, item := range pool {
+		item.account.Status = StatusActive
+		item.account.Schedulable = true
+		item.account.GroupIDs = []int64{group}
+		accounts = append(accounts, *item.account)
+	}
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:sticky-penalty": 1}}
+	svc.cache = cache
+	svc.accountRepo = schedulerTestOpenAIAccountRepo{accounts: accounts}
+	svc.cfg = newSchedulerTestOpenAIWSV2Config()
+	svc.cfg.Gateway.OpenAIScheduler.StickyEscapeEnabled = false
+	svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{})
+	req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, GroupID: &group, RequestedModel: "gpt-test", HistoryModel: "public-alias", InboundEndpoint: "/v1/responses", UseUpstreamTokenCost: true}
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, time.Second, time.Millisecond)
+	ctx := WithPrioritySchedulingObservation(context.Background(), &group, "public-alias", "/v1/responses")
+	selectTurn := func(previous string, excluded map[int64]struct{}) (*AccountSelectionResult, OpenAIAccountScheduleDecision) {
+		t.Helper()
+		selection, decision, err := svc.SelectAccountWithSchedulerForCapability(ctx, &group, previous, "sticky-penalty", "gpt-test", excluded, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, false, false, true, PlatformOpenAI)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		if selection.ReleaseFunc != nil {
+			t.Cleanup(selection.ReleaseFunc)
+		}
+		return selection, decision
+	}
+	selected, decision := selectTurn("", nil)
+	require.Equal(t, int64(2), selected.Account.ID, "ordinary sticky cannot bypass measured penalty even with EWMA escape disabled")
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, int64(1), cache.sessionBindings["openai:sticky-penalty"], "one turn does not erase durable affinity")
+	// No global ban: the same slow account remains fallback capacity.
+	selected, _ = selectTurn("", map[int64]struct{}{2: {}})
+	require.Equal(t, int64(1), selected.Account.ID)
+	// Provider response ownership wins, even during the measured penalty.
+	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, group, "resp_penalty_owner", 1, time.Hour))
+	selected, decision = selectTurn("resp_penalty_owner", nil)
+	require.Equal(t, int64(1), selected.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
+	// Re-reading old data does not renew its ten-minute duration.
+	svc.priorityScheduling.mu.Lock()
+	entry := svc.priorityScheduling.entries[priorityHistoryKey(req, cfg)]
+	expired := time.Now().Add(-11 * time.Minute)
+	signal := entry.signals[1]
+	signal.LatestBadLatencyAt = &expired
+	entry.signals[1] = signal
+	svc.priorityScheduling.mu.Unlock()
+	selected, decision = selectTurn("", nil)
+	require.Equal(t, int64(1), selected.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerSessionSticky, decision.Layer)
+}
+
+func TestPriorityObservationQueryBudgetAndMissingData(t *testing.T) {
+	cfg := DefaultPrioritySchedulingConfig()
+	reader := &priorityReaderStub{signal: map[int64]PrioritySchedulingSignal{}}
+	svc := priorityGateway(cfg, reader)
+	pool := []openAIAccountCandidateScore{priorityCandidate(1, .1, 0)}
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := OpenAIAccountScheduleRequest{RequestedModel: fmt.Sprintf("model-%d", i)}
+			svc.priorityHistory(req, cfg, pool)
+		}(i)
+	}
+	wg.Wait()
+	require.Eventually(t, func() bool {
+		svc.priorityScheduling.mu.Lock()
+		defer svc.priorityScheduling.mu.Unlock()
+		return svc.priorityScheduling.active == 0
+	}, time.Second, time.Millisecond)
+	reader.mu.Lock()
+	require.Equal(t, 1, reader.calls, "global launch gap bounds a burst across distinct scopes")
+	reader.mu.Unlock()
+	svc.priorityScheduling.mu.Lock()
+	defer svc.priorityScheduling.mu.Unlock()
+	require.LessOrEqual(t, len(svc.priorityScheduling.entries), priorityHistoryMaxScopes)
+	for _, entry := range svc.priorityScheduling.entries {
+		require.Empty(t, entry.signals, "an absent reader row must not be fabricated as zero observations")
+	}
 }

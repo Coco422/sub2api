@@ -631,6 +631,12 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		clearBinding()
 		return nil, false, nil
 	}
+	// Ordinary affinity is a preference. A current measured latency penalty
+	// must enter the same scored pool as a freely routed request, independently
+	// of the optional EWMA/capacity escape setting. Ownership paths stay pinned.
+	if s.shouldYieldPriorityLatencySticky(req, account) {
+		return nil, true, nil
+	}
 	escapeCfg := s.service.openAIStickyEscapeConfig()
 	if escapeCfg.enabled && s.shouldRebalancePrioritySticky(ctx, req, account) {
 		slog.Info("sticky_escape_triggered", "account_id", accountID, "reason", "priority_capacity_imbalance")
@@ -2533,8 +2539,6 @@ func (s *OpenAIGatewayService) selectLegacyAccountByPreviousResponse(
 		GroupID:                 groupID,
 		Platform:                platform,
 		RequestedModel:          requestedModel,
-		HistoryModel:            observation.model,
-		InboundEndpoint:         observation.endpoint,
 		RequiredTransport:       requiredTransport,
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,
@@ -2750,6 +2754,8 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		PreviousResponseCanMove: previousResponseCanMove,
 		UseUpstreamTokenCost:    useUpstreamTokenCost,
 		RequestedModel:          requestedModel,
+		HistoryModel:            observation.model,
+		InboundEndpoint:         observation.endpoint,
 		RequiredTransport:       requiredTransport,
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,

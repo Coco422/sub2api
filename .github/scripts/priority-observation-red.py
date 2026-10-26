@@ -18,6 +18,7 @@ for file, prefix in [
  ('backend/internal/service/priority_error_rate.go', 'func priorityErrorEndpoint('),
  ('backend/internal/service/priority_scheduling_history.go', 'func (s *OpenAIGatewayService) priorityHistory('),
  ('backend/internal/handler/openai_gateway_handler.go', 'func openAIModelMappedBody('),
+ ('backend/internal/service/openai_account_scheduler.go', 'func (s *defaultOpenAIAccountScheduler) selectBySessionHash('),
 ]:
     path = Path(file)
     old = subprocess.check_output(['git', 'show', f'{BASE}:{file}'], text=True)

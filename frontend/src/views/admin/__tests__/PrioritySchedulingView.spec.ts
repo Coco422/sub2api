@@ -194,7 +194,7 @@ describe('priority history refresh', () => {
     expect(evidence).toContain(new Date('2026-10-22T01:06:00Z').toLocaleString())
     wrapper.unmount()
   })
-  it.each([true, false])('picks up history while refreshing=%s and stops polling once complete', async (refreshing) => {
+  it.each([true, false])('picks up history while refreshing=%s and continues bounded polling after an empty completed read', async (refreshing) => {
     vi.useFakeTimers()
     try {
       const snapshot = { at: '2026-10-06T00:00:00Z', model: 'test', group_id: 11, mode: 'balanced', history_ready: false, history_status: 'loading' as const, history_refreshing: refreshing, candidates: [] }
@@ -203,7 +203,7 @@ describe('priority history refresh', () => {
       await vi.advanceTimersByTimeAsync(1000); await flushPromises()
       expect(getPrioritySnapshot).toHaveBeenCalledTimes(2)
       await vi.advanceTimersByTimeAsync(10000)
-      expect(getPrioritySnapshot).toHaveBeenCalledTimes(2)
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(4)
       wrapper.unmount()
     } finally { vi.useRealTimers() }
   })
@@ -213,13 +213,50 @@ describe('priority history refresh', () => {
       vi.mocked(getPrioritySnapshot).mockResolvedValue({ at: '2026-10-06T00:00:00Z', model: 'test', group_id: 11, mode: 'balanced', history_ready: false, history_refreshing: true, candidates: [] })
       const wrapper = mount(PrioritySchedulingView); await flushPromises()
       await vi.advanceTimersByTimeAsync(10000)
-      expect(getPrioritySnapshot).toHaveBeenCalledTimes(4)
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(5)
       await (wrapper.vm as any).refresh()
       state.auth.user = null
       await vi.advanceTimersByTimeAsync(10000)
-      expect(getPrioritySnapshot).toHaveBeenCalledTimes(5)
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(6)
       expect(wrapper.text()).not.toContain('2026')
       wrapper.unmount()
     } finally { vi.useRealTimers() }
   })
+  it('refreshes newly completed usage after a ready empty result and stops on unmount', async () => {
+    vi.useFakeTimers()
+    try {
+      const value = { at: '2026-10-06T00:00:00Z', model: 'public-alias', group_id: 11, mode: 'balanced', history_ready: true, history_status: 'ready' as const, candidates: [] }
+      vi.mocked(getPrioritySnapshot).mockResolvedValue(value)
+      const wrapper = mount(PrioritySchedulingView); await flushPromises()
+      await vi.advanceTimersByTimeAsync(4999)
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1); await flushPromises()
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(2)
+      wrapper.unmount()
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+  it('pauses hidden tabs and never overlaps pending snapshot requests', async () => {
+    vi.useFakeTimers()
+    try {
+      const value = { at: '2026-10-06T00:00:00Z', model: 'test', mode: 'balanced', history_ready: true, candidates: [] }
+      vi.mocked(getPrioritySnapshot).mockResolvedValue(value)
+      const wrapper = mount(PrioritySchedulingView); await flushPromises()
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+      await vi.advanceTimersByTimeAsync(20000)
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(1)
+      vi.restoreAllMocks()
+      let resolve!: (result: typeof value) => void
+      vi.mocked(getPrioritySnapshot).mockImplementationOnce(() => new Promise(r => { resolve = r }))
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(2)
+      await (wrapper.vm as any).refresh()
+      await vi.advanceTimersByTimeAsync(20000)
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(2)
+      resolve(value); await flushPromises()
+      wrapper.unmount()
+    } finally { vi.restoreAllMocks(); vi.useRealTimers() }
+  })
+
 })

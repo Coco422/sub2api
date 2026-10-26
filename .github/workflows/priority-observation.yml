@@ -39,13 +39,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/priority-logs"
           python3 .github/scripts/priority-observation-red.py
           set +e
-          (cd backend && go test -tags=unit ./internal/service ./internal/handler -run '^TestPriorityObservation(ResponsesEndpoint|PublicHistoryModel|MappedBodyNormalization)$' -count=1 -v -timeout=10m) > "$RUNNER_TEMP/priority-logs/red.log" 2>&1
+          (cd backend && go test -tags=unit ./internal/service ./internal/handler -run '^TestPriorityObservation(ResponsesEndpoint|PublicHistoryModel|MappedBodyNormalization|CompletedCallFreshness|StickyPenaltyAndExpiry)$' -count=1 -v -timeout=10m) > "$RUNNER_TEMP/priority-logs/red.log" 2>&1
           result=$?
           set -e
           cat "$RUNNER_TEMP/priority-logs/red.log"
-          git restore backend/internal/service/priority_error_rate.go backend/internal/service/priority_scheduling_history.go backend/internal/handler/openai_gateway_handler.go
+          git restore backend/internal/service/priority_error_rate.go backend/internal/service/priority_scheduling_history.go backend/internal/handler/openai_gateway_handler.go backend/internal/service/openai_account_scheduler.go
           test "$result" -ne 0
-          for name in ResponsesEndpoint PublicHistoryModel MappedBodyNormalization; do
+          for name in ResponsesEndpoint PublicHistoryModel MappedBodyNormalization CompletedCallFreshness StickyPenaltyAndExpiry; do
             grep -q -- "--- FAIL: TestPriorityObservation$name" "$RUNNER_TEMP/priority-logs/red.log"
           done
           if grep -Eq 'build failed|undefined:|syntax error' "$RUNNER_TEMP/priority-logs/red.log"; then exit 1; fi
@@ -53,10 +53,63 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd backend && go test -tags=unit ./internal/service ./internal/handler -run '^(TestPriority|TestOpenAI.*Sticky|Test.*PreviousResponse)' -count=1 -v -timeout=15m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/green.log"
+          (cd backend && go test -tags=unit ./internal/service ./internal/handler -run '^(TestPriority|TestOpenAI.*Sticky|Test.*PreviousResponse|TestOpenAI.*Profit|TestOpenAI.*RPM|TestOpenAI.*Replay|TestOpenAI.*Failover)'  -count=1 -v -timeout=15m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/green.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: priority-seams-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/priority-logs
           if-no-files-found: error
+
+  persistence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOMAXPROCS: '2'
+      GOFLAGS: '-p=2'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: PostgreSQL persisted usage and quality scope regressions
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/priority-logs"
+          (cd backend && go test -tags=integration ./internal/repository -run '^(TestPriorityObservation|TestPriorityScheduling)' -count=1 -v -timeout=15m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/persistence.log"
+          grep -q -- '--- PASS: TestPriorityObservationPersistedPublicAliasAndGroup' "$RUNNER_TEMP/priority-logs/persistence.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: priority-persistence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/priority-logs
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - name: Real page bounded refresh lifecycle
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/priority-logs"
+          pnpm --dir frontend exec vitest run src/views/admin/__tests__/PrioritySchedulingView.spec.ts --maxWorkers=1 --minWorkers=1 2>&1 | tee "$RUNNER_TEMP/priority-logs/ui.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: priority-ui-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/priority-logs
