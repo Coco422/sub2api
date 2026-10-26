@@ -26,11 +26,12 @@ export async function remove(){}
 export async function catalog(){return structuredClone({revision,upstreams,upstream_total:upstreams.length,accounts:members,total:members.length})}
 export async function mutate(id,body){if(body.revision!==revision)throw {response:{status:409}};globalThis.__channelFixture.mutations.push(body);revision++;if(body.action==='detach')members[0].upstream_id=0;if(body.action==='create_upstream')upstreams.push({id:5,name:body.name,members:0});return {revision}}
 export async function snapshot(query){
-const metrics={requests:1260,samples:1040,unknown_samples:32,duration_samples:1244,p50_ms:820,p90_ms:1900,p95_ms:2450,duration_p90_ms:4300,latest_sample_at:'2026-10-27T00:00:00Z'};
+const observed=new Date(Date.now()-300000).toISOString();
+const metrics={requests:1604,samples:1320,unknown_samples:88,duration_samples:1578,p50_ms:820,p90_ms:1900,p95_ms:2450,duration_p90_ms:4300,latest_sample_at:observed};
 return {scope:query,from:query.from,until:query.until,model_scope:query.model_scope,
-usage:failed?{status:'query_failed',data:null,queried_at:new Date().toISOString(),error:'合成查询失败：未伪装成零数据'}:{status:'ready',queried_at:new Date().toISOString(),data:{source:'usage_logs.channel_id / persisted first_token_ms',summary:metrics,total:3,rows:[{...metrics,dimension_id:3,name:'合成上游 Alpha'},{...metrics,requests:320,samples:280,dimension_id:4,name:'合成上游 Beta'},{...metrics,requests:24,samples:0,unknown_samples:24,p50_ms:null,p90_ms:null,p95_ms:null,dimension_id:0,name:'未分配上游'}],lineage:[{public_model:'public-alias',recorded_model:'persisted-model',upstream_model:'provider-model',model_mapping_chain:'public-alias→routing-model→provider-model',samples:1260}],lineage_total:1,error_rate:null}},
-quality:{status:'ready',queried_at:new Date().toISOString(),data:{source:'scheduled_test_results: frozen config / judgment',scope:'current account groups',summary:{rounds:19,passed:16,degraded:2,inconclusive:1,latest_sample_at:'2026-10-27T00:00:00Z'},rows:[{id:100,account_id:42,plan_id:8,measured_model:'provider-model',observed_at:'2026-10-27T00:00:00Z',probes:2,passed_probes:1,expected:2,outcome:'degraded',actions:['failure_counted:1/2']},{id:99,account_id:42,plan_id:8,measured_model:'provider-model',observed_at:'2026-10-26T23:00:00Z',probes:2,passed_probes:2,expected:2,outcome:'passed',actions:['passed']}],has_more:false}},
-errors:{status:'ready',queried_at:new Date().toISOString(),data:{source:'ops_error_logs',scope:'current accounts',records:17,upstream_5xx:5,latest_sample_at:'2026-10-27T00:00:00Z',rows:[{error_type:'upstream',error_phase:'forward',status_code:502,records:17}],bucket_total:1,error_rate:null}},
+usage:failed?{status:'query_failed',data:null,queried_at:new Date().toISOString(),error:'合成查询失败：未伪装成零数据'}:{status:'ready',queried_at:new Date().toISOString(),data:{source:'usage_logs.channel_id / persisted first_token_ms',summary:metrics,total:3,rows:[{...metrics,requests:1260,samples:1040,unknown_samples:32,duration_samples:1244,dimension_id:3,name:'合成上游 Alpha'},{...metrics,requests:320,samples:280,unknown_samples:32,duration_samples:310,p50_ms:640,p90_ms:1200,p95_ms:1400,dimension_id:4,name:'合成上游 Beta'},{...metrics,requests:24,samples:0,unknown_samples:24,duration_samples:24,p50_ms:null,p90_ms:null,p95_ms:null,dimension_id:0,name:'未分配上游'}],lineage:[{public_model:'public-alias',recorded_model:'persisted-model',upstream_model:'provider-model',model_mapping_chain:'public-alias→routing-model→provider-model',samples:1604}],lineage_total:1,error_rate:null}},
+quality:{status:'ready',queried_at:new Date().toISOString(),data:{source:'scheduled_test_results: frozen config / judgment',scope:'current account groups',summary:{rounds:19,passed:16,degraded:2,inconclusive:1,latest_sample_at:observed},rows:[{id:100,account_id:42,plan_id:8,measured_model:'provider-model',observed_at:observed,probes:2,passed_probes:1,expected:2,outcome:'degraded',actions:['failure_counted:1/2']},{id:99,account_id:42,plan_id:8,measured_model:'provider-model',observed_at:new Date(Date.now()-3900000).toISOString(),probes:2,passed_probes:2,expected:2,outcome:'passed',actions:['passed']}],has_more:false}},
+errors:{status:'ready',queried_at:new Date().toISOString(),data:{source:'ops_error_logs',scope:'current accounts',records:17,upstream_5xx:5,latest_sample_at:observed,rows:[{error_type:'upstream',error_phase:'forward',status_code:502,records:17}],bucket_total:1,error_rate:null}},
 capacity:{status:'ready',queried_at:new Date().toISOString(),data:{source:'accounts',scope:'current configuration',accounts:6,schedulable:5,configured_concurrency:30}}};}
 `
 const settings = `export const useAdminSettingsStore=()=>({requestCaptureEnabled:false})`
@@ -54,7 +55,7 @@ try {
   page.on('pageerror', error => failures.push(error.message))
   await page.route('**/api/**', route => { apiRequests.push(route.request().url()); return route.abort() })
   await page.goto('http://127.0.0.1:4183/admin/channel-operations?channel_id=7', { waitUntil: 'networkidle' })
-  await page.getByTestId('usage-section').getByText('1,260', { exact: true }).first().waitFor()
+  await page.getByTestId('usage-section').getByText('1,604', { exact: true }).first().waitFor()
   await page.screenshot({ path: path.join(output, 'desktop-synthetic.png'), fullPage: true })
   await page.getByText('持久化模型谱系（最多 50 组）', { exact: false }).click()
   await page.getByText('public-alias', { exact: true }).waitFor()
@@ -63,6 +64,7 @@ try {
   if (await page.evaluate(() => globalThis.__channelFixture.mutations.length)) throw new Error('mutation_before_confirmation')
   await page.getByRole('button', { name: '确认执行', exact: true }).click()
   await page.getByRole('status').filter({ hasText: '已保存' }).waitFor()
+  await page.getByRole('dialog').waitFor({ state: 'hidden' })
   const mutations = await page.evaluate(() => globalThis.__channelFixture.mutations)
   if (mutations.length !== 1 || mutations[0].expected_upstream_id !== 3 || mutations[0].revision !== 8 || !mutations[0].confirm) throw new Error('invalid_confirmed_mutation')
   await page.setViewportSize({ width: 390, height: 844 })

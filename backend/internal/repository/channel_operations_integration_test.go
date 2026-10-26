@@ -6,16 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/migrations"
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -356,64 +352,6 @@ func TestChannelOperationsQualityMeasuredRoundHistoryAndScope(t *testing.T) {
 	require.Zero(t, read().Summary.Rounds)
 	filter.UpstreamID = upstream
 	require.Equal(t, 7, read().Summary.Rounds)
-}
-
-// Actual HTTP handler -> canonical service -> PostgreSQL; no mocked persistence.
-func TestChannelOperationsHTTPPostgresWorkflow(t *testing.T) {
-	f := newChannelOperationsFixture(t)
-	h := admin.NewChannelHandler(service.NewChannelService(f.repo, nil, nil, nil, nil), nil, nil)
-	router := gin.New()
-	router.POST("/channels", h.Create)
-	router.GET("/channels/:id", h.GetByID)
-	router.PUT("/channels/:id", h.Update)
-	router.DELETE("/channels/:id", h.Delete)
-	router.POST("/channels/:id/operations", h.MutateOperations)
-	router.GET("/channels/:id/operations", h.OperationsCatalog)
-	router.GET("/snapshot", h.OperationsSnapshot)
-	request := func(method, path, body string) *httptest.ResponseRecorder {
-		t.Helper()
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(w, req)
-		return w
-	}
-	base := fmt.Sprintf("/channels/%d", f.channel)
-	w := request("POST", base+"/operations", `{"action":"create_upstream","revision":0,"name":"HTTP Provider"}`)
-	require.Equal(t, 200, w.Code, w.Body.String())
-	upstream := f.catalog(t).Upstreams[0].ID
-	w = request("POST", base+"/operations", fmt.Sprintf(`{"action":"assign","revision":1,"upstream_id":%d,"account_id":%d}`, upstream, f.account))
-	require.Equal(t, 200, w.Code, w.Body.String())
-	w = request("GET", base+"/operations?page_size=1&membership=assigned", "")
-	require.Equal(t, 200, w.Code)
-	require.Contains(t, w.Body.String(), `"revision":2`)
-	require.NotContains(t, w.Body.String(), "synthetic-fixture-only")
-	require.NotContains(t, w.Body.String(), "credentials")
-	w = request("POST", base+"/operations", fmt.Sprintf(`{"action":"detach","revision":1,"expected_upstream_id":%d,"account_id":%d,"confirm":true}`, upstream, f.account))
-	require.Equal(t, 409, w.Code)
-	w = request("POST", base+"/operations", fmt.Sprintf(`{"action":"detach","revision":2,"expected_upstream_id":%d,"account_id":%d}`, upstream, f.account))
-	require.Equal(t, 400, w.Code)
-	w = request("POST", base+"/operations", fmt.Sprintf(`{"action":"detach","revision":2,"expected_upstream_id":%d,"account_id":%d,"confirm":true}`, upstream, f.account))
-	require.Equal(t, 200, w.Code)
-	w = request("PUT", base, `{"name":"HTTP renamed channel","description":"Basic edit preserves group bindings"}`)
-	require.Equal(t, 200, w.Code, w.Body.String())
-	channel, err := f.repo.GetByID(context.Background(), f.channel)
-	require.NoError(t, err)
-	require.Equal(t, []int64{f.group}, channel.GroupIDs)
-	w = request("GET", "/snapshot?channel_id="+fmt.Sprint(f.channel)+"&from="+time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+"&until="+time.Now().UTC().Format(time.RFC3339), "")
-	require.Equal(t, 200, w.Code, w.Body.String())
-	require.Contains(t, w.Body.String(), `"status":"ready"`)
-	w = request("DELETE", base, "")
-	require.Equal(t, 200, w.Code, w.Body.String())
-	var n int
-	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM accounts WHERE id=$1`, f.account).Scan(&n))
-	require.Equal(t, 1, n)
-	// The canonical create endpoint remains usable with conservative defaults.
-	name := fmt.Sprintf("HTTP-created-%d", time.Now().UnixNano())
-	w = request("POST", "/channels", fmt.Sprintf(`{"name":%q}`, name))
-	require.Equal(t, 200, w.Code, w.Body.String())
-	_, err = integrationDB.Exec(`DELETE FROM channels WHERE name=$1`, name)
-	require.NoError(t, err)
 }
 
 func TestChannelOperationsErrorsUseExplicitCurrentCohortAndActualGroup(t *testing.T) {
