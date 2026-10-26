@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -187,4 +188,83 @@ func TestModelBillingGroupSavePersistenceAndExistence(t *testing.T) {
 	svc.autoGroups = autoConfigGroups{group: &Group{ID: 6, Status: StatusDisabled}}
 	_, err = svc.SaveOAuthAutoConfig(t.Context(), loaded)
 	require.Error(t, err, "new IDs must be active")
+}
+
+func TestModelBillingGroupGenericRecordUsageCostsAndIdempotency(t *testing.T) {
+	for _, groupID := range []int64{5, 6} {
+		logs := &openAIRecordUsageLogRepoStub{inserted: true}
+		billing := &simpleModeUsageBillingRepoStub{}
+		cfg := &config.Config{}
+		svc := &GatewayService{cfg: cfg, billingService: NewBillingService(cfg, nil), usageLogRepo: logs, usageBillingRepo: billing, deferredService: &DeferredService{}, billingCacheService: &BillingCacheService{}}
+		svc.settingService = modelBillingSettings(t, ModelBillingConfig{Enabled: true, Rules: []ModelBillingRule{{Model: "claude-sonnet-4-5*", Multiplier: 10, GroupIDs: []int64{5}}}})
+		group := newPeakGroup(true, "14:00", "18:00", 3)
+		group.ID, group.RateMultiplier = groupID, .2
+		accountRate, accountGroupRate := .3, 2.0
+		key := &APIKey{ID: 1, GroupID: &group.ID, Group: group, Quota: 100}
+		input := &RecordUsageInput{
+			Result: &ForwardResult{RequestID: "scoped-generic-request", Model: "claude-sonnet-4-5", Usage: ClaudeUsage{InputTokens: 1000, OutputTokens: 100}, SearchCount: 2},
+			APIKey: key, User: &User{ID: 2}, Account: &Account{ID: 3, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, GroupIDs: []int64{5, 6}, RateMultiplier: &accountRate, GroupRateMultiplier: &accountGroupRate, Extra: map[string]any{"quota_limit": 100.0}},
+			Subscription: &UserSubscription{ID: 8}, APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{}, PricingAt: at(15, 30),
+		}
+		rate := .2 * accountGroupRate * 3
+		base, err := svc.billingService.CalculateCost(input.Result.Model, UsageTokens{InputTokens: 1000, OutputTokens: 100}, rate)
+		require.NoError(t, err)
+		search := svc.billingService.CalculateSearchCost(2, nil, rate)
+		modelRate := 1.0
+		if groupID == 5 {
+			modelRate = 10
+		}
+		want := QuantizeUsageBillingAmount(base.ActualCost*modelRate + search.ActualCost)
+		for range 2 {
+			require.NoError(t, svc.RecordUsage(t.Context(), input))
+		}
+		require.Len(t, billing.seen, 1, "replayed request keeps the existing billing identity")
+		require.Len(t, billing.cmds, 2)
+		for _, cmd := range billing.cmds {
+			require.InDelta(t, want, cmd.SubscriptionCost, 1e-12)
+			require.InDelta(t, want, cmd.APIKeyQuotaCost, 1e-12)
+			require.InDelta(t, (base.TotalCost+search.TotalCost)*accountRate, cmd.AccountQuotaCost, 1e-8)
+			require.Zero(t, cmd.BalanceCost)
+		}
+		require.InDelta(t, want, logs.lastLog.ActualCost, 1e-12)
+		require.InDelta(t, base.TotalCost+search.TotalCost, logs.lastLog.TotalCost, 1e-12)
+		require.InDelta(t, rate*modelRate, logs.lastLog.RateMultiplier, 1e-12)
+		require.Equal(t, &group.ID, logs.lastLog.GroupID)
+	}
+}
+
+func TestModelBillingGroupOpenAIPricedFallbackAndPerRequest(t *testing.T) {
+	svc := newOpenAIRecordUsageServiceForTest(nil, nil, nil, nil)
+	svc.StopOpenAICodexTicketHarvester()
+	svc.settingService = modelBillingSettings(t, ModelBillingConfig{Enabled: true, Rules: []ModelBillingRule{{Model: "gpt-6-luna*", Multiplier: 10, GroupIDs: []int64{5}}}})
+	for _, groupID := range []int64{5, 6} {
+		key := &APIKey{ID: 1, GroupID: &groupID, Group: &Group{ID: groupID, Hydrated: true}}
+		tokens := UsageTokens{InputTokens: 1000, OutputTokens: 100}
+		result := &OpenAIForwardResult{Model: "alias", SearchCount: 2}
+		cost, err := svc.calculateOpenAIRecordUsageCost(t.Context(), result, key, []string{"no-price-test-model", "gpt-6-luna"}, .2, .2, .2, .2, tokens, "", nil, false, time.Time{})
+		require.NoError(t, err)
+		base, err := svc.billingService.CalculateCost("gpt-6-luna", tokens, .2)
+		require.NoError(t, err)
+		search := svc.billingService.CalculateSearchCost(2, nil, .2)
+		modelRate := 1.0
+		if groupID == 5 {
+			modelRate = 10
+		}
+		require.InDelta(t, base.ActualCost*modelRate+search.ActualCost, cost.ActualCost, 1e-12)
+		require.InDelta(t, base.TotalCost+search.TotalCost, cost.TotalCost, 1e-12)
+		web := &OpenAIForwardResult{Model: "gpt-6-luna", WebSearchCalls: 2}
+		webCost, err := svc.calculateOpenAIRecordUsageCost(t.Context(), web, key, []string{"gpt-6-luna"}, .2, .2, .2, .2, tokens, "", nil, false, time.Time{})
+		require.NoError(t, err)
+		require.Equal(t, svc.billingService.CalculateWebSearchCost(2, nil, .2), webCost)
+		price := .5
+		key.Group.ModelPricing = []ChannelModelPricing{{Models: []string{"gpt-6-luna"}, BillingMode: BillingModePerRequest, PerRequestPrice: &price}}
+		svc.resolver = NewModelPricingResolver(nil, svc.billingService)
+		perRequest, err := svc.calculateOpenAIRecordUsageCost(t.Context(), &OpenAIForwardResult{Model: "gpt-6-luna"}, key, []string{"gpt-6-luna"}, .2, .2, .2, .2, tokens, "", nil, false, time.Time{})
+		require.NoError(t, err)
+		require.Equal(t, string(BillingModePerRequest), perRequest.BillingMode)
+		require.InDelta(t, price*.2, perRequest.ActualCost, 1e-12)
+		require.InDelta(t, price, perRequest.TotalCost, 1e-12)
+		require.Equal(t, 1.0, costModelBillingMultiplier(perRequest))
+		svc.resolver = nil
+	}
 }
