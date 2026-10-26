@@ -1,4 +1,5 @@
 export default {
+  trendScopes: { hour: '每柱为该小时上传与下载流量之和，各小时独立统计，不逐时累计。', day: '每柱为该天上传与下载流量之和，各天独立统计，不逐日累计。', month: '每柱为该月上传与下载流量之和，各月独立统计，不逐月累计。' },
   deletedKey: '已删除', keyHistoryHint: '支持按名称或 #ID 搜索，包含已删除密钥。', keysFailed: '密钥候选加载失败，请重新搜索。',
   nodeHealth: '本节点流量记录状态', nodeHealthScope: '仅反映当前节点，计数器在进程重启后归零', healthStatuses: { ok: '正常', delayed: '存在积压', degraded: '需要处理' },
   healthSummary: '待入库 {pending} 条 · 最老积压 {age} 秒 · 隔离 {quarantined} 条 · 本次启动后持久化失败告警 {lost} 次', healthFailed: '暂时无法获取记录状态，请刷新重试。',

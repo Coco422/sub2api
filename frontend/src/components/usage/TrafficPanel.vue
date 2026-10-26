@@ -63,7 +63,8 @@
       </div>
       <p class="text-xs text-gray-500 dark:text-gray-400">{{ report.recorded_since ? t('traffic.since', { time: displayTime(report.recorded_since) }) : t('traffic.notRecorded') }} {{ t('traffic.history') }}</p>
       <div v-if="report.requests" class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
-        <h3 class="mb-3 text-sm font-medium">{{ t('traffic.trend') }}</h3>
+        <h3 class="mb-1 text-sm font-medium">{{ t('traffic.trend') }}</h3>
+        <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">{{ t(`traffic.trendScopes.${trendBucket}`) }}</p>
         <div class="h-64" role="img" :aria-label="t('traffic.trend')"><Bar :data="chartData" :options="chartOptions" /></div>
       </div>
       <details v-if="report.requests" class="overflow-x-auto rounded-xl border border-gray-200 dark:border-dark-700">
@@ -169,6 +170,7 @@ const cards = computed(() => report.value ? [
   { label: t('traffic.requests'), value: report.value.requests.toLocaleString(), raw: String(report.value.requests) }
 ] : [])
 const maxBytes = computed(() => Math.max(1, ...(report.value?.trend.flatMap(p => [p.upload_bytes, p.download_bytes]) || [])))
+const trendBucket = computed(() => report.value?.period === 'day' ? 'hour' : report.value?.period === 'year' ? 'month' : 'day')
 const chartData = computed(() => ({
   labels: report.value?.trend.map(point => point.bucket) || [],
   datasets: [

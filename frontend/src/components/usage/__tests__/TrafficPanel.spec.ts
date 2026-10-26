@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import TrafficPanel from '../TrafficPanel.vue'
 import Select from '@/components/common/Select.vue'
+import { Bar } from 'vue-chartjs'
 import type { TrafficReport } from '@/api/traffic'
 
 const { getTraffic, getTrafficKeys, getTrafficHealth, searchUsers, searchApiKeys, listGroups } = vi.hoisted(() => ({
@@ -11,7 +12,7 @@ vi.mock('@/api/admin', () => ({ adminAPI: { usage: { searchUsers, searchApiKeys 
 vi.mock('@/api/traffic', async importOriginal => ({ ...await importOriginal<typeof import('@/api/traffic')>(), getTraffic, getTrafficKeys, getTrafficHealth }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/api/client', () => ({ apiClient: { get: vi.fn() } }))
-vi.mock('vue-chartjs', () => ({ Bar: { template: '<div data-testid="traffic-chart" />' } }))
+vi.mock('vue-chartjs', () => ({ Bar: { name: 'Bar', props: ['data', 'options'], template: '<div data-testid="traffic-chart" />' } }))
 
 const fixture = (): TrafficReport => ({
   upload_bytes: 1024, download_bytes: 2048, total_bytes: 3072, requests: 1,
@@ -35,6 +36,19 @@ beforeEach(() => {
 const render = (admin = false) => { const wrapper = mount(TrafficPanel, { props: { admin, apiKeyOptions: [{ value: null, label: 'All keys' }, { value: 8, label: 'Production key' }, { value: 9, label: 'Test key' }] }, global: { stubs: { Teleport: true } } }); wrappers.push(wrapper); return wrapper }
 
 describe('TrafficPanel', () => {
+  it.each([['day', 'hour'], ['week', 'day'], ['month', 'day'], ['year', 'month']] as const)('plots independent %s buckets, including decreases and idle buckets', async (period, bucket) => {
+    const uploads = [900, 100, 0, 400], downloads = [1800, 200, 0, 800]
+    const trend = uploads.map((upload, i) => ({ bucket: `bucket-${i}`, upload_bytes: upload, download_bytes: downloads[i]!, total_bytes: upload + downloads[i]!, requests: upload ? 1 : 0 }))
+    getTraffic.mockResolvedValue({ ...fixture(), period, trend, upload_bytes: 1400, download_bytes: 2800, total_bytes: 4200 })
+    const wrapper = render(); await flushPromises()
+    await wrapper.get('#traffic-period').setValue(period); await flushPromises()
+    const data = wrapper.getComponent(Bar).props('data') as { labels: string[]; datasets: Array<{ data: number[] }> }
+    expect(data.labels).toEqual(trend.map(point => point.bucket))
+    expect(data.datasets.map(dataset => dataset.data)).toEqual([uploads, downloads])
+    expect(data.datasets[0]!.data[1]).toBeLessThan(data.datasets[0]!.data[0]!)
+    expect(data.datasets.every(dataset => dataset.data[2] === 0)).toBe(true)
+    expect(wrapper.text()).toContain(`traffic.trendScopes.${bucket}`)
+  })
   it('renders traffic independently of token usage, with scope and partial results', async () => {
     const wrapper = render(); await flushPromises()
     expect(getTraffic).toHaveBeenCalledWith(false, expect.objectContaining({ period: 'month', page: 1 }), expect.any(AbortSignal))

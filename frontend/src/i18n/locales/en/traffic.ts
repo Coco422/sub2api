@@ -1,4 +1,5 @@
 export default {
+  trendScopes: { hour: 'Each bar shows upload plus download within that hour. Hours are independent, not cumulative.', day: 'Each bar shows upload plus download within that day. Days are independent, not cumulative.', month: 'Each bar shows upload plus download within that month. Months are independent, not cumulative.' },
   deletedKey: 'Deleted', keyHistoryHint: 'Search names or #ID, including deleted keys.', keysFailed: 'Could not load key choices. Retry the search.',
   nodeHealth: 'Traffic recording on this node', nodeHealthScope: 'Node-local status; counters reset on restart', healthStatuses: { ok: 'Healthy', delayed: 'Delayed', degraded: 'Needs attention' },
   healthSummary: 'Pending: {pending} · Oldest pending: {age}s · Quarantined: {quarantined} · Persistence failure alerts since restart: {lost}', healthFailed: 'Recording health is unavailable. Refresh to retry.',
