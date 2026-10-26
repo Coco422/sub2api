@@ -57,12 +57,15 @@ jobs:
           src/views/admin/__tests__/AutoConfigView.spec.ts
           src/utils/__tests__/modelBilling.spec.ts
           src/i18n/__tests__/localeKeyCompleteness.spec.ts
+          src/components/admin/operations/__tests__/AutoConfigHistory.spec.ts
           --maxWorkers=1 --minWorkers=1
 
       - name: Install isolated browser for offline real-page checks
         run: |
           npm install --prefix "$RUNNER_TEMP/model-billing-browser" --no-save --ignore-scripts playwright@1.56.1
           "$RUNNER_TEMP/model-billing-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Fetch immutable baseline for before screenshot
+        run: git fetch --no-tags --depth=1 origin 973d4bbd0064121a5533e0d3232ece6043f0d5fc
       - name: Exercise real page with synthetic local HTTP and capture desktop/mobile
         env:
           NODE_OPTIONS: --max-old-space-size=1024

@@ -1,5 +1,6 @@
 // Actual AutoConfigView and API modules, synthetic local HTTP responses only.
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import fs from 'node:fs/promises'
@@ -12,6 +13,9 @@ const requireBrowser = createRequire(path.join(process.env.PLAYWRIGHT_ROOT, 'pac
 const { chromium } = requireBrowser('playwright')
 const output = process.env.MODEL_BILLING_SCREENSHOT_DIR
 await fs.mkdir(output, { recursive: true })
+const baselineSHA = '973d4bbd0064121a5533e0d3232ece6043f0d5fc'
+const baselinePath = path.join(frontend,'src/views/admin/ModelBillingBaseline.vue')
+await fs.writeFile(baselinePath,execFileSync('git',['show',baselineSHA+':frontend/src/views/admin/AutoConfigView.vue'],{cwd:root}))
 const virtual = {
   'fixture:auth': `export const useAuthStore=()=>({user:{id:1,role:'admin'}})`,
   'fixture:layout': `import {h} from 'vue';export default {setup:(_,ctx)=>()=>h('main',{class:'mx-auto max-w-6xl p-5'},ctx.slots.default?.())}`,
@@ -20,7 +24,7 @@ const virtual = {
 }
 const html = `<!doctype html><meta charset="utf-8"><div id="app"></div><script type="module">
 import {createApp} from 'vue';
-import Page from '/src/views/admin/AutoConfigView.vue';
+const {default:Page}=new URLSearchParams(location.search).has('baseline')?await import('/src/views/admin/ModelBillingBaseline.vue'):await import('/src/views/admin/AutoConfigView.vue');
 import {i18n,loadLocaleMessages} from '/src/i18n/index.ts';
 import {defaultExcelBPSDefaults} from '/src/utils/excelBPSDefaults.ts';
 import {defaultOpenAITwoFAAdmissionConfig} from '/src/utils/openaiTwoFAAdmission.ts';
@@ -87,6 +91,10 @@ try {
     await page.locator('button[type=submit]').click();await response
     await page.waitForFunction(()=>!document.querySelector('button[type=submit]')?.disabled)
   }
+  await page.goto('http://127.0.0.1:4181/?baseline=1',{waitUntil:'networkidle'})
+  await page.getByTestId('model-billing-model-0').waitFor()
+  assert.equal(await page.getByTestId('model-billing-group-0-5').count(),0)
+  await page.getByTestId('model-billing').screenshot({path:path.join(output,'baseline-before-group-scope-zh.png')})
   await open()
   assert.equal(await page.getByTestId('model-billing-group-0-5').isChecked(),true)
   assert.equal(await page.getByTestId('model-billing-group-1-6').isChecked(),true)
@@ -120,8 +128,8 @@ try {
   await open('?lang=en')
   await page.getByTestId('model-billing').screenshot({path:path.join(output,'missing-id-retained-en.png')})
   assert.deepEqual(errors,[]);assert.deepEqual(external,[])
-  await fs.writeFile(path.join(output,'verification.json'),JSON.stringify({head:process.env.GITHUB_SHA,synthetic:true,actualPage:'AutoConfigView.vue',actualApiModules:true,apiRequests:requests,saves,externalRequests:external,pageErrors:errors,checks:['two pages loaded','independent selection','save and reload','discard unsaved changes','clear applies all','2FA and other settings retained','partial page failure retains IDs','retry and unavailable ID warning','mobile no overflow','Chinese and English']},null,2))
+  await fs.writeFile(path.join(output,'verification.json'),JSON.stringify({head:process.env.GITHUB_SHA,baselineSHA,synthetic:true,actualPage:'AutoConfigView.vue',actualApiModules:true,apiRequests:requests,saves,externalRequests:external,pageErrors:errors,checks:['two pages loaded','independent selection','save and reload','discard unsaved changes','clear applies all','2FA and other settings retained','partial page failure retains IDs','retry and unavailable ID warning','mobile no overflow','Chinese and English']},null,2))
 } catch(error) {
   await fs.writeFile(path.join(output,'failure.json'),JSON.stringify({error:String(error),errors,external,requests},null,2))
   throw error
-} finally {await browser.close();await server.close()}
+} finally {await browser.close();await server.close();await fs.rm(baselinePath,{force:true})}
