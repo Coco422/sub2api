@@ -205,3 +205,9 @@ OAuth 分流权重 = 可用槽位 × 评分偏好 × 额度偏好 × 延迟因�
 普通 session hash 快速复用会读取同 scope 的有效测量证据；存在 `latency_above_target` 时，本回合进入已有评分与安全选号流程，保留原绑定。此判断独立于可选 EWMA/容量 escape 开关；加权 sticky 的后备捷径也不能重新引入活动惩罚，容量逃逸不会主动偏向已知慢备选。完整评分池仍保留慢账号作为最终可用容量，不全局禁用账号或模型。仅 sticky 的流量也能启动有界异步历史读取；缺样本不视为慢。
 
 provider-bound `previous_response_id`、guardian/task ownership、禁止逃逸及加密推理亲和仍按原归属规则处理，不因慢而直接换 key、删 ID 或重放对话。本次判断只发生在发送前，不增加输出后的重试授权。现有 `latency_penalty_minutes` 含义不变：默认 10 分钟；0 保持持续降档；缺失坏样本时间不虚构截止；真正的新慢样本可续期，读旧历史不能续期，到期允许普通 sticky 恢复。该保护属于请求范围评分，仍受样本门槛、当前分位与可用历史约束。
+
+### 两种延迟惩罚方式（增量实现中）
+
+`latency_penalty_mode` 可选择 `deprioritize`（“延迟优先调度”）或 `stop`（“停止调度”）。旧配置缺字段默认 `deprioritize`，旧客户端保存时省略字段会保留服务器当前方式。两者共用现有 `latency_penalty_minutes`（默认 10 分钟）和相同的有效样本、分位、目标与最近慢样本触发条件，不新增两倍目标门槛。
+
+当前增量先提供显式配置、管理 DTO、类型和 UI；停止模式的 pool/sticky/fallback/wait/owner/send 边界仍在实现，PR 验收清单保持未完成，旧提交的 CI 不覆盖停止模式。停止模式不会改账号 status/schedulable、费用、账本或已有输出。

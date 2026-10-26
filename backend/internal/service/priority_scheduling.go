@@ -12,6 +12,11 @@ import (
 
 const prioritySchedulingSettingKey = "priority_scheduling_v1"
 
+const (
+	PriorityLatencyDeprioritize = "deprioritize"
+	PriorityLatencyStop         = "stop"
+)
+
 // PrioritySchedulingConfig only controls freely selectable OpenAI text requests.
 // Account eligibility, continuity, profit gates and concurrency acquisition stay authoritative.
 type PrioritySchedulingConfig struct {
@@ -31,6 +36,7 @@ type PrioritySchedulingConfig struct {
 	LatencyMeasurement         string   `json:"latency_measurement"`
 	RecoveryExplorationPercent int      `json:"recovery_exploration_percent"`
 	TargetTTFTMs               int      `json:"target_ttft_ms"`
+	LatencyPenaltyMode         string   `json:"latency_penalty_mode"`
 	LatencyPenaltyMinutes      int      `json:"latency_penalty_minutes"`
 	MaxLoadPercent             int      `json:"max_load_percent"`
 	MinQualityPercent          int      `json:"min_quality_percent"`
@@ -42,7 +48,7 @@ type PrioritySchedulingConfig struct {
 }
 
 func DefaultPrioritySchedulingConfig() PrioritySchedulingConfig {
-	return PrioritySchedulingConfig{ErrorRateWeight: 25, ErrorRateWindowMinutes: 10, ErrorRatePriorSamples: 5, OAuthQuotaThreshold: 90, BalanceProtocols: true, Mode: "balanced", GroupIDs: []int64{}, Models: []string{}, WindowMinutes: 60, MinSamples: 5, TargetTTFTMs: 15000, LatencyPercentile: 90, LatencyMeasurement: "legacy_forward", LatencyPenaltyMinutes: 10, MaxLoadPercent: 80, MinQualityPercent: 90, QualityMaxAgeHours: 24, QualityWeight: 30, LatencyWeight: 25, LoadWeight: 25, CostWeight: 20}
+	return PrioritySchedulingConfig{ErrorRateWeight: 25, ErrorRateWindowMinutes: 10, ErrorRatePriorSamples: 5, OAuthQuotaThreshold: 90, BalanceProtocols: true, Mode: "balanced", GroupIDs: []int64{}, Models: []string{}, WindowMinutes: 60, MinSamples: 5, TargetTTFTMs: 15000, LatencyPercentile: 90, LatencyMeasurement: "legacy_forward", LatencyPenaltyMode: PriorityLatencyDeprioritize, LatencyPenaltyMinutes: 10, MaxLoadPercent: 80, MinQualityPercent: 90, QualityMaxAgeHours: 24, QualityWeight: 30, LatencyWeight: 25, LoadWeight: 25, CostWeight: 20}
 }
 
 func ValidatePrioritySchedulingConfig(c PrioritySchedulingConfig) error {
@@ -57,6 +63,9 @@ func ValidatePrioritySchedulingConfig(c PrioritySchedulingConfig) error {
 	}
 	if c.RecoveryExplorationPercent < 0 || c.RecoveryExplorationPercent > 10 {
 		return errors.New("recovery exploration must be between 0 and 10 percent")
+	}
+	if c.LatencyPenaltyMode != "" && c.LatencyPenaltyMode != PriorityLatencyDeprioritize && c.LatencyPenaltyMode != PriorityLatencyStop {
+		return errors.New("invalid latency penalty mode")
 	}
 	if c.LatencyPenaltyMinutes < 0 || c.LatencyPenaltyMinutes > 1440 {
 		return errors.New("latency penalty must be between 0 and 1440 minutes")
@@ -139,6 +148,9 @@ func (s *SettingService) GetPrioritySchedulingConfig(ctx context.Context) (Prior
 	return c, ValidatePrioritySchedulingConfig(c)
 }
 func (s *SettingService) SavePrioritySchedulingConfig(ctx context.Context, c PrioritySchedulingConfig) error {
+	if c.LatencyPenaltyMode == "" {
+		c.LatencyPenaltyMode = PriorityLatencyDeprioritize
+	}
 	if err := ValidatePrioritySchedulingConfig(c); err != nil {
 		return err
 	}

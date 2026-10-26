@@ -12,6 +12,7 @@ export interface PrioritySchedulingConfig {
   models: string[]
   window_minutes: number
   min_samples: number
+  latency_penalty_mode?: 'deprioritize' | 'stop'
   latency_penalty_minutes?: number
   latency_percentile?: 50 | 70 | 90 | 95
   latency_measurement?: 'legacy_forward' | 'attributed_v1'
