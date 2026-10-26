@@ -480,6 +480,10 @@ func openAIModelMappedBody(body []byte, mapped bool, mappedModel string, replace
 	if !mapped || replace == nil {
 		return body
 	}
+	mappedModel = strings.TrimSpace(mappedModel)
+	if mappedModel == "" {
+		return body
+	}
 	return replace(body, mappedModel)
 }
 
@@ -829,6 +833,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	service.SetOpenAIHTTPResponseOwner(c, subject.UserID, apiKey.ID)
 
 	setOpsRequestContext(c, reqModel, reqStream)
+	bindOpenAIPriorityObservation(c, apiKey.GroupID, reqModel)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, body); decision != nil && !decision.AllowNextStage {
@@ -1568,6 +1573,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
 	setOpsRequestContext(c, reqModel, reqStream)
+	bindOpenAIPriorityObservation(c, apiKey.GroupID, reqModel)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
@@ -2966,6 +2972,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.String("previous_response_id_kind", previousResponseIDKind),
 	)
 	setOpsRequestContext(c, reqModel, true)
+	bindOpenAIPriorityObservation(c, apiKey.GroupID, reqModel)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeWSV2))
 
 	if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage, "first_turn"); decision != nil && !decision.AllowNextStage {
@@ -3530,6 +3537,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					model = reqModel
 				}
 				setOpsRequestContext(c, model, true)
+				bindOpenAIPriorityObservation(c, apiKey.GroupID, model)
 				routeModel := model
 				if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite {
 					// The account, target platform and route context are connection-scoped.

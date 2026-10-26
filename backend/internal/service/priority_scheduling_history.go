@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -75,7 +76,7 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 	if !ok {
 		return priorityHistoryResult{status: "unavailable"}
 	}
-	if len(accounts) == 0 || len(accounts) > priorityHistoryMaxAccounts || len(req.RequestedModel) > 200 {
+	if len(accounts) == 0 || len(accounts) > priorityHistoryMaxAccounts || len(priorityHistoryModel(req)) > 200 || len(req.RequestedModel) > 200 {
 		return priorityHistoryResult{status: "limited"}
 	}
 	wanted := make(map[int64]struct{}, len(accounts))
@@ -160,7 +161,7 @@ func (s *OpenAIGatewayService) priorityHistory(req OpenAIAccountScheduleRequest,
 			value := *req.GroupID
 			group = &value
 		}
-		query := PrioritySchedulingQuery{LatencyPercentile: c.LatencyPercentile, LatencyMeasurement: c.LatencyMeasurement, TargetTTFTMs: c.TargetTTFTMs, AccountIDs: ids, Model: req.RequestedModel, GroupID: group, UsageUntil: now, UsageSince: now.Add(-time.Duration(c.WindowMinutes) * time.Minute), QualitySince: now.Add(-time.Duration(c.QualityMaxAgeHours) * time.Hour)}
+		query := PrioritySchedulingQuery{LatencyPercentile: c.LatencyPercentile, LatencyMeasurement: c.LatencyMeasurement, TargetTTFTMs: c.TargetTTFTMs, AccountIDs: ids, Model: priorityHistoryModel(req), QualityModel: strings.TrimSpace(req.RequestedModel), GroupID: group, UsageUntil: now, UsageSince: now.Add(-time.Duration(c.WindowMinutes) * time.Minute), QualitySince: now.Add(-time.Duration(c.QualityMaxAgeHours) * time.Hour)}
 		entry.refreshing = true
 		entry.attempted = now
 		state.active++
@@ -252,7 +253,7 @@ func (s *OpenAIGatewayService) cachedPriorityHistory(req OpenAIAccountScheduleRe
 }
 
 func priorityHistoryKey(req OpenAIAccountScheduleRequest, c PrioritySchedulingConfig) string {
-	return fmt.Sprintf("%q/%d/%t/%d/%d", req.RequestedModel, derefGroupID(req.GroupID), req.GroupID != nil, c.WindowMinutes, c.QualityMaxAgeHours) + "/" + priorityConfigRevision(c)
+	return fmt.Sprintf("%q/%q/%d/%t/%d/%d", priorityHistoryModel(req), strings.TrimSpace(req.RequestedModel), derefGroupID(req.GroupID), req.GroupID != nil, c.WindowMinutes, c.QualityMaxAgeHours) + "/" + priorityConfigRevision(c)
 }
 
 // Include every scoring setting so stale scopes never mix targets or semantics.

@@ -231,7 +231,8 @@ type PrioritySchedulingQuery struct {
 	LatencyMeasurement string
 	TargetTTFTMs       int
 	AccountIDs         []int64
-	Model              string
+	Model              string // public requested model in persisted usage
+	QualityModel       string // routing model used by account quality probes; defaults to Model
 	GroupID            *int64
 	UsageUntil         time.Time
 	UsageSince         time.Time
@@ -423,7 +424,7 @@ func scorePriorityCandidate(c PrioritySchedulingConfig, item openAIAccountCandid
 
 func (s *defaultOpenAIAccountScheduler) applyPriorityScheduling(req OpenAIAccountScheduleRequest, plan *openAIAccountLoadPlan) bool {
 	c := s.service.prioritySchedulingRuntimeConfig()
-	if req.Platform != PlatformOpenAI || req.RequiredImageCapability != "" || !req.UseUpstreamTokenCost || !c.applies(req.GroupID, req.RequestedModel) {
+	if req.Platform != PlatformOpenAI || req.RequiredImageCapability != "" || !req.UseUpstreamTokenCost || !c.applies(req.GroupID, priorityHistoryModel(req)) {
 		return false
 	}
 	history := s.service.priorityHistory(req, c, plan.candidates)

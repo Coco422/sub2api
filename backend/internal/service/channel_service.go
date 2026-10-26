@@ -617,7 +617,7 @@ func resolveMapping(lk *channelLookup, groupID int64, model string) ChannelMappi
 
 	modelLower := strings.ToLower(model)
 	if mapped := lookupMappingAcrossPlatforms(lk.cache, groupID, lk.platform, modelLower); mapped != "" {
-		result.MappedModel = mapped
+		result.MappedModel = strings.TrimSpace(mapped)
 		result.Mapped = true
 	}
 

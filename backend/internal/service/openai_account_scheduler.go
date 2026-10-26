@@ -87,6 +87,9 @@ type OpenAIAccountScheduleRequest struct {
 	PreviousResponseID      string
 	PreviousResponseCanMove bool
 	UseUpstreamTokenCost    bool
+	// RequestedModel remains the routing/capability model; HistoryModel is the public usage identity.
+	HistoryModel            string
+	InboundEndpoint         string
 	RequestedModel          string
 	RequiredTransport       OpenAIUpstreamTransport
 	RequiredCapability      OpenAIEndpointCapability
@@ -2530,6 +2533,8 @@ func (s *OpenAIGatewayService) selectLegacyAccountByPreviousResponse(
 		GroupID:                 groupID,
 		Platform:                platform,
 		RequestedModel:          requestedModel,
+		HistoryModel:            observation.model,
+		InboundEndpoint:         observation.endpoint,
 		RequiredTransport:       requiredTransport,
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,
@@ -2584,7 +2589,8 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		guardianParentAccountID = s.resolveOpenAIGuardianParentAccountID(ctx, groupID)
 	}
 	priority := s.prioritySchedulingRuntimeConfig()
-	scheduler := s.getOpenAIAccountScheduler(ctx, platform == PlatformOpenAI && requiredImageCapability == "" && useUpstreamTokenCost && priority.applies(groupID, requestedModel))
+	observation := priorityObservationFromContext(ctx, requestedModel)
+	scheduler := s.getOpenAIAccountScheduler(ctx, platform == PlatformOpenAI && requiredImageCapability == "" && useUpstreamTokenCost && priority.applies(groupID, observation.model))
 	if scheduler == nil {
 		decision.Layer = openAIAccountScheduleLayerLoadBalance
 		if selection, hit, err := s.selectLegacyAccountByPreviousResponse(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform); err != nil {
