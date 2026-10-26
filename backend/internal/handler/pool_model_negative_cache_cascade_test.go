@@ -47,6 +47,9 @@ func TestPoolModelNegativeCacheTwoLayersHistoricalObservationsDoNotRenew(t *test
 				accounts: []service.Account{negativeCacheAccount(11, 1, true), negativeCacheAccount(12, 2, true)}}}
 			until := time.Now().Add(30 * time.Second).UTC().Truncate(time.Second)
 			for i := range firstRepo.accounts {
+				// Use configured model routing: passthrough intentionally skips
+				// outbound alias normalization in capability diagnosis.
+				firstRepo.accounts[i].Extra["openai_passthrough"] = false
 				seedNegativeCache(&firstRepo.accounts[i], reason, until)
 			}
 			provider := &poolCapacityTransport{reply: func(*http.Request, int64) *http.Response {
@@ -56,16 +59,16 @@ func TestPoolModelNegativeCacheTwoLayersHistoricalObservationsDoNotRenew(t *test
 			secondRepo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{
 				accounts: []service.Account{negativeCacheAccount(21, 1, true), negativeCacheAccount(22, 2, true)}}}
 			var firstStatuses []int
+			var firstCodes []string
 			relay := &poolCapacityTransport{reply: func(req *http.Request, _ int64) *http.Response {
 				rec := httptest.NewRecorder()
 				forwarded := req.Clone(req.Context())
 				forwarded.URL.Path = "/v1/responses"
 				first.ServeHTTP(rec, forwarded)
 				firstStatuses = append(firstStatuses, rec.Code)
-				if rec.Code != 200 {
-					require.Contains(t, []int{429, 503}, rec.Code, "expiring observation must remain temporarily unavailable: %s", rec.Body.String())
-					require.NotEqual(t, "model_not_found", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
-				}
+				firstCodes = append(firstCodes, gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+				// Return the actual response before asserting: B must consume it
+				// through Forward and its account-state fastpath even on old code.
 				return rec.Result()
 			}}
 			second := newPoolCapacityRouter(t, secondRepo, relay)
@@ -74,6 +77,10 @@ func TestPoolModelNegativeCacheTwoLayersHistoricalObservationsDoNotRenew(t *test
 				require.Contains(t, []int{429, 502, 503}, rec.Code, rec.Body.String())
 				require.NotEqual(t, "model_not_found", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
 				require.Zero(t, secondRepo.modelWrites, "B must not create a new 30m deadline from A's near-expiry observations")
+				for i, status := range firstStatuses {
+					require.Contains(t, []int{429, 503}, status, "expiring observation must remain temporarily unavailable")
+					require.NotEqual(t, "model_not_found", firstCodes[i])
+				}
 				for i := range firstRepo.accounts {
 					require.Equal(t, until.Format(time.RFC3339), negativeCacheDeadline(&firstRepo.accounts[i]))
 					require.False(t, firstRepo.accounts[i].IsSchedulableForModel("gpt-6.1-sol"))
@@ -128,6 +135,9 @@ func TestPoolModelNegativeCacheDefaultHTTPMissingDoesNotPersistAcrossRequests(t 
 func TestPoolModelNegativeCacheNonPoolWriterThenFreshRequestAndHealthyPeer(t *testing.T) {
 	repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{
 		accounts: []service.Account{negativeCacheAccount(11, 1, false), negativeCacheAccount(12, 2, false)}}}
+	for i := range repo.accounts {
+		repo.accounts[i].Extra["openai_passthrough"] = false
+	}
 	recovered := false
 	provider := &poolCapacityTransport{reply: func(*http.Request, int64) *http.Response {
 		if !recovered {
