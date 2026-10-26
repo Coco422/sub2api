@@ -21,8 +21,8 @@
 - 用量直接读取 `usage_logs.channel_id`，时间为 `[from,to)`，最多 31 天。旧记录缺少 channel_id 时不猜测归属。公共模型筛选使用 `COALESCE(NULLIF(requested_model,''),model)`；已记录模型使用 `model`；上游模型使用 `upstream_model`。不会把 capability 当 ingress 端点，不复用优先调度快照或已知错误的模型查询。
 - 模型谱系显示 public / recorded / upstream 与原始 mapping_chain。`model` 不能保证等于 routing model；没有可靠持久化字段时不声称已知 routing model。
 - TTFT 是持久化 `first_token_ms` 的历史转发口径，仅流式且有 token/费用证据的请求；展示 p50/p90/p95、有效/未知数量。总耗时独立用 `duration_ms`；NULL/非正数不当作零。此口径不是端到端或纯上游网络延迟。
-- 上游统计按当前人工归属回看历史，改派后历史会重分组；未分配账号保留单独桶（upstream_id=-1 下钻），渠道总数不因未分配而丢失。当前配置并发只是容量上限，不是实时负载。
-- 质量从 `scheduled_test_results` 的冻结配置、judgment 和 round_id 读取，按 plan+round 去重。通过需完整轮次全部 correct+success；降级需明确 incorrect 且 answer_mismatch/state_degraded；缺失 judgment/冻结并发数量/轮次 ID、并发轮未完成、传输失败与 skipped 为不确定。质量不等于每个请求的智能水平，错误不自动当降智。
+- 上游统计按当前人工运维归属回看历史，不能声称是请求发生时的上游路由；改派仅重分组展示，不改写 usage_logs 的历史 channel/model 字段；未分配账号保留单独桶（upstream_id=-1 下钻），渠道总数不因未分配而丢失。当前配置并发只是容量上限，不是实时负载。
+- 质量从 `scheduled_test_results` 的冻结配置、judgment 和 round_id 读取，按 plan+round+model 展示和计数。沿用 canonical `ScheduledTestService.ListQualityHistory` 的冻结 ModelIDs 数量 × ParallelCount 完整性规则，模型筛选在完整性校验之后执行；所有配置模型及其并发样本保存完整后，才判断各模型行。模型行通过不等于整个计划通过；通过仍要求该模型全部 correct+success；降级需明确 incorrect 且 answer_mismatch/state_degraded；缺失 judgment/冻结并发数量/轮次 ID、并发轮未完成、传输失败与 skipped 为不确定。质量不等于每个请求的智能水平，错误不自动当降智。
 - 质量没有请求 group/channel 维度：按明确登记的运维成员或当前渠道分组账号范围选择（成员被质量处置移除分组后仍保留历史）；分组筛选仅取当前仍属于该分组的账号，明确标记为当前账号范围。模型筛选只匹配结果快照模型，快照缺失不回填当前计划模型；它不与公开别名自动等价，选择 public/recorded 筛选时质量为范围不支持。
 - 分别返回 usage/quality 查询状态、查询时间、最新样本时间、来源、窗口和范围限制。成功无样本与查询失败不同；失败不显示成 0。分页统计不能截断汇总分母。错误计数直接读取 ops_error_logs（不读正文/头/原始错误详情），按明确登记的运维成员/当前渠道账号归属和实际日志 group_id 筛选并排除 count_tokens；该表无历史 channel_id，范围明确标注。缺少全请求分母，错误率保持不支持，5xx 不当作降智。
 - 质量历史可进入已有质量计划编辑器（选中 plan），不新建默认付费任务。
@@ -78,3 +78,6 @@
 - 创建渠道与导航统一等待渠道切换完成：清除上游/账号、成员/上游/统计分页、质量游标和账号显示模式；真正切换渠道时清空渠道所属分组筛选。时间/模型条件保留；同渠道基本编辑不清空当前下钻和分页。
 - [ ] 当前提交真实拦截器409、新建渠道清理、同渠道编辑保留回归。
 - [ ] 多模型missing-other-model完整性回归及当前SHA全部push/PR CI审查。
+
+
+多模型审查样例：冻结计划为 A+B、parallel_count=1。仅保存 A 的正确结果时，即使筛选 A，也显示不确定且 round_complete=false、round_probes=1、round_expected=2；现有 canonical 计划历史同样不能通过。B 的传输失败结果也保存后，A 可显示为模型行通过、B 仍不确定，不能声称整个计划通过。两者都正确时 canonical 计划和两个模型行才都通过。部分/NULL/缺元数据规则保留，未发起补测或自动付费探针。

@@ -180,7 +180,8 @@ func TestChannelOperationsMigrationReplayIsAdditive(t *testing.T) {
 }
 
 type operationsUsageData struct {
-	Summary struct {
+	Attribution string `json:"attribution"`
+	Summary     struct {
 		Requests, Samples int
 		Unknown           int      `json:"unknown_samples"`
 		P50               *float64 `json:"p50_ms"`
@@ -261,6 +262,23 @@ func TestChannelOperationsUsageIdentityBoundariesAndUnassignedDenominator(t *tes
 	require.Empty(t, got.Rows)
 	require.Equal(t, 1, got.Total)
 	require.Equal(t, 5, got.Summary.Requests)
+	// Reassignment changes only today's operational grouping, never historical
+	// channel/model lineage or the original usage rows.
+	var beforeHistory, afterHistory []byte
+	historySQL := `SELECT jsonb_agg(jsonb_build_array(channel_id,requested_model,model,upstream_model,model_mapping_chain,created_at) ORDER BY id) FROM usage_logs WHERE account_id=$1`
+	require.NoError(t, integrationDB.QueryRow(historySQL, f.account).Scan(&beforeHistory))
+	replacement := f.upstream(t, "Reassigned")
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: replacement, ExpectedUpstreamID: u, Confirm: true}))
+	require.NoError(t, integrationDB.QueryRow(historySQL, f.account).Scan(&afterHistory))
+	require.JSONEq(t, string(beforeHistory), string(afterHistory))
+	filter.Page = 1
+	filter.UpstreamID = u
+	require.Zero(t, f.usage(t, filter).Summary.Requests)
+	filter.UpstreamID = replacement
+	got = f.usage(t, filter)
+	require.Equal(t, 5, got.Summary.Requests)
+	require.Equal(t, "current_operational_membership", got.Attribution)
+	filter.UpstreamID = 0
 	filter.Model = "absent"
 	got = f.usage(t, filter)
 	require.Zero(t, got.Summary.Requests)
@@ -417,4 +435,86 @@ func TestChannelOperationsErrorsUseExplicitCurrentCohortAndActualGroup(t *testin
 	require.NoError(t, err)
 	require.Equal(t, 1, read().Records, "registered operations cohort survives canonical group removal")
 
+}
+
+// Model rows use the canonical plan-round completeness envelope before any
+// requested model filter. A model-level pass must never imply a whole-plan pass.
+func TestChannelOperationsQualityWaitsForAllFrozenModels(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	ctx := context.Background()
+	filter := f.filter()
+	filter.ModelScope = "upstream"
+	filter.Model = "round-a"
+	var plan int64
+	require.NoError(t, integrationDB.QueryRow(`INSERT INTO scheduled_test_plans(account_id,model_id,cron_expression,enabled,pelican_config) VALUES($1,'edited-current-model','*/30 * * * *',false,'{"quality":{}}') RETURNING id`, f.account).Scan(&plan))
+	probe := func(model, status, verdict, action, message string) int64 {
+		t.Helper()
+		cfg, _ := json.Marshal(map[string]any{"quality": map[string]any{}, "model_id": model, "model_ids": []string{"round-a", "round-b"}, "parallel_count": 1})
+		judgment, _ := json.Marshal(map[string]string{"verdict": verdict})
+		var id int64
+		require.NoError(t, integrationDB.QueryRow(`INSERT INTO scheduled_test_results(plan_id,status,started_at,finished_at,created_at,pelican_config,quality_round_id,quality_action,quality_judgment,error_message) VALUES($1,$2,$3,$3,$3,$4,'two-model-review',$5,$6,$7) RETURNING id`, plan, status, filter.From.Add(time.Minute), string(cfg), action, string(judgment), message).Scan(&id))
+		return id
+	}
+	type row struct {
+		Model    string `json:"measured_model"`
+		Outcome  string
+		Complete bool `json:"round_complete"`
+		Probes   int  `json:"round_probes"`
+		Expected int  `json:"round_expected"`
+	}
+	type data struct {
+		Summary struct{ Rounds, Passed, Degraded, Inconclusive int }
+		Rows    []row
+	}
+	read := func() data {
+		t.Helper()
+		snapshot := f.repo.ReadChannelOperations(ctx, filter)
+		require.Equal(t, "ready", snapshot.Quality.Status)
+		var out data
+		require.NoError(t, json.Unmarshal(snapshot.Quality.Data, &out))
+		return out
+	}
+	canonical := func() *service.QualityHistoryResult {
+		t.Helper()
+		page, err := service.NewScheduledTestService(nil, NewScheduledTestResultRepository(integrationDB)).ListQualityHistory(ctx, 0)
+		require.NoError(t, err)
+		for _, item := range page.Items {
+			if item.PlanID == plan {
+				return item
+			}
+		}
+		t.Fatal("canonical plan history missing")
+		return nil
+	}
+	probe("round-a", "success", "correct", "passed", "")
+	got := read()
+	require.Equal(t, 0, got.Summary.Passed, "missing peer model cannot pass")
+	require.Equal(t, 1, got.Summary.Inconclusive)
+	require.Len(t, got.Rows, 1)
+	require.False(t, got.Rows[0].Complete)
+	require.Equal(t, 1, got.Rows[0].Probes)
+	require.Equal(t, 2, got.Rows[0].Expected)
+	history := canonical()
+	require.Equal(t, 2, history.TotalCount)
+	require.NotEqual(t, "success", history.Status, "canonical full plan also rejects the missing-model round")
+	// Filtering only round-a must not conceal a transport failure in its peer.
+	// Once both rows exist, round-a is a measured model pass, while the complete
+	// plan remains non-passing; the API/UI explicitly distinguish these scopes.
+	peer := probe("round-b", "failed", "inconclusive", "inconclusive", "timeout")
+	got = read()
+	require.Equal(t, 1, got.Summary.Passed)
+	require.True(t, got.Rows[0].Complete)
+	require.Equal(t, 2, got.Rows[0].Probes)
+	require.NotEqual(t, "success", canonical().Status)
+	filter.Model = ""
+	got = read()
+	require.Equal(t, 2, got.Summary.Rounds)
+	require.Equal(t, 1, got.Summary.Passed)
+	require.Equal(t, 1, got.Summary.Inconclusive)
+	require.Zero(t, got.Summary.Degraded)
+	_, err := integrationDB.Exec(`UPDATE scheduled_test_results SET status='success',quality_action='passed',quality_judgment='{"verdict":"correct"}',error_message='' WHERE id=$1`, peer)
+	require.NoError(t, err)
+	got = read()
+	require.Equal(t, 2, got.Summary.Passed)
+	require.Equal(t, "success", canonical().Status)
 }

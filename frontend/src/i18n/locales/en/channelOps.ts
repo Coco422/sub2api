@@ -1,7 +1,7 @@
 export default {
   "title": "Channel operations",
   "description": "Manage channels, upstream labels and accounts; inspect persisted latency and measured quality.",
-  "scope": "Upstream labels classify operations. Historical data uses current membership. Routing, groups, credentials, scheduling and billing are preserved; no automatic paid probes.",
+  "scope": "Upstream labels classify operations without changing routing, groups, credentials, scheduling or billing. Historical usage is regrouped by current membership; it does not identify upstream routing at request time. Reassignment never modifies usage history. No automatic paid probes.",
   "refresh": "Refresh",
   "loading": "Loading data…",
   "channels": "Channels",
@@ -47,10 +47,10 @@ export default {
   "chain": "Persisted mapping chain",
   "errorNote": "Error rate is unavailable without a complete request failure denominator. Usage records do not represent all attempts.",
   "errors": "Existing diagnostics",
-  "quality": "Measured quality rounds",
+  "quality": "Measured model rounds",
   "qualityEditor": "Quality plans and editor",
-  "qualityNote": "Counted by plan + round + model; multi-model rounds appear separately. Quality includes registered operational members or current channel accounts; the group filter only includes accounts still in that group. Clear the group filter to see removed members. This is cohort data, not request group attribution or per-request intelligence. Public/recorded aliases cannot identify probe models; select an exact upstream model to filter quality. Passing requires a complete correct round; transport failures, partial rounds and skipped probes are inconclusive.",
-  "rounds": "Rounds",
+  "qualityNote": "Rows and counts are per plan + round + model; a model outcome is not the whole plan outcome. The canonical frozen model list × parallel count must be fully saved before classifying models; a missing peer model stays inconclusive. Scope includes registered operational members or current channel accounts. The group filter uses current membership; clear it to see removed members. This is neither historical request attribution nor per-request intelligence. Quality filters use exact probe model names. Missing metadata, NULL judgments, transport failures, partial saves and skipped probes never pass.",
+  "rounds": "Model rounds",
   "passed": "Passed",
   "degraded": "Measured degradation",
   "inconclusive": "Inconclusive",
@@ -106,5 +106,6 @@ export default {
   "noErrors": "Query succeeded; no retained error logs. This does not establish zero errors.",
   "errorType": "Error type",
   "errorPhase": "Phase",
-  "topErrors": "Up to 20 categories shown; totals above remain complete"
+  "topErrors": "Up to 20 categories shown; totals above remain complete",
+  "incompleteRound": "Plan round samples incompletely saved"
 }

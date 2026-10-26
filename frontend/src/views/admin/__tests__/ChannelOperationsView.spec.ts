@@ -20,7 +20,7 @@ const catalog: ops.Catalog = { revision: 42, upstreams: [{ id: 3, name: 'Provide
 const now = '2026-10-27T00:00:00Z'
 const metrics: ops.Metrics = { requests: 3, samples: 1, unknown_samples: 2, duration_samples: 3, p50_ms: 123, p90_ms: 123, p95_ms: 123, duration_p90_ms: 456, latest_sample_at: now }
 function snapshot(): ops.Snapshot {
-  return { scope: { channel_id: 7, upstream_id: 0, account_id: 0, group_id: 0, model: '', model_scope: 'public', dimension: 'upstream' }, from: now, until: now, model_scope: 'public', usage: { status: 'ready', queried_at: now, data: { source: 'usage_logs', attribution: 'current', latency_measurement: 'legacy_forward', summary: { ...metrics }, total: 1, rows: [{ ...metrics, dimension_id: 0, name: 'Unassigned' }], lineage: [], lineage_total: 0, error_rate: null, error_scope: 'unsupported' } }, quality: { status: 'ready', queried_at: now, data: { source: 'scheduled_test_results', scope: 'current accounts', summary: { rounds: 1, passed: 0, degraded: 1, inconclusive: 0, latest_sample_at: now }, rows: [{ id: 99, plan_id: 8, account_id: 9, measured_model: 'provider-model', observed_at: now, probes: 2, passed_probes: 1, expected: 2, outcome: 'degraded', actions: ['failure_counted:1/2'] }], has_more: true } }, errors: { status: 'ready', queried_at: now, data: { source: 'ops_error_logs', scope: 'current accounts', records: 1, upstream_5xx: 1, latest_sample_at: now, rows: [{ error_type: 'upstream', error_phase: 'forward', status_code: 502, records: 1 }], bucket_total: 1, error_rate: null } }, capacity: { status: 'ready', queried_at: now, data: { source: 'accounts', scope: 'current', accounts: 1, schedulable: 1, configured_concurrency: 5 } } }
+  return { scope: { channel_id: 7, upstream_id: 0, account_id: 0, group_id: 0, model: '', model_scope: 'public', dimension: 'upstream' }, from: now, until: now, model_scope: 'public', usage: { status: 'ready', queried_at: now, data: { source: 'usage_logs', attribution: 'current', latency_measurement: 'legacy_forward', summary: { ...metrics }, total: 1, rows: [{ ...metrics, dimension_id: 0, name: 'Unassigned' }], lineage: [], lineage_total: 0, error_rate: null, error_scope: 'unsupported' } }, quality: { status: 'ready', queried_at: now, data: { source: 'scheduled_test_results', scope: 'current accounts', summary: { rounds: 1, passed: 0, degraded: 1, inconclusive: 0, latest_sample_at: now }, rows: [{ id: 99, plan_id: 8, account_id: 9, measured_model: 'provider-model', observed_at: now, probes: 2, passed_probes: 1, expected: 2, outcome: 'degraded', round_complete: true, round_probes: 2, round_expected: 2, actions: ['failure_counted:1/2'] }], has_more: true } }, errors: { status: 'ready', queried_at: now, data: { source: 'ops_error_logs', scope: 'current accounts', records: 1, upstream_5xx: 1, latest_sample_at: now, rows: [{ error_type: 'upstream', error_phase: 'forward', status_code: 502, records: 1 }], bucket_total: 1, error_rate: null } }, capacity: { status: 'ready', queried_at: now, data: { source: 'accounts', scope: 'current', accounts: 1, schedulable: 1, configured_concurrency: 5 } } }
 }
 function button(wrapper: ReturnType<typeof mount>, text: string) { const found = wrapper.findAll('button').find(b => b.text() === text); if (!found) throw new Error(`Button missing: ${text}`); return found }
 beforeEach(() => {
@@ -182,6 +182,15 @@ describe('channel operations workflow', () => {
     await w.get('[data-testid="dialog"] form').trigger('submit'); await flushPromises()
     expect(ops.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({ channel_id: 7, upstream_id: 0, account_id: 0, dimension: 'account' }), expect.anything())
     expect(button(w, 'channelOps.byUpstream').exists()).toBe(true)
+    w.unmount()
+  })
+  it('explains a missing peer model without showing a passing plan round', async () => {
+    const value = snapshot(); value.quality.data!.summary = { rounds: 1, passed: 0, degraded: 0, inconclusive: 1, latest_sample_at: now }
+    value.quality.data!.rows[0] = { ...value.quality.data!.rows[0], outcome: 'inconclusive', passed_probes: 1, probes: 1, expected: 1, round_complete: false, round_probes: 1, round_expected: 2 }
+    vi.mocked(ops.snapshot).mockResolvedValue(value)
+    const w = mount(ChannelOperationsView); await flushPromises()
+    expect(w.get('[data-testid="quality-section"]').text()).toContain('channelOps.incompleteRound 1 / 2')
+    expect(w.get('[data-testid="quality-section"]').text()).toContain('channelOps.inconclusive')
     w.unmount()
   })
   it('rejects a late response from the previous channel selection', async () => {
