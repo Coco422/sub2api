@@ -21,6 +21,9 @@ import (
 type reviewGenerationConn struct{ *stagedPassthroughConn }
 
 func (c *reviewGenerationConn) WriteJSON(ctx context.Context, v any) error {
+	if prepared, ok := v.(openAIWSPreparedJSON); ok {
+		v = json.RawMessage(prepared)
+	}
 	bytes, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -197,65 +200,100 @@ func (r *reviewFreshRepo) GetByID(ctx context.Context, id int64) (*Account, erro
 
 func TestPriorityPenaltyReviewLateSelection(t *testing.T) {
 	for _, stage := range []string{"after_pool", "after_slot", "fresh_state", "wait_fallback"} {
-		for _, alternate := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/alternate=%t", stage, alternate), func(t *testing.T) {
-				svc, s, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
-				setModeSignal(svc, req, 1, func(v *PrioritySchedulingSignal) { v.P90TTFTMs = 500; v.LatestBadLatencyAt = nil })
-				candidates := pool[:1]
-				if alternate {
-					candidates = pool
-				}
-				accounts := make([]*Account, 0, len(candidates))
-				loads := map[int64]*AccountLoadInfo{}
-				for _, item := range candidates {
-					accounts = append(accounts, item.account)
-					loads[item.account.ID] = item.loadInfo
-				}
-				// Exercise the real initial gate/plan before activating stop at each seam.
-				allowed, err := s.filterPriorityLatencyAccounts(req, accounts, loads)
-				require.NoError(t, err)
-				plan := s.buildOpenAIAccountLoadPlan(context.Background(), req, allowed, loads)
-				// Fix order only in the fixture so the stopped candidate is tried first.
-				order := append([]openAIAccountCandidateScore(nil), candidates...)
-				activate := func() { reviewActivateStop(svc, req, 1) }
-				var releases []int64
-				budget := newOpenAISelectionProbeBudget()
-				if stage == "after_pool" {
-					activate()
-				}
-				if stage == "after_slot" {
-					svc.concurrencyService = NewConcurrencyService(&reviewAcquireCache{schedulerTestConcurrencyCache: schedulerTestConcurrencyCache{releasedIDs: &releases}, onAcquire: activate})
-				}
-				if stage == "fresh_state" || stage == "wait_fallback" {
-					repo := &reviewFreshRepo{schedulerTestOpenAIAccountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{*pool[0].account, *pool[1].account}}, onRead: activate}
-					svc.accountRepo = repo
-					svc.schedulerSnapshot = &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{accountsByID: map[int64]*Account{1: pool[0].account, 2: pool[1].account}}, accountRepo: repo}
-				}
-				var selected *AccountSelectionResult
-				if stage != "wait_fallback" {
-					selected, _, err = s.tryAcquireOpenAISelectionOrderWithBudget(context.Background(), req, order, budget)
-					require.NoError(t, err)
-				}
-				if selected == nil {
-					attempt := openAIAccountLoadSelectionAttempt{selectionOrder: order, candidateCount: len(order), topK: plan.topK}
-					selected, _, _, _, err = s.finishLoadBalanceSelectionFallback(context.Background(), req, attempt, budget, openAISelectionFilterStats{})
-				}
-				if alternate {
-					require.NoError(t, err, "healthy alternate survives a late stop")
-					require.NotNil(t, selected)
-					require.Equal(t, int64(2), selected.Account.ID)
-					if selected.ReleaseFunc != nil {
-						selected.ReleaseFunc()
+		for _, change := range []string{"history", "mode"} {
+			for _, alternate := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/alternate=%t", stage, change, alternate), func(t *testing.T) {
+					svc, s, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
+					setModeSignal(svc, req, 1, func(v *PrioritySchedulingSignal) { v.P90TTFTMs = 500; v.LatestBadLatencyAt = nil })
+					if change == "mode" {
+						reviewActivateStop(svc, req, 1)
+						soft := svc.prioritySchedulingRuntimeConfig()
+						soft.LatencyPenaltyMode = PriorityLatencyDeprioritize
+						require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), soft))
 					}
-				} else {
-					require.Nil(t, selected)
-					require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "late stop must retain dedicated temporary-unavailable cause")
-					require.False(t, errors.Is(err, ErrNoAvailableAccounts), "late stop cannot authorize legacy/proxy fail-open fallback")
-				}
-				if stage == "after_slot" {
-					require.Contains(t, releases, int64(1), "late rejection must release acquired slot")
-				}
-			})
+					candidates := pool[:1]
+					if alternate {
+						candidates = pool
+					}
+					accounts := make([]*Account, 0, len(candidates))
+					loads := map[int64]*AccountLoadInfo{}
+					for _, item := range candidates {
+						accounts = append(accounts, item.account)
+						loads[item.account.ID] = item.loadInfo
+					}
+					// Exercise the real initial gate/plan before activating stop at each seam.
+					allowed, err := s.filterPriorityLatencyAccounts(req, accounts, loads)
+					require.NoError(t, err)
+					plan := s.buildOpenAIAccountLoadPlan(context.Background(), req, allowed, loads)
+					// Fix order only in the fixture so the stopped candidate is tried first.
+					order := append([]openAIAccountCandidateScore(nil), candidates...)
+					activate := func() {
+						if change == "history" {
+							reviewActivateStop(svc, req, 1)
+						} else {
+							hard := svc.prioritySchedulingRuntimeConfig()
+							hard.LatencyPenaltyMode = PriorityLatencyStop
+							require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), hard))
+						}
+					}
+					var releases []int64
+					budget := newOpenAISelectionProbeBudget()
+					if stage == "after_pool" {
+						activate()
+					}
+					if stage == "after_slot" {
+						svc.concurrencyService = NewConcurrencyService(&reviewAcquireCache{schedulerTestConcurrencyCache: schedulerTestConcurrencyCache{releasedIDs: &releases}, onAcquire: activate})
+					}
+					if stage == "fresh_state" || stage == "wait_fallback" {
+						repo := &reviewFreshRepo{schedulerTestOpenAIAccountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{*pool[0].account, *pool[1].account}}, onRead: activate}
+						svc.accountRepo = repo
+						svc.schedulerSnapshot = &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{accountsByID: map[int64]*Account{1: pool[0].account, 2: pool[1].account}}, accountRepo: repo}
+					}
+					var selected *AccountSelectionResult
+					if stage != "wait_fallback" {
+						selected, _, err = s.tryAcquireOpenAISelectionOrderWithBudget(context.Background(), req, order, budget)
+						require.NoError(t, err)
+					}
+					if selected == nil {
+						attempt := openAIAccountLoadSelectionAttempt{selectionOrder: order, candidateCount: len(order), topK: plan.topK}
+						selected, _, _, _, err = s.finishLoadBalanceSelectionFallback(context.Background(), req, attempt, budget, openAISelectionFilterStats{})
+					}
+					if alternate {
+						require.NoError(t, err, "healthy alternate survives a late stop")
+						require.NotNil(t, selected)
+						require.Equal(t, int64(2), selected.Account.ID)
+						if selected.ReleaseFunc != nil {
+							selected.ReleaseFunc()
+						}
+					} else {
+						require.Nil(t, selected)
+						require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "late stop must retain dedicated temporary-unavailable cause")
+						require.False(t, errors.Is(err, ErrNoAvailableAccounts), "late stop cannot authorize legacy/proxy fail-open fallback")
+					}
+					if stage == "after_slot" {
+						require.Contains(t, releases, int64(1), "late rejection must release acquired slot")
+					}
+				})
+			}
 		}
 	}
+}
+
+func TestPriorityPenaltyReviewFreshnessDeadline(t *testing.T) {
+	cfg := DefaultPrioritySchedulingConfig()
+	cfg.LatencyPenaltyMode = PriorityLatencyStop
+	bad := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	signal := PrioritySchedulingSignal{Samples: 20, P90TTFTMs: 16000, LatestBadLatencyAt: &bad}
+	candidate := priorityCandidate(1, .1, 0)
+	// Usage was created at bad; persistence/history visibility arrived 8 minutes
+	// later. Read time must not restart the original ten-minute deadline.
+	visible := bad.Add(8 * time.Minute)
+	score := scorePriorityCandidate(cfg, candidate, signal, visible)
+	require.True(t, score.LatencyStopped)
+	require.Equal(t, bad.Add(10*time.Minute), *score.LatencyPenaltyUntil)
+	require.Equal(t, 2*time.Minute, score.LatencyPenaltyUntil.Sub(visible))
+	expired := scorePriorityCandidate(cfg, candidate, signal, bad.Add(10*time.Minute))
+	require.False(t, expired.LatencyStopped)
+	require.True(t, expired.LatencyRecovery)
+	require.Equal(t, *score.LatencyPenaltyUntil, *expired.LatencyPenaltyUntil, "rereading old usage never renews stop")
 }
