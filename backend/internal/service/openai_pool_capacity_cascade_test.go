@@ -4,11 +4,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Exercise the HTTP failover entry, including persistent account policy, rather
@@ -39,6 +41,72 @@ func TestPoolCapacityHTTPDoesNotCascadeIntoModelCooldown(t *testing.T) {
 			require.Zero(t, repo.tempCalls)
 			require.Zero(t, repo.setErrCalls)
 			require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-6.1-sol", false))
+		})
+	}
+}
+
+func TestPoolCapacityExplicitQuotaOutranksCapacityWording(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		headers http.Header
+	}{
+		{"quota-code", `{"error":{"type":"usage_limit_reached","code":"insufficient_quota","message":"Selected model is at capacity"}}`, nil},
+		{"quota-reset", `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","resets_at":2000000000,"message":"Selected model is at capacity"}}`, nil},
+		{"exhausted-window", `{"error":{"type":"rate_limit_error","message":"Selected model is at capacity"}}`, http.Header{
+			"X-Codex-Primary-Used-Percent": {"100"}, "X-Codex-Primary-Reset-After-Seconds": {"3600"}, "X-Codex-Primary-Window-Minutes": {"300"},
+		}},
+		{"persisted-relay-quota", `{"error":{"type":"api_error","code":"model_capacity_exhausted","message":"Selected model is at capacity"}}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &errorPolicyRepoStub{}
+			svc := &OpenAIGatewayService{rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
+			account := newTempUnschedScopeAccount("model", map[string]any{
+				"error_code": float64(429), "keywords": []any{"capacity"}, "duration_minutes": float64(30),
+			})
+			account.Credentials["pool_mode"] = true
+			failure := svc.failoverOpenAIUpstreamHTTPError(context.Background(), nil, account,
+				&http.Response{StatusCode: 429, Header: tc.headers}, []byte(tc.body), "Selected model is at capacity", "gpt-6.1-sol")
+			require.NotNil(t, failure)
+			require.False(t, failure.RequestScopedTransient)
+			require.False(t, failure.RetryableOnSameAccount, "explicit quota rule must stop retrying this account")
+			require.Len(t, repo.modelRateLimitCalls, 1)
+			require.Equal(t, "gpt-6.1-sol", repo.modelRateLimitCalls[0].scope)
+		})
+	}
+}
+
+func TestPoolCapacitySSEClassificationAndSafetyBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		payload  string
+		capacity bool
+		failover bool
+	}{
+		{"capacity-code-with-generic-message", `{"type":"response.failed","response":{"error":{"type":"server_error","code":"upstream_capacity_exhausted","message":"Temporarily unavailable"}}}`, true, true},
+		{"capacity-error", `{"type":"error","error":{"type":"rate_limit_error","message":"Selected model is at capacity"}}`, true, true},
+		{"quota", `{"type":"response.failed","response":{"error":{"type":"usage_limit_reached","code":"insufficient_quota","message":"Selected model is at capacity"}}}`, false, true},
+		{"authentication", `{"type":"response.failed","response":{"error":{"type":"authentication_error","code":"invalid_api_key","message":"Selected model is at capacity"}}}`, false, true},
+		{"safety", `{"type":"response.failed","response":{"error":{"type":"content_policy_violation","code":"content_policy_violation","message":"Selected model is at capacity"}}}`, false, false},
+		{"echoed-input", `{"type":"error","error":{"message":"invalid input"},"input":"Selected model is at capacity"}`, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, rec := newNonStreamingFailoverContext(t)
+			svc := newNonStreamingFailoverService()
+			payload := []byte(tc.payload)
+			eventType := gjson.GetBytes(payload, "type").String()
+			_, err := svc.handleSSEToJSON(newNonStreamingSSEResponse(), c, newNonStreamingFailoverAccount(),
+				sseTerminalBody(eventType, tc.payload), "gpt-6.1-sol", "gpt-6.1-sol")
+			require.Error(t, err)
+			var failure *UpstreamFailoverError
+			require.Equal(t, tc.failover, errors.As(err, &failure))
+			if failure != nil {
+				require.Equal(t, tc.capacity, failure.RequestScopedTransient)
+				require.False(t, c.Writer.Written())
+			} else {
+				require.True(t, c.Writer.Written())
+				require.NotEmpty(t, rec.Body.String())
+			}
 		})
 	}
 }

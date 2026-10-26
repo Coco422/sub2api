@@ -206,3 +206,103 @@ func TestPoolCapacityTwoLayersKeepHealthyCandidatesAndBoundAllBusy(t *testing.T)
 		}
 	}
 }
+
+func TestPoolCapacityExplicitPolicyCooldownDoesNotSlideAndRecovers(t *testing.T) {
+	for _, pool := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pool=%t", pool), func(t *testing.T) {
+			repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{
+				accounts: []service.Account{poolCapacityAccount(11, 1, pool), poolCapacityAccount(12, 2, pool)}}}
+			recovered := false
+			upstream := &poolCapacityTransport{reply: func(_ *http.Request, id int64) *http.Response {
+				if id == 11 && !recovered {
+					return poolCapacityResponse(503, "application/json", `{"error":{"message":"Service temporarily unavailable"}}`, "")
+				}
+				return poolCapacityResponse(200, "application/json", poolCapacityCompleted, "")
+			}}
+			router := newPoolCapacityRouter(t, repo, upstream)
+			require.Equal(t, 200, servePoolCapacity(router, false).Code)
+			require.Equal(t, []int64{11, 12}, upstream.hits)
+			require.Equal(t, 1, repo.modelWrites, "generic unavailable still honors explicit model policy")
+			limits := repo.accounts[0].Extra["model_rate_limits"].(map[string]any)
+			entry := limits["gpt-6.1-sol"].(map[string]any)
+			reset := entry["rate_limit_reset_at"].(string)
+			until, err := time.Parse(time.RFC3339, reset)
+			require.NoError(t, err)
+			require.WithinDuration(t, time.Now().Add(30*time.Minute), until, 2*time.Second)
+			for request := 0; request < 2; request++ {
+				require.Equal(t, 200, servePoolCapacity(router, false).Code)
+			}
+			require.Equal(t, []int64{11, 12, 12, 12}, upstream.hits)
+			require.Equal(t, 1, repo.modelWrites)
+			require.Equal(t, reset, entry["rate_limit_reset_at"], "reads must not renew the absolute cooldown")
+			// Advance the persisted mock deadline without a sleep or clearing the
+			// record: the same scheduler must admit it after expiration.
+			repo.accounts[0].Extra["model_rate_limits"] = map[string]any{"gpt-6.1-sol": map[string]any{
+				"rate_limit_reset_at": time.Now().Add(-time.Second).UTC().Format(time.RFC3339),
+				"reason":              entry["reason"],
+			}}
+			recovered = true
+			require.Equal(t, 200, servePoolCapacity(router, false).Code)
+			require.Equal(t, int64(11), upstream.hits[len(upstream.hits)-1])
+			require.Equal(t, 1, repo.modelWrites)
+		})
+	}
+}
+
+func TestPoolCapacityRealQuotaAndModelRejectionStillIsolateOneAccountModel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"quota", 429, `{"error":{"type":"usage_limit_reached","code":"insufficient_quota","message":"Rate limit exceeded: quota exhausted"}}`},
+		{"model-not-found", 404, `{"error":{"code":"model_not_found","message":"Model not found"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{
+				accounts: []service.Account{poolCapacityAccount(11, 1, true), poolCapacityAccount(12, 2, true)}}}
+			upstream := &poolCapacityTransport{reply: func(_ *http.Request, id int64) *http.Response {
+				if id == 11 {
+					return poolCapacityResponse(tc.status, "application/json", tc.body, "60")
+				}
+				return poolCapacityResponse(200, "application/json", poolCapacityCompleted, "")
+			}}
+			router := newPoolCapacityRouter(t, repo, upstream)
+			require.Equal(t, 200, servePoolCapacity(router, false).Code)
+			require.Equal(t, 1, repo.modelWrites)
+			require.Equal(t, []int64{11, 12}, upstream.hits)
+			require.Equal(t, 200, servePoolCapacity(router, false).Code)
+			require.Equal(t, []int64{11, 12, 12}, upstream.hits)
+			require.True(t, repo.accounts[0].IsSchedulable(), "other models on this account remain eligible")
+		})
+	}
+}
+
+func TestPoolCapacityTwoLayersNeverReplayAfterSemanticOutput(t *testing.T) {
+	firstRepo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{
+		accounts: []service.Account{poolCapacityAccount(11, 1, true), poolCapacityAccount(12, 2, true)}}}
+	provider := &poolCapacityTransport{reply: func(*http.Request, int64) *http.Response {
+		return poolCapacityResponse(200, "text/event-stream",
+			"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"already-visible\"}\n\n"+
+				"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"message\":\"Selected model is at capacity. Please try a different model.\"}}}\n\n", "")
+	}}
+	first := newPoolCapacityRouter(t, firstRepo, provider)
+	secondRepo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{
+		accounts: []service.Account{poolCapacityAccount(21, 1, true), poolCapacityAccount(22, 2, true)}}}
+	relay := &poolCapacityTransport{reply: func(req *http.Request, _ int64) *http.Response {
+		rec := httptest.NewRecorder()
+		forwarded := req.Clone(req.Context())
+		forwarded.URL.Path = "/v1/responses"
+		first.ServeHTTP(rec, forwarded)
+		return rec.Result()
+	}}
+	second := newPoolCapacityRouter(t, secondRepo, relay)
+	rec := servePoolCapacity(second, true)
+	require.Equal(t, 200, rec.Code, "committed SSE keeps its HTTP status")
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "already-visible"))
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "event: response.failed"))
+	require.Equal(t, []int64{11}, provider.hits)
+	require.Equal(t, []int64{21}, relay.hits)
+	require.Zero(t, firstRepo.modelWrites)
+	require.Zero(t, secondRepo.modelWrites)
+}

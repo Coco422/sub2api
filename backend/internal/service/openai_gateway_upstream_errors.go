@@ -184,6 +184,18 @@ func isOpenAIRequestScopedCapacityShed(upstreamMsg string, upstreamBody []byte) 
 // model_capacity_exhausted already denotes persisted quota in selection errors.
 const OpenAIUpstreamCapacityCode = "upstream_capacity_exhausted"
 
+func isOpenAIRequestScopedCapacityResponse(status int, headers http.Header, body []byte, message ...string) bool {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return false
+	}
+	if status == http.StatusTooManyRequests {
+		if disposition, _ := classifyOpenAIOAuth429(headers, body); disposition != openAIOAuth429Transient {
+			return false
+		}
+	}
+	return isOpenAIRequestScopedCapacityShed(firstNonEmpty(message...), body)
+}
+
 const openAIRequestScopedRetryMaxDelay = 8 * time.Second
 
 func openAIRequestScopedRetryDelay(responseHeaders http.Header, responseBody []byte) time.Duration {
@@ -379,8 +391,7 @@ func newOpenAIUpstreamFailoverError(
 	upstreamMsg string,
 	retryableOnSameAccount bool,
 ) *UpstreamFailoverError {
-	requestScopedCapacity := statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden &&
-		isOpenAIRequestScopedCapacityShed(upstreamMsg, responseBody)
+	requestScopedCapacity := isOpenAIRequestScopedCapacityResponse(statusCode, responseHeaders, responseBody, upstreamMsg)
 	failoverErr := &UpstreamFailoverError{
 		StatusCode:             statusCode,
 		ResponseBody:           responseBody,
@@ -526,7 +537,7 @@ func (e *UpstreamFailoverError) IsOpenAIRequestBodyTooLarge() bool {
 // IsOpenAICapacityShed reports whether typed client fields were derived from a
 // recognized provider overload rather than supplied by an unrelated failure.
 func (e *UpstreamFailoverError) IsOpenAICapacityShed() bool {
-	return e != nil && e.RequestScopedTransient && isOpenAIRequestScopedCapacityShed("", e.ResponseBody)
+	return e != nil && e.RequestScopedTransient && isOpenAIRequestScopedCapacityResponse(e.StatusCode, e.ResponseHeaders, e.ResponseBody)
 }
 
 func marshalOpenAIUpstreamJSON(v any) ([]byte, error) {
