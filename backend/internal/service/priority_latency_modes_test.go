@@ -435,6 +435,11 @@ func TestPriorityLatencyModesPassthroughNewTurnAndOutput(t *testing.T) {
 			}
 			if initialStop {
 				stop()
+			} else {
+				// Raw passthrough reports the terminal; response ownership is
+				// supplied by its caller. Seed that explicit precondition so
+				// the rejection test verifies preservation, not auto-binding.
+				require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(control, 0, "resp_mode_stream", account.ID, time.Hour))
 			}
 			server, done := startPassthroughHookRecordingServer(t, control, svc, account, nil)
 			defer server.Close()
