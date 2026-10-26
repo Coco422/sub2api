@@ -15,32 +15,55 @@ import (
 
 // One statement atomically inserts the event and increments its UTC hour only
 // when newly inserted. Retrying after an unknown commit outcome is safe.
-const insertTrafficSQL = `WITH inserted AS (
+const insertTrafficSQLTemplate = `WITH inserted AS (
  INSERT INTO user_traffic_events
  (event_id,user_id,api_key_id,group_id,request_id,endpoint,method,started_at,finished_at,
  upload_bytes,download_bytes,status_code,outcome,request_complete,measurement_version)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+ VALUES %s
  ON CONFLICT (event_id) DO NOTHING
  RETURNING *
 )
 INSERT INTO user_traffic_hourly(bucket_start,user_id,api_key_id,group_id,upload_bytes,download_bytes,requests)
 SELECT date_trunc('hour',started_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
- user_id,api_key_id,group_id,upload_bytes,download_bytes,1 FROM inserted
+ user_id,api_key_id,group_id,SUM(upload_bytes),SUM(download_bytes),COUNT(*) FROM inserted
+GROUP BY 1,2,3,4
+ORDER BY 2,3,4,1
 ON CONFLICT (user_id,api_key_id,group_id,bucket_start) DO UPDATE SET
  upload_bytes=user_traffic_hourly.upload_bytes+EXCLUDED.upload_bytes,
  download_bytes=user_traffic_hourly.download_bytes+EXCLUDED.download_bytes,
  requests=user_traffic_hourly.requests+EXCLUDED.requests`
 
 func (r *usageLogRepository) RecordTraffic(ctx context.Context, e service.TrafficEvent) error {
+	return r.RecordTrafficBatch(ctx, []service.TrafficEvent{e})
+}
+
+// RecordTrafficBatch commits an entire replay batch atomically. Grouping the
+// inserted rows avoids updating the same hourly row twice in one SQL statement.
+func (r *usageLogRepository) RecordTrafficBatch(ctx context.Context, events []service.TrafficEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if len(events) > 128 {
+		return errors.New("traffic batch too large")
+	}
 	if r.sql == nil {
 		return errors.New("traffic database unavailable")
 	}
-	if err := service.ValidateTrafficEvent(e); err != nil {
-		return err
+	values := make([]string, 0, len(events))
+	args := make([]any, 0, len(events)*15)
+	for _, e := range events {
+		if err := service.ValidateTrafficEvent(e); err != nil {
+			return err
+		}
+		placeholders := make([]string, 15)
+		for i := range placeholders {
+			placeholders[i] = fmt.Sprintf("$%d", len(args)+i+1)
+		}
+		values = append(values, "("+strings.Join(placeholders, ",")+")")
+		args = append(args, e.EventID, e.UserID, e.APIKeyID, e.GroupID, e.RequestID, e.Endpoint, e.Method, e.StartedAt, e.FinishedAt, e.UploadBytes, e.DownloadBytes, e.StatusCode, e.Outcome, e.RequestComplete, e.MeasurementVersion)
 	}
-	_, err := r.sql.ExecContext(ctx, insertTrafficSQL, e.EventID, e.UserID, e.APIKeyID, e.GroupID,
-		e.RequestID, e.Endpoint, e.Method, e.StartedAt, e.FinishedAt, e.UploadBytes, e.DownloadBytes,
-		e.StatusCode, e.Outcome, e.RequestComplete, e.MeasurementVersion)
+	query := fmt.Sprintf(insertTrafficSQLTemplate, strings.Join(values, ","))
+	_, err := r.sql.ExecContext(ctx, query, args...)
 	return err
 }
 
@@ -143,16 +166,33 @@ func (r *usageLogRepository) Traffic(ctx context.Context, f service.TrafficFilte
 	if f.Location != nil {
 		out.Timezone = f.Location.String()
 	}
+	if f.View != "details" {
+		if err := trafficSummary(ctx, tx, f, out); err != nil {
+			return nil, err
+		}
+	}
+	if f.View != "summary" {
+		if err := trafficDetails(ctx, tx, f, out); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func trafficSummary(ctx context.Context, tx *sql.Tx, f service.TrafficFilter, out *service.TrafficReport) error {
 	source, args := trafficSource(f)
 	rows, err := tx.QueryContext(ctx, source, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for rows.Next() {
 		var p service.TrafficPoint
 		if err := rows.Scan(&p.Bucket, &p.UploadBytes, &p.DownloadBytes, &p.Requests); err != nil {
 			_ = rows.Close()
-			return nil, err
+			return err
 		}
 		p.TotalBytes = p.UploadBytes + p.DownloadBytes
 		out.UploadBytes += p.UploadBytes
@@ -164,45 +204,57 @@ func (r *usageLogRepository) Traffic(ctx context.Context, f service.TrafficFilte
 	err = rows.Err()
 	_ = rows.Close()
 	if err != nil {
-		return nil, err
+		return err
 	}
+	scope, sinceArgs := trafficScope(f, nil)
+	var since sql.NullTime
+	if err := tx.QueryRowContext(ctx, `SELECT MIN(started_at) FROM user_traffic_events WHERE TRUE`+scope, sinceArgs...).Scan(&since); err != nil {
+		return err
+	}
+	if since.Valid {
+		out.RecordedSince = &since.Time
+	}
+	return nil
+}
+
+func trafficDetails(ctx context.Context, tx *sql.Tx, f service.TrafficFilter, out *service.TrafficReport) error {
 	scope, detailArgs := trafficScope(f, []any{f.Start, f.End})
-	detailArgs = append(detailArgs, f.PageSize+1, (f.Page-1)*f.PageSize)
-	rows, err = tx.QueryContext(ctx, `SELECT event_id,user_id,api_key_id,group_id,request_id,endpoint,method,
+	if f.Cursor != nil {
+		n := len(detailArgs)
+		scope += fmt.Sprintf(" AND (started_at,event_id) < ($%d::timestamptz,$%d::uuid)", n+1, n+2)
+		detailArgs = append(detailArgs, f.Cursor.StartedAt, f.Cursor.EventID)
+	}
+	detailArgs = append(detailArgs, f.PageSize+1)
+	pagination := fmt.Sprintf(" LIMIT $%d", len(detailArgs))
+	if f.Cursor == nil && f.Page > 1 {
+		detailArgs = append(detailArgs, (f.Page-1)*f.PageSize)
+		pagination += fmt.Sprintf(" OFFSET $%d", len(detailArgs))
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT event_id,user_id,api_key_id,group_id,request_id,endpoint,method,
  started_at,finished_at,upload_bytes,download_bytes,status_code,outcome,request_complete,measurement_version
  FROM user_traffic_events WHERE started_at >= $1 AND started_at < $2`+scope+
-		fmt.Sprintf(` ORDER BY started_at DESC,event_id DESC LIMIT $%d OFFSET $%d`, len(detailArgs)-1, len(detailArgs)), detailArgs...)
+		` ORDER BY started_at DESC,event_id DESC`+pagination, detailArgs...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for rows.Next() {
 		var e service.TrafficEvent
 		if err := rows.Scan(&e.EventID, &e.UserID, &e.APIKeyID, &e.GroupID, &e.RequestID, &e.Endpoint, &e.Method,
 			&e.StartedAt, &e.FinishedAt, &e.UploadBytes, &e.DownloadBytes, &e.StatusCode, &e.Outcome, &e.RequestComplete, &e.MeasurementVersion); err != nil {
 			_ = rows.Close()
-			return nil, err
+			return err
 		}
 		out.Items = append(out.Items, e)
 	}
 	err = rows.Err()
 	_ = rows.Close()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if len(out.Items) > f.PageSize {
 		out.HasMore = true
 		out.Items = out.Items[:f.PageSize]
+		out.NextCursor = service.EncodeTrafficCursor(out.Items[len(out.Items)-1])
 	}
-	scope, sinceArgs := trafficScope(f, nil)
-	var since sql.NullTime
-	if err := tx.QueryRowContext(ctx, `SELECT MIN(started_at) FROM user_traffic_events WHERE TRUE`+scope, sinceArgs...).Scan(&since); err != nil {
-		return nil, err
-	}
-	if since.Valid {
-		out.RecordedSince = &since.Time
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return nil
 }

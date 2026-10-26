@@ -1,4 +1,5 @@
 export default {
+  loadingRecords: '正在加载请求明细…', recordsFailed: '请求明细加载失败，请重试。',
   queueSummary: '内存排队 {queued}/{capacity} 条 · 处理中 {processing} 条 · 本次启动后丢弃 {dropped} 条',
   storageUnavailable: '流量统计存储暂不可用，主业务继续运行；统计可能缺失。',
   trendScopes: { hour: '每柱为该小时上传与下载流量之和，各小时独立统计，不逐时累计。', day: '每柱为该天上传与下载流量之和，各天独立统计，不逐日累计。', month: '每柱为该月上传与下载流量之和，各月独立统计，不逐月累计。' },

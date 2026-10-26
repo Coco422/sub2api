@@ -1,4 +1,5 @@
 export default {
+  loadingRecords: 'Loading request details…', recordsFailed: 'Could not load request details. Please retry.',
   queueSummary: 'Memory queue: {queued}/{capacity} · Processing: {processing} · Dropped since restart: {dropped}',
   storageUnavailable: 'Traffic statistics storage is unavailable. Business requests continue; statistics may be incomplete.',
   trendScopes: { hour: 'Each bar shows upload plus download within that hour. Hours are independent, not cumulative.', day: 'Each bar shows upload plus download within that day. Days are independent, not cumulative.', month: 'Each bar shows upload plus download within that month. Months are independent, not cumulative.' },

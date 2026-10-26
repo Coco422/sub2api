@@ -43,7 +43,7 @@ func (h *UsageHandler) TrafficHealth(c *gin.Context) {
 }
 
 func (h *UsageHandler) ConfigureTrafficDelivery(resolveDir func() string) (func(), error) {
-	d, err := service.NewTrafficDeliveryResolved(resolveDir, h.usageService.RecordTraffic)
+	d, err := service.NewTrafficDeliveryBatchedResolved(resolveDir, h.usageService.RecordTraffic, h.usageService.RecordTrafficBatch)
 	if err != nil {
 		return nil, err
 	}

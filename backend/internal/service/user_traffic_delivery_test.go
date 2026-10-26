@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -396,4 +397,74 @@ func BenchmarkTrafficRecordNonblocking(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestTrafficDeliveryBatchRetryAndPermanentIsolation(t *testing.T) {
+	d := stoppedTrafficDelivery(t)
+	bad, good := trafficDeliveryFixture(), trafficDeliveryFixture()
+	require.NoError(t, d.stage(bad))
+	require.NoError(t, d.stage(good))
+	calls := 0
+	d.writeBatch = func(_ context.Context, events []TrafficEvent) error {
+		calls++
+		require.Len(t, events, 2)
+		return errors.New("temporary database outage")
+	}
+	d.write = func(context.Context, TrafficEvent) error { t.Fatal("retryable batch must not fan out"); return nil }
+	require.Error(t, d.replay(context.Background()))
+	require.EqualValues(t, 2, d.pendingFiles)
+	require.Equal(t, 1, calls)
+	d.writeBatch = func(context.Context, []TrafficEvent) error { return &pq.Error{Code: "23514"} }
+	d.write = func(_ context.Context, e TrafficEvent) error {
+		if e.EventID == bad.EventID {
+			return &pq.Error{Code: "23514"}
+		}
+		return nil
+	}
+	require.NoError(t, d.replay(context.Background()))
+	require.Zero(t, d.pendingFiles)
+	require.EqualValues(t, 1, d.delivered.Load())
+	require.FileExists(t, filepath.Join(d.dir, bad.EventID+".json.invalid"))
+}
+
+func TestTrafficDeliveryBatchRecoveryRetainsFilesUntilCommit(t *testing.T) {
+	d := stoppedTrafficDelivery(t)
+	for range 65 {
+		require.NoError(t, d.stage(trafficDeliveryFixture()))
+	}
+	var sizes []int
+	d.writeBatch = func(_ context.Context, events []TrafficEvent) error {
+		sizes = append(sizes, len(events))
+		for _, e := range events {
+			require.FileExists(t, filepath.Join(d.dir, e.EventID+".json"))
+		}
+		return nil
+	}
+	for range 3 {
+		require.NoError(t, d.replay(context.Background()))
+	}
+	require.Equal(t, []int{32, 32, 1}, sizes)
+	require.Zero(t, d.pendingFiles)
+	require.EqualValues(t, 65, d.delivered.Load())
+}
+
+func TestTrafficDeliveryWakesWithoutPollingAndRecoversBacklog(t *testing.T) {
+	dir := t.TempDir()
+	seed := stoppedTrafficDelivery(t)
+	seed.dir = dir
+	for range 128 {
+		require.NoError(t, seed.stage(trafficDeliveryFixture()))
+	}
+	var delivered atomic.Int64
+	d, err := NewTrafficDeliveryBatchedResolved(func() string { return dir }, func(context.Context, TrafficEvent) error { t.Error("unexpected single write"); return nil }, func(_ context.Context, events []TrafficEvent) error { delivered.Add(int64(len(events))); return nil })
+	require.NoError(t, err)
+	defer d.Stop()
+	for range 64 {
+		d.RecordTraffic(trafficDeliveryFixture())
+	}
+	require.Eventually(t, func() bool { return delivered.Load() == 192 }, 5*time.Second, 10*time.Millisecond)
+	h, err := d.Health(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, h.DroppedEvents)
+	require.Eventually(t, func() bool { h, _ := d.Health(context.Background()); return h.PendingEvents == 0 }, time.Second, time.Millisecond)
 }

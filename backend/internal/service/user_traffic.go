@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -77,6 +79,37 @@ type TrafficFilter struct {
 	Period, Granularity string
 	Page, PageSize      int
 	Location            *time.Location
+	View                string // Empty/all preserves the original combined response.
+	Cursor              *TrafficCursor
+}
+
+// A cursor is a position, never an authorization token. Queries always retain
+// the authenticated user and selected key scope, including when a cursor is used.
+type TrafficCursor struct {
+	StartedAt time.Time `json:"t"`
+	EventID   string    `json:"id"`
+}
+
+func EncodeTrafficCursor(event TrafficEvent) string {
+	raw, _ := json.Marshal(TrafficCursor{StartedAt: event.StartedAt, EventID: event.EventID})
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func ParseTrafficCursor(value string) (*TrafficCursor, error) {
+	if len(value) > 256 {
+		return nil, errors.New("invalid traffic cursor")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	var cursor TrafficCursor
+	if err != nil || json.Unmarshal(raw, &cursor) != nil || cursor.StartedAt.IsZero() {
+		return nil, errors.New("invalid traffic cursor")
+	}
+	id, err := uuid.Parse(cursor.EventID)
+	if err != nil {
+		return nil, errors.New("invalid traffic cursor")
+	}
+	cursor.EventID = id.String()
+	return &cursor, nil
 }
 
 type TrafficTotals struct {
@@ -96,6 +129,7 @@ type TrafficReport struct {
 	Items              []TrafficEvent `json:"items"`
 	Trend              []TrafficPoint `json:"trend"`
 	HasMore            bool           `json:"has_more"`
+	NextCursor         string         `json:"next_cursor,omitempty"`
 	Page               int            `json:"page"`
 	PageSize           int            `json:"page_size"`
 	Period             string         `json:"period"`
@@ -248,6 +282,16 @@ func (s *UsageService) RecordTraffic(ctx context.Context, event TrafficEvent) er
 		return errors.New("traffic repository unavailable")
 	}
 	return r.RecordTraffic(ctx, event)
+}
+
+func (s *UsageService) RecordTrafficBatch(ctx context.Context, events []TrafficEvent) error {
+	r, ok := s.usageRepo.(interface {
+		RecordTrafficBatch(context.Context, []TrafficEvent) error
+	})
+	if !ok {
+		return errors.New("traffic batch repository unavailable")
+	}
+	return r.RecordTrafficBatch(ctx, events)
 }
 
 func (s *UsageService) Traffic(ctx context.Context, filter TrafficFilter) (*TrafficReport, error) {

@@ -34,6 +34,18 @@ func Parse(c *gin.Context, userID int64, admin bool) (service.TrafficFilter, boo
 		return f, false
 	}
 	f.UserID = userID
+	f.View = c.DefaultQuery("view", "all")
+	if f.View != "all" && f.View != "summary" && f.View != "details" {
+		response.BadRequest(c, "Invalid view")
+		return f, false
+	}
+	if raw := c.Query("cursor"); raw != "" {
+		f.Cursor, err = service.ParseTrafficCursor(raw)
+		if err != nil || f.Cursor.StartedAt.Before(f.Start) || !f.Cursor.StartedAt.Before(f.End) || f.View == "summary" {
+			response.BadRequest(c, "Invalid cursor")
+			return f, false
+		}
+	}
 	fields := []struct {
 		name   string
 		target *int64
@@ -67,6 +79,12 @@ func Parse(c *gin.Context, userID int64, admin bool) (service.TrafficFilter, boo
 			}
 			*field.target = n
 		}
+	}
+	// Old clients may continue using page/offset. Cursor clients must not mix
+	// the two mechanisms, otherwise their page could silently skip records.
+	if f.Cursor != nil && f.Page != 1 {
+		response.BadRequest(c, "cursor cannot be combined with page")
+		return f, false
 	}
 	return f, true
 }

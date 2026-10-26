@@ -55,27 +55,28 @@
       <span v-if="report" class="text-gray-500 dark:text-gray-400">{{ rangeLabel }} · {{ report.timezone }}</span>
     </div>
     <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">{{ error }}</p>
-    <p v-if="loading" role="status" class="py-8 text-center text-sm text-gray-500">{{ t('traffic.loading') }}</p>
-    <template v-else-if="report">
+    <p v-if="detailsError" role="alert" class="text-sm text-red-700 dark:text-red-300">{{ detailsError }} <button type="button" class="underline" @click="loadDetails(requestedPage)">{{ t('common.refresh') }}</button></p>
+    <p v-if="summaryLoading" role="status" class="py-8 text-center text-sm text-gray-500">{{ t('traffic.loading') }}</p>
+    <template v-if="summary">
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <div v-for="card in cards" :key="card.label" class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
           <p class="text-sm text-gray-500 dark:text-gray-400">{{ card.label }}</p>
           <p class="mt-2 text-xl font-semibold tabular-nums text-gray-900 dark:text-white" :title="card.raw">{{ card.value }}</p>
         </div>
       </div>
-      <p class="text-xs text-gray-500 dark:text-gray-400">{{ report.recorded_since ? t('traffic.since', { time: displayTime(report.recorded_since) }) : t('traffic.notRecorded') }} {{ t('traffic.history') }}</p>
-      <div v-if="report.requests" class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+      <p class="text-xs text-gray-500 dark:text-gray-400">{{ summary.recorded_since ? t('traffic.since', { time: displayTime(summary.recorded_since) }) : t('traffic.notRecorded') }} {{ t('traffic.history') }}</p>
+      <div v-if="summary.requests" class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
         <h3 class="mb-1 text-sm font-medium">{{ t('traffic.trend') }}</h3>
         <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">{{ t(`traffic.trendScopes.${trendBucket}`) }}</p>
         <div class="h-64" role="img" :aria-label="t('traffic.trend')"><Bar :data="chartData" :options="chartOptions" /></div>
       </div>
-      <details v-if="report.requests" class="overflow-x-auto rounded-xl border border-gray-200 dark:border-dark-700">
+      <details v-if="summary.requests" class="overflow-x-auto rounded-xl border border-gray-200 dark:border-dark-700">
         <summary class="cursor-pointer px-4 py-3 text-sm font-medium">{{ t('traffic.trendDetails') }}</summary>
         <table class="w-full text-left text-sm">
           <caption class="px-4 py-3 text-left font-medium">{{ t('traffic.trend') }} · {{ t('traffic.upload') }} / {{ t('traffic.download') }}</caption>
           <thead class="bg-gray-50 text-gray-500 dark:bg-dark-800"><tr><th class="px-4 py-2">{{ t('traffic.bucket') }}</th><th class="min-w-40 px-4 py-2">{{ t('traffic.upload') }}</th><th class="min-w-40 px-4 py-2">{{ t('traffic.download') }}</th><th class="px-4 py-2">{{ t('traffic.total') }}</th></tr></thead>
           <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
-            <tr v-for="point in report.trend" :key="point.bucket">
+            <tr v-for="point in summary.trend" :key="point.bucket">
               <td class="whitespace-nowrap px-4 py-2 font-mono text-xs">{{ point.bucket }}</td>
               <td v-for="direction in directions" :key="direction" class="px-4 py-2 tabular-nums" :title="`${point[direction]} B`">
                 {{ bytes(point[direction]) }}
@@ -86,12 +87,15 @@
           </tbody>
         </table>
       </details>
+    </template>
+    <p v-if="detailsLoading" role="status" class="py-8 text-center text-sm text-gray-500">{{ t('traffic.loadingRecords') }}</p>
+    <template v-if="details && !detailsLoading">
       <div class="overflow-x-auto rounded-xl border border-gray-200 dark:border-dark-700">
         <table class="w-full text-left text-sm">
           <caption class="px-4 py-3 text-left font-medium">{{ t('traffic.records') }}</caption>
           <thead class="bg-gray-50 text-gray-500 dark:bg-dark-800"><tr><th class="px-4 py-2">{{ t('usage.time') }}</th><th v-if="admin" class="px-4 py-2">{{ t('traffic.user') }}</th><th class="px-4 py-2">API Key</th><th class="px-4 py-2">{{ t('traffic.endpoint') }}</th><th class="px-4 py-2">{{ t('traffic.upload') }}</th><th class="px-4 py-2">{{ t('traffic.download') }}</th><th class="px-4 py-2">{{ t('traffic.result') }}</th></tr></thead>
           <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
-            <tr v-for="item in report.items" :key="item.event_id">
+            <tr v-for="item in details.items" :key="item.event_id">
               <td class="whitespace-nowrap px-4 py-3 text-xs">{{ displayTime(item.started_at) }}</td>
               <td v-if="admin" class="px-4 py-3">#{{ item.user_id }}</td>
               <td class="px-4 py-3">#{{ item.api_key_id }}</td>
@@ -100,13 +104,13 @@
               <td class="whitespace-nowrap px-4 py-3 tabular-nums" :title="`${item.download_bytes} B`">{{ bytes(item.download_bytes) }}</td>
               <td class="whitespace-nowrap px-4 py-3 text-xs">HTTP {{ item.status_code }}<span class="block" :class="item.outcome === 'completed' ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'">{{ t(`traffic.outcomes.${item.outcome}`) }}</span></td>
             </tr>
-            <tr v-if="!report.items.length"><td :colspan="admin ? 7 : 6" class="p-8 text-center text-gray-500">{{ t('traffic.empty') }}</td></tr>
+            <tr v-if="!details.items.length"><td :colspan="admin ? 7 : 6" class="p-8 text-center text-gray-500">{{ t('traffic.empty') }}</td></tr>
           </tbody>
         </table>
       </div>
       <div class="flex items-center justify-between text-sm">
         <span>{{ t('traffic.page', { page }) }}</span>
-        <div class="flex gap-2"><button type="button" class="btn btn-secondary" :disabled="page <= 1" @click="page--">{{ t('traffic.previous') }}</button><button type="button" class="btn btn-secondary" :disabled="!report.has_more || page >= 10000" @click="page++">{{ t('traffic.next') }}</button></div>
+        <div class="flex gap-2"><button type="button" class="btn btn-secondary" :disabled="page <= 1 || detailsLoading" @click="previousPage">{{ t('traffic.previous') }}</button><button type="button" class="btn btn-secondary" :disabled="!details?.next_cursor || detailsLoading" @click="nextPage">{{ t('traffic.next') }}</button></div>
       </div>
     </template>
   </section>
@@ -130,11 +134,18 @@ const period = ref<TrafficPeriod>('month'), date = ref(''), page = ref(1)
 const searchFilters = ref<{ user_id?: number; api_key_id?: number | null }>({ api_key_id: null })
 const searchResetKey = ref(0)
 const filters = ref<{ user_id?: number; api_key_id?: number }>({})
-const report = ref<TrafficReport | null>(null), loading = ref(false), error = ref('')
+const summary = ref<TrafficReport | null>(null), details = ref<TrafficReport | null>(null)
+const report = computed(() => details.value || summary.value)
+const summaryLoading = ref(false), detailsLoading = ref(false), error = ref(''), detailsError = ref('')
+const loading = computed(() => summaryLoading.value || detailsLoading.value)
+let cursors: Array<string | undefined> = [undefined]
+let queryDate: string | undefined
+const requestedPage = ref(1)
 const health = ref<TrafficDeliveryHealth | null>(null), healthError = ref(false)
 const ownKeyResults = ref<TrafficKeyOption[]>([]), ownKeyQuery = ref(''), ownKeyLoading = ref(false), ownKeyError = ref(false), ownKeyLabel = ref('')
 let keyController: AbortController | undefined
 let controller: AbortController | undefined
+let detailsController: AbortController | undefined
 const ownKeyOptions = computed<SelectOption[]>(() => {
   const options = new Map<string | number | boolean | null, SelectOption>()
   if (!ownKeyQuery.value) for (const option of props.apiKeyOptions) options.set(option.value, option)
@@ -165,19 +176,19 @@ const siteDate = (value: string | Date) => {
 const currentDate = computed(() => report.value ? siteDate(new Date()) : '')
 const displayTime = (value: string) => new Intl.DateTimeFormat(undefined, { timeZone: report.value?.timezone || 'UTC', dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value))
 const rangeLabel = computed(() => report.value ? `${siteDate(report.value.start)} — ${siteDate(new Date(new Date(report.value.end).getTime() - 1))}` : '')
-const cards = computed(() => report.value ? [
-  { label: t('traffic.upload'), value: bytes(report.value.upload_bytes), raw: `${report.value.upload_bytes} B` },
-  { label: t('traffic.download'), value: bytes(report.value.download_bytes), raw: `${report.value.download_bytes} B` },
-  { label: t('traffic.total'), value: bytes(report.value.total_bytes), raw: `${report.value.total_bytes} B` },
-  { label: t('traffic.requests'), value: report.value.requests.toLocaleString(), raw: String(report.value.requests) }
+const cards = computed(() => summary.value ? [
+  { label: t('traffic.upload'), value: bytes(summary.value.upload_bytes), raw: `${summary.value.upload_bytes} B` },
+  { label: t('traffic.download'), value: bytes(summary.value.download_bytes), raw: `${summary.value.download_bytes} B` },
+  { label: t('traffic.total'), value: bytes(summary.value.total_bytes), raw: `${summary.value.total_bytes} B` },
+  { label: t('traffic.requests'), value: summary.value.requests.toLocaleString(), raw: String(summary.value.requests) }
 ] : [])
-const maxBytes = computed(() => Math.max(1, ...(report.value?.trend.flatMap(p => [p.upload_bytes, p.download_bytes]) || [])))
-const trendBucket = computed(() => report.value?.period === 'day' ? 'hour' : report.value?.period === 'year' ? 'month' : 'day')
+const maxBytes = computed(() => Math.max(1, ...(summary.value?.trend.flatMap(p => [p.upload_bytes, p.download_bytes]) || [])))
+const trendBucket = computed(() => summary.value?.period === 'day' ? 'hour' : summary.value?.period === 'year' ? 'month' : 'day')
 const chartData = computed(() => ({
-  labels: report.value?.trend.map(point => point.bucket) || [],
+  labels: summary.value?.trend.map(point => point.bucket) || [],
   datasets: [
-    { label: t('traffic.upload'), data: report.value?.trend.map(point => point.upload_bytes) || [], backgroundColor: '#0ea5e9', borderRadius: 3 },
-    { label: t('traffic.download'), data: report.value?.trend.map(point => point.download_bytes) || [], backgroundColor: '#10b981', borderRadius: 3 }
+    { label: t('traffic.upload'), data: summary.value?.trend.map(point => point.upload_bytes) || [], backgroundColor: '#0ea5e9', borderRadius: 3 },
+    { label: t('traffic.download'), data: summary.value?.trend.map(point => point.download_bytes) || [], backgroundColor: '#10b981', borderRadius: 3 }
   ]
 }))
 const chartOptions = computed<ChartOptions<'bar'>>(() => ({
@@ -202,19 +213,54 @@ function shift(direction: number) {
   else anchor.setUTCDate(anchor.getUTCDate() + direction * (period.value === 'week' ? 7 : 1))
   date.value = anchor.toISOString().slice(0, 10)
 }
-async function load() {
-  controller?.abort()
-  const current = new AbortController(); controller = current
-  loading.value = true; error.value = ''; report.value = null
-  if (props.admin) void loadHealth(current)
+function nextPage() {
+  if (!details.value?.next_cursor || detailsLoading.value) return
+  cursors[page.value] = details.value.next_cursor
+  cursors.length = page.value + 1
+  void loadDetails(page.value + 1)
+}
+function previousPage() { if (page.value > 1 && !detailsLoading.value) void loadDetails(page.value - 1) }
+async function loadDetails(targetPage: number) {
+  detailsController?.abort()
+  const current = new AbortController(); detailsController = current
+  requestedPage.value = targetPage
+  detailsLoading.value = true; detailsError.value = ''; details.value = null
   try {
-    const result = await getTraffic(props.admin, { period: period.value, date: date.value || undefined, page: page.value, page_size: 20, ...filters.value }, current.signal)
-    if (!current.signal.aborted) report.value = result
+    const result = await getTraffic(props.admin, { period: period.value, date: queryDate, view: 'details', cursor: cursors[targetPage - 1], page_size: 20, ...filters.value }, current.signal)
+    if (!current.signal.aborted) {
+      details.value = result; page.value = targetPage
+      // Keep subsequent pages in the same calendar period across midnight.
+      queryDate = siteDate(result.start)
+      if (summary.value && summary.value.start !== result.start && controller) void loadSummary(controller)
+    }
+  } catch {
+    if (!current.signal.aborted) detailsError.value = t('traffic.recordsFailed')
+  } finally { if (!current.signal.aborted) detailsLoading.value = false }
+}
+async function load() {
+  controller?.abort(); detailsController?.abort()
+  const current = new AbortController(); controller = current
+  cursors = [undefined]; page.value = 1; queryDate = date.value || undefined
+  summaryLoading.value = true; error.value = ''; summary.value = null
+  if (props.admin) void loadHealth(current)
+  // Details remain usable while the more expensive summary is loading/failing.
+  void loadDetails(1)
+  void loadSummary(current)
+}
+async function loadSummary(current: AbortController) {
+  summaryLoading.value = true; summary.value = null; error.value = ''
+  try {
+    let result = await getTraffic(props.admin, { period: period.value, date: queryDate, view: 'summary', page_size: 20, ...filters.value }, current.signal)
+    if (current.signal.aborted) return
+    // Initial requests may straddle midnight. Align the summary with the
+    // details' resolved site-calendar period rather than mixing two periods.
+    if (details.value && details.value.start !== result.start) {
+      result = await getTraffic(props.admin, { period: period.value, date: queryDate, view: 'summary', page_size: 20, ...filters.value }, current.signal)
+    }
+    if (!current.signal.aborted) summary.value = result
   } catch {
     if (!current.signal.aborted) error.value = t('traffic.failed')
-  } finally {
-    if (!current.signal.aborted) loading.value = false
-  }
+  } finally { if (!current.signal.aborted) summaryLoading.value = false }
 }
 async function loadHealth(current: AbortController) {
   try {
@@ -224,9 +270,8 @@ async function loadHealth(current: AbortController) {
     if (!current.signal.aborted) { health.value = null; healthError.value = true }
   }
 }
-watch([period, date, filters], () => { if (page.value !== 1) page.value = 1; else void load() }, { deep: true })
-watch(page, () => { void load() })
+watch([period, date, filters], () => { void load() }, { deep: true })
 void load()
 if (!props.admin) void searchOwnKeys()
-onUnmounted(() => { controller?.abort(); keyController?.abort() })
+onUnmounted(() => { controller?.abort(); detailsController?.abort(); keyController?.abort() })
 </script>

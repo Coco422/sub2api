@@ -17,7 +17,7 @@ vi.mock('vue-chartjs', () => ({ Bar: { name: 'Bar', props: ['data', 'options'], 
 const fixture = (): TrafficReport => ({
   upload_bytes: 1024, download_bytes: 2048, total_bytes: 3072, requests: 1,
   period: 'month', start: '2026-10-01T00:00:00+08:00', end: '2026-11-01T00:00:00+08:00',
-  timezone: 'Asia/Shanghai', page: 1, page_size: 20, has_more: true,
+  timezone: 'Asia/Shanghai', page: 1, page_size: 20, has_more: true, next_cursor: 'cursor-page-2',
   recorded_since: '2026-10-25T01:00:00+08:00', measurement_version: 1,
   trend: [{ bucket: '2026-10-25', upload_bytes: 1024, download_bytes: 2048, total_bytes: 3072, requests: 1 }],
   items: [{ event_id: 'event-1', user_id: 7, api_key_id: 8, group_id: 9, request_id: 'request-1',
@@ -51,7 +51,7 @@ describe('TrafficPanel', () => {
   })
   it('renders traffic independently of token usage, with scope and partial results', async () => {
     const wrapper = render(); await flushPromises()
-    expect(getTraffic).toHaveBeenCalledWith(false, expect.objectContaining({ period: 'month', page: 1 }), expect.any(AbortSignal))
+    expect(getTraffic).toHaveBeenCalledWith(false, expect.objectContaining({ period: 'month', view: 'summary' }), expect.any(AbortSignal))
     expect(wrapper.text()).toContain('3.00 KiB')
     expect(wrapper.text()).toContain('/v1/messages')
     expect(wrapper.text()).toContain('traffic.scope')
@@ -75,13 +75,13 @@ describe('TrafficPanel', () => {
     expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ user_id: 7, api_key_id: 8 }), expect.any(AbortSignal))
     const nextPage = wrapper.findAll('button').find(b => b.text() === 'traffic.next')!
     await nextPage.trigger('click'); await flushPromises()
-    expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ page: 2 }), expect.any(AbortSignal))
+    expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ view: 'details', cursor: 'cursor-page-2', date: '2026-10-01' }), expect.any(AbortSignal))
     await wrapper.get('#traffic-period').setValue('year'); await flushPromises()
-    expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ period: 'year', page: 1 }), expect.any(AbortSignal))
+    expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ period: 'year', view: 'summary' }), expect.any(AbortSignal))
     await wrapper.findAll('button').find(b => b.text() === 'traffic.previousPeriod')!.trigger('click'); await flushPromises()
     expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ date: '2025-10-01' }), expect.any(AbortSignal))
     await wrapper.findAll('button').find(b => b.text() === 'common.reset')!.trigger('click'); await flushPromises()
-    expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ period: 'month', page: 1 }), expect.any(AbortSignal))
+    expect(getTraffic).toHaveBeenLastCalledWith(true, expect.objectContaining({ period: 'month', view: 'summary' }), expect.any(AbortSignal))
     expect(getTraffic.mock.lastCall?.[1]).not.toHaveProperty('user_id')
     expect(getTraffic.mock.lastCall?.[1]).not.toHaveProperty('api_key_id')
     expect(wrapper.get('input[placeholder="admin.usage.searchUserPlaceholder"]').element).toHaveProperty('value', '')
@@ -98,7 +98,7 @@ describe('TrafficPanel', () => {
     await vi.advanceTimersByTimeAsync(300); await flushPromises()
     expect(wrapper.findAll('[role="option"]').map(option => option.text())).toEqual(['usage.allApiKeys', 'Production key'])
     await wrapper.findAll('[role="option"]').find(option => option.text() === 'Production key')!.trigger('click'); await flushPromises()
-    expect(getTraffic).toHaveBeenLastCalledWith(false, expect.objectContaining({ api_key_id: 8, page: 1 }), expect.any(AbortSignal))
+    expect(getTraffic).toHaveBeenLastCalledWith(false, expect.objectContaining({ api_key_id: 8, view: 'summary' }), expect.any(AbortSignal))
     expect(getTraffic.mock.lastCall?.[1]).not.toHaveProperty('user_id')
     await wrapper.get('#traffic-key').trigger('click')
     await wrapper.findAll('[role="option"]').find(option => option.text() === 'usage.allApiKeys')!.trigger('click'); await flushPromises()
@@ -196,9 +196,9 @@ describe('TrafficPanel', () => {
     const wrapper = render(); await flushPromises()
     getTraffic.mockRejectedValueOnce(new Error('unavailable'))
     await wrapper.findAll('button').find(b => b.text() === 'common.refresh')!.trigger('click'); await flushPromises()
-    expect(wrapper.get('[role="alert"]').text()).toContain('traffic.failed')
+    expect(wrapper.get('[role="alert"]').text()).toContain('traffic.recordsFailed')
     expect(wrapper.text()).not.toContain('/v1/messages')
-    getTraffic.mockResolvedValueOnce({ ...fixture(), items: [], trend: [], recorded_since: null, requests: 0 })
+    getTraffic.mockResolvedValue({ ...fixture(), items: [], trend: [], recorded_since: null, requests: 0 })
     await wrapper.findAll('button').find(b => b.text() === 'common.refresh')!.trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('traffic.notRecorded')
     expect(wrapper.text()).toContain('traffic.history')
@@ -215,4 +215,56 @@ describe('TrafficPanel', () => {
     wrapper.unmount()
     expect((getTraffic.mock.lastCall![2] as AbortSignal).aborted).toBe(true)
   })
+  it('paginates only details, retains totals, and reuses cursors when going back', async () => {
+    const wrapper = render(); await flushPromises()
+    getTraffic.mockClear()
+    const click = async (label: string) => { await wrapper.findAll('button').find(b => b.text() === label)!.trigger('click'); await flushPromises() }
+    await click('traffic.next')
+    expect(getTraffic).toHaveBeenCalledTimes(1)
+    expect(getTraffic.mock.lastCall?.[1]).toMatchObject({ view: 'details', cursor: 'cursor-page-2' })
+    expect(getTraffic.mock.lastCall?.[1]).not.toHaveProperty('page')
+    expect(wrapper.text()).toContain('3.00 KiB')
+    await click('traffic.previous')
+    expect(getTraffic.mock.lastCall?.[1]).toMatchObject({ view: 'details', cursor: undefined })
+    await click('traffic.next')
+    await wrapper.get('#traffic-period').setValue('day'); await flushPromises()
+    const detailCalls = getTraffic.mock.calls.filter(call => call[1].view === 'details')
+    expect(detailCalls.at(-1)?.[1].cursor).toBeUndefined()
+  })
+  it('keeps details usable while summary is slow or fails', async () => {
+    let rejectSummary!: (error: Error) => void
+    getTraffic.mockImplementation((_admin, query) => query.view === 'summary'
+      ? new Promise((_resolve, reject) => { rejectSummary = reject }) : Promise.resolve(fixture()))
+    const wrapper = render(); await flushPromises()
+    expect(wrapper.text()).toContain('/v1/messages')
+    await wrapper.findAll('button').find(b => b.text() === 'traffic.next')!.trigger('click'); await flushPromises()
+    expect(getTraffic.mock.lastCall?.[1]).toMatchObject({ view: 'details', cursor: 'cursor-page-2' })
+    rejectSummary(new Error('summary timeout')); await flushPromises()
+    expect(wrapper.text()).toContain('traffic.failed')
+    expect(wrapper.text()).toContain('/v1/messages')
+  })
+  it('retries a failed next page with the same cursor and preserves the summary', async () => {
+    const wrapper = render(); await flushPromises()
+    getTraffic.mockRejectedValueOnce(new Error('details timeout'))
+    await wrapper.findAll('button').find(b => b.text() === 'traffic.next')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('traffic.recordsFailed')
+    expect(wrapper.text()).toContain('3.00 KiB')
+    expect(wrapper.text()).not.toContain('/v1/messages')
+    await wrapper.get('[role="alert"] button').trigger('click'); await flushPromises()
+    expect(getTraffic.mock.lastCall?.[1]).toMatchObject({ view: 'details', cursor: 'cursor-page-2' })
+    expect(wrapper.text()).not.toContain('traffic.recordsFailed')
+    expect(wrapper.text()).toContain('/v1/messages')
+  })
+  it('aligns independently loaded periods when the first requests straddle midnight', async () => {
+    let resolveDetails!: (data: TrafficReport) => void
+    getTraffic.mockImplementationOnce(() => new Promise(resolve => { resolveDetails = resolve }))
+    const wrapper = render(); await flushPromises()
+    const november = { ...fixture(), start: '2026-11-01T00:00:00+08:00', end: '2026-12-01T00:00:00+08:00' }
+    getTraffic.mockResolvedValue(november)
+    resolveDetails(november); await flushPromises()
+    expect(getTraffic.mock.lastCall?.[1]).toMatchObject({ view: 'summary', date: '2026-11-01' })
+    expect(wrapper.text()).toContain('2026-11-01')
+    expect(wrapper.text()).not.toContain('2026-10-01 —')
+  })
+
 })

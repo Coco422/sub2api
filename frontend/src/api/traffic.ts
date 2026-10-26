@@ -28,6 +28,7 @@ export interface TrafficReport extends TrafficTotals {
   items: TrafficEvent[]
   trend: (TrafficTotals & { bucket: string })[]
   has_more: boolean
+  next_cursor?: string
   page: number
   page_size: number
   period: TrafficPeriod
@@ -42,8 +43,10 @@ export interface TrafficQuery {
   date?: string
   user_id?: number
   api_key_id?: number
-  page: number
+  page?: number
   page_size: number
+  cursor?: string
+  view?: 'all' | 'summary' | 'details'
 }
 export interface TrafficKeyOption { id: number; name: string; deleted: boolean }
 export interface TrafficDeliveryHealth {

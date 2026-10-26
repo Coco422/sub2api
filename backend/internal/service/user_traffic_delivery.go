@@ -35,6 +35,8 @@ type TrafficDelivery struct {
 	dir                 string // Resolved and used only by the worker, never the request path.
 	resolveDir          func() string
 	write               func(context.Context, TrafficEvent) error
+	writeBatch          func(context.Context, []TrafficEvent) error
+	wake                chan struct{}
 	queue               chan TrafficEvent
 	gate                sync.RWMutex // TryRLock on producers; only final worker drain takes Lock.
 	stopping            atomic.Bool
@@ -77,7 +79,8 @@ type trafficDeliveryOptions struct {
 	queueCapacity int
 	stopBudget    time.Duration
 	// A storage seam lets regression tests block real worker I/O deterministically.
-	stage func(TrafficEvent) error
+	stage      func(TrafficEvent) error
+	writeBatch func(context.Context, []TrafficEvent) error
 }
 
 func NewTrafficDelivery(dir string, write func(context.Context, TrafficEvent) error) (*TrafficDelivery, error) {
@@ -90,11 +93,22 @@ func NewTrafficDeliveryResolved(resolveDir func() string, write func(context.Con
 	return newTrafficDelivery(resolveDir, write, trafficDeliveryOptions{queueCapacity: trafficQueueCapacity, stopBudget: trafficStopBudget})
 }
 
+// The spool format remains one event per file, so pending records survive
+// upgrades and rollback. Only the database handoff is batched.
+func NewTrafficDeliveryBatchedResolved(resolveDir func() string, write func(context.Context, TrafficEvent) error, batch func(context.Context, []TrafficEvent) error) (*TrafficDelivery, error) {
+	if batch == nil {
+		return nil, errors.New("missing traffic batch writer")
+	}
+	return newTrafficDelivery(resolveDir, write, trafficDeliveryOptions{queueCapacity: trafficQueueCapacity, stopBudget: trafficStopBudget, writeBatch: batch})
+}
+
 func newTrafficDelivery(resolveDir func() string, write func(context.Context, TrafficEvent) error, options trafficDeliveryOptions) (*TrafficDelivery, error) {
 	if resolveDir == nil || write == nil || options.queueCapacity <= 0 || options.stopBudget <= 0 {
 		return nil, errors.New("invalid traffic delivery configuration")
 	}
 	d := &TrafficDelivery{resolveDir: resolveDir, write: write, queue: make(chan TrafficEvent, options.queueCapacity), stop: make(chan struct{}), done: make(chan struct{}), stopBudget: options.stopBudget, maxSpoolFiles: trafficMaxSpoolFiles, maxSpoolBytes: trafficMaxSpoolBytes}
+	d.writeBatch = options.writeBatch
+	d.wake = make(chan struct{}, 1)
 	d.stageEvent = options.stage
 	if d.stageEvent == nil {
 		d.stageEvent = d.stage
@@ -131,8 +145,16 @@ func (d *TrafficDelivery) RecordTraffic(e TrafficEvent) {
 	}
 	select {
 	case d.queue <- e:
+		d.signal()
 	default:
 		d.queueDrops.Add(1)
+	}
+}
+
+func (d *TrafficDelivery) signal() {
+	select {
+	case d.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -242,6 +264,7 @@ func (d *TrafficDelivery) run(ctx context.Context) {
 			d.drain(ctx)
 			return
 		case <-ticker.C:
+		case <-d.wake:
 		}
 		now := time.Now()
 		if !now.Before(nextScan) {
@@ -252,10 +275,24 @@ func (d *TrafficDelivery) run(ctx context.Context) {
 		d.consume(ctx)
 		if d.pendingFiles > 0 && !time.Now().Before(nextReplay) {
 			cycle, cancel := context.WithTimeout(ctx, time.Second)
-			if err := d.replay(cycle); err != nil {
-				nextReplay = time.Now().Add(2 * time.Second)
+			// Up to four replay batches for each newly staged batch provide
+			// recovery headroom. Budget exhaustion alone is not a database failure.
+			deadline, _ := cycle.Deadline()
+			for i := 0; i < 4 && d.pendingFiles > 0; i++ {
+				if time.Until(deadline) < trafficWriteBudget {
+					break
+				}
+				if err := d.replay(cycle); err != nil {
+					if cycle.Err() == nil {
+						nextReplay = time.Now().Add(2 * time.Second)
+					}
+					break
+				}
 			}
 			cancel()
+		}
+		if len(d.queue) > 0 || (d.pendingFiles > 0 && !time.Now().Before(nextReplay)) {
+			d.signal()
 		}
 		if !time.Now().Before(nextAlert) {
 			d.logHealth()
@@ -347,6 +384,7 @@ func (d *TrafficDelivery) replay(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = dir.Close() }()
+	var pending []trafficPendingFile
 	// Scan in bounded batches without loading an outage's entire backlog.
 	for processed := 0; processed < trafficBatchSize && ctx.Err() == nil; {
 		entries, readErr := dir.ReadDir(64)
@@ -381,34 +419,86 @@ func (d *TrafficDelivery) replay(ctx context.Context) error {
 				}
 				continue
 			}
-			writeCtx, cancel := context.WithTimeout(ctx, trafficWriteBudget)
-			err = d.write(writeCtx, e)
-			cancel()
-			if err != nil {
-				d.deliveryFailures.Add(1)
-				if permanentTrafficError(err) {
-					if err := d.quarantine(path); err != nil {
-						return err
-					}
-					continue
-				}
-				return err
-			}
-			d.noteDelivery()
-			if err = os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			d.pendingFiles--
-			d.spoolFiles--
-			d.spoolBytes -= int64(len(raw))
-			d.updatePendingSnapshot()
+			pending = append(pending, trafficPendingFile{event: e, path: path, size: int64(len(raw))})
 		}
 
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return d.deliverPending(ctx, pending)
+}
+
+type trafficPendingFile struct {
+	event TrafficEvent
+	path  string
+	size  int64
+}
+
+func (d *TrafficDelivery) acknowledge(file trafficPendingFile) error {
+	d.noteDelivery()
+	if err := os.Remove(file.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	d.pendingFiles--
+	d.spoolFiles--
+	d.spoolBytes -= file.size
+	d.updatePendingSnapshot()
+	return nil
+}
+
+func (d *TrafficDelivery) deliverPending(ctx context.Context, files []trafficPendingFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	if d.writeBatch != nil {
+		events := make([]TrafficEvent, len(files))
+		for i := range files {
+			events[i] = files[i].event
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, trafficWriteBudget)
+		err := d.writeBatch(writeCtx, events)
+		cancel()
+		if err == nil {
+			for _, file := range files {
+				if err := d.acknowledge(file); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		d.deliveryFailures.Add(1)
+		if !permanentTrafficError(err) {
+			return err
+		}
+		// A permanent error may concern just one event. Isolate it with bounded
+		// single writes; committed batches are safe to retry by their event IDs.
+	}
+	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, trafficWriteBudget)
+		err := d.write(writeCtx, file.event)
+		cancel()
+		if err != nil {
+			d.deliveryFailures.Add(1)
+			if !permanentTrafficError(err) {
+				return err
+			}
+			if err := d.quarantine(file.path); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := d.acknowledge(file); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *TrafficDelivery) quarantine(path string) error {
