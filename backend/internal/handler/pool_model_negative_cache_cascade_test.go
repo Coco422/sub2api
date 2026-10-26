@@ -162,6 +162,9 @@ func TestPoolModelNegativeCacheConfiguredUnsupportedStill404(t *testing.T) {
 	repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{
 		accounts: []service.Account{negativeCacheAccount(11, 1, true), negativeCacheAccount(12, 2, true)}}}
 	for i := range repo.accounts {
+		// Passthrough deliberately bypasses the account model allowlist. This
+		// fixture must use configured routing to prove a genuine config 404.
+		repo.accounts[i].Extra["openai_passthrough"] = false
 		repo.accounts[i].Credentials["model_mapping"] = map[string]any{"other-model": "other-model"}
 	}
 	provider := &poolCapacityTransport{reply: func(*http.Request, int64) *http.Response {
