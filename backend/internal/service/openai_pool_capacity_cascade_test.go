@@ -49,6 +49,20 @@ func TestPoolCapacityHTTPDoesNotCascadeIntoModelCooldown(t *testing.T) {
 	}
 }
 
+func TestPoolCapacityHTTPDetailEnvelopeKeepsExistingOverloadSemantics(t *testing.T) {
+	repo := &errorPolicyRepoStub{}
+	svc := &OpenAIGatewayService{rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
+	account := newTempUnschedScopeAccount("model", map[string]any{"keywords": []any{"overloaded"}})
+	account.Credentials["pool_mode"] = true
+	body := []byte(`{"detail":"Our servers are currently overloaded. Please try again later."}`)
+	failure := svc.failoverOpenAIUpstreamHTTPError(context.Background(), nil, account,
+		&http.Response{StatusCode: 503, Header: http.Header{}}, body,
+		"Our servers are currently overloaded. Please try again later.", "gpt-6.1-sol")
+	require.NotNil(t, failure)
+	require.True(t, failure.RequestScopedTransient)
+	require.Empty(t, repo.modelRateLimitCalls)
+}
+
 func TestPoolCapacityExplicitQuotaOutranksCapacityWording(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
