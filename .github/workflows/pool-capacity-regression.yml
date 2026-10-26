@@ -1,0 +1,56 @@
+name: Pool capacity regression
+
+on:
+  push:
+    branches: [fix/pool-model-cooldown-cascade]
+  pull_request:
+    branches: [production]
+    paths:
+      - 'backend/internal/service/openai*'
+      - 'backend/internal/handler/openai*'
+      - '.github/workflows/pool-capacity-regression.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    if: github.head_ref == 'fix/pool-model-cooldown-cascade' || github.ref_name == 'fix/pool-model-cooldown-cascade'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Prove regressions fail on original production code
+        shell: bash
+        run: |
+          set -euo pipefail
+          targets=(
+            backend/internal/service/openai_gateway_upstream_errors.go
+            backend/internal/service/openai_gateway_passthrough.go
+            backend/internal/service/openai_account_runtime_block_fastpath.go
+            backend/internal/handler/openai_gateway_handler.go
+          )
+          trap 'git restore --source=HEAD -- "${targets[@]}"' EXIT
+          for target in "${targets[@]}"; do
+            git show 973d4bbd0064121a5533e0d3232ece6043f0d5fc:"$target" > "$target"
+          done
+          set +e
+          (cd backend && go test -tags=unit ./internal/service ./internal/handler -run '^TestPoolCapacity' -count=1) > "$RUNNER_TEMP/pool-capacity-red.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/pool-capacity-red.log"
+          test "$result" -ne 0
+          ! grep -q '\[build failed\]' "$RUNNER_TEMP/pool-capacity-red.log"
+          grep -q -- '--- FAIL: TestPoolCapacityHTTPDoesNotCascadeIntoModelCooldown' "$RUNNER_TEMP/pool-capacity-red.log"
+          grep -q -- '--- FAIL: TestPoolCapacityTwoLayersKeepHealthyCandidatesAndBoundAllBusy' "$RUNNER_TEMP/pool-capacity-red.log"
+      - name: Verify exact head and existing boundary regressions
+        working-directory: backend
+        run: |
+          git diff --exit-code
+          go test -tags=unit ./internal/service ./internal/handler -run 'Test(PoolCapacity|NonStreaming.*SSEToJSON|OpenAI.*Capacity|OpenAI.*TempRule|OpenAI.*ReplayBoundary|OpenAI.*ModelNotFound|ClassifyNoAccountError)' -count=1
