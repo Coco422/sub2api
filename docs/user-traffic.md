@@ -140,3 +140,9 @@ go test ./internal/repository -run '^$' -bench '^BenchmarkTrafficPostgres' -benc
 2026-10-26 本轮验证：`TMPDIR=/tmp make -C backend test-unit` 全部通过（service 用例约 285 秒）；流量专项 service/repository/handler/admin/middleware 的 `-race` 通过。最终批量 SQL 使用稳定的小时桶锁定顺序，调整后在临时 PostgreSQL 实例重新通过全部流量数据库用例；真实非事务索引迁移重复执行和只读核对脚本均通过，核对脚本也能发现人工构造的汇总孤立记录。前端关键集 107 文件 / 1765 项通过，完整 ESLint、`vue-tsc --noEmit`、Vite 生产构建通过。未安装 golangci-lint，未运行全项目容器集成测试；没有调用付费上游。
 
 最终短基准环境为本地 Apple M1 Pro、临时 PostgreSQL、每项 3 次迭代：逐条 SQL 约 5864 事件/秒，32 条批量 SQL 约 29392 事件/秒（约 5 倍）；完整健康链路约 111.1 事件/秒，256 条故障积压恢复约 108.1 事件/秒，未观察到丢弃。完整链路仍受逐事件文件同步约束，SQL 优化不能等同于整体吞吐提升。本机其他编译负载下较早测量明显更低，因此这些数字仅用于复现实验，生产仍需独立的持续负载与磁盘容量验证。
+
+### CI 迁移加载回归
+
+PR #567 的 `820148f5a` 在集成测试中暴露迁移加载器兼容问题：308 的注释含 `rollback`，被现有全文检查误判为事务控制语句；同一注释中的分号也会被简单分句器当作 SQL 边界。直接通过 PostgreSQL 执行文件无法发现这两类问题。修复只调整该尚未通过应用加载器的迁移注释，不改变三个索引的定义。
+
+新增无需数据库的全部内嵌迁移模式检查，以及使用实际 308 文件的加载器回归，精确验证三条非事务索引语句及迁移记录写入，防止注释片段被当作 SQL 执行。修复前新增用例复现 CI 错误，修复后 `go test -tags=unit ./internal/repository ./migrations` 通过。另在全新临时 PostgreSQL 实例运行 `TestAPIKeyConcurrencyUpgradePaths`：两个独立数据库均通过全部迁移加载和两次重复加载，覆盖真实应用使用的迁移入口。容器内完整应用启动和全项目集成测试仍以远程 CI 结果为准。
