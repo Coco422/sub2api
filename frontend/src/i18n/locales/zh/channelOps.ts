@@ -88,7 +88,7 @@ export default {
   "descriptionField": "说明",
   "basicEdit": "仅编辑基本信息；完整定价、映射与分组在原渠道编辑器中设置。",
   "save": "保存",
-  "targetHint": "先在上游列表中搜索目标，填写显示的数字 ID；服务端校验属于本渠道。",
+  "targetHint": "搜索并选择目标上游，或填写精确数字 ID；服务端校验该上游属于本渠道。",
   "target": "目标上游 ID",
   "reassignNote": "已有归属的改派需要再次确认，过期配置返回冲突。",
   "confirmTitle": "确认变更",
@@ -98,5 +98,13 @@ export default {
   "conflict": "配置已改变或名称冲突，请刷新并重新确认。",
   "failed": "操作或读取失败，请刷新后重试；未将失败视作零数据。",
   "invalidWindow": "请选择有效时间范围，最长 31 天。",
-  "saved": "已保存"
+  "saved": "已保存",
+  "appliedScope": "本次数据的实际范围（* 为全部，-1 为未分配）",
+  "errorsScope": "ops_error_logs 没有历史渠道 ID；按当前渠道账号归属筛选，分组使用日志实际 group_id，排除 count_tokens。是留存错误日志数；不含被策略忽略、未采集或已清理的错误，不能推算请求错误率，5xx 也不代表降智。",
+  "errorRecords": "错误日志数",
+  "upstream5xx": "记录的上游 5xx",
+  "noErrors": "查询成功，此范围没有留存错误日志；不代表零错误。",
+  "errorType": "错误分类",
+  "errorPhase": "阶段",
+  "topErrors": "展示最多 20 个错误分类，不截断上方总数"
 }

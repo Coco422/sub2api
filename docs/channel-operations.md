@@ -24,7 +24,7 @@
 - 上游统计按当前人工归属回看历史，改派后历史会重分组；未分配账号保留单独桶（upstream_id=-1 下钻），渠道总数不因未分配而丢失。当前配置并发只是容量上限，不是实时负载。
 - 质量从 `scheduled_test_results` 的冻结配置、judgment 和 round_id 读取，按 plan+round 去重。通过需完整轮次全部 correct+success；降级需明确 incorrect 且 answer_mismatch/state_degraded；缺失、并发轮未完成、传输失败与 skipped 为不确定。质量不等于每个请求的智能水平，错误不自动当降智。
 - 质量没有请求 group/channel 维度：按当前渠道/分组账号范围选择，明确标记为当前账号范围。模型筛选只匹配结果快照模型，快照缺失不回填当前计划模型；它不与公开别名自动等价，选择 public/recorded 筛选时质量为范围不支持。
-- 分别返回 usage/quality 查询状态、查询时间、最新样本时间、来源、窗口和范围限制。成功无样本与查询失败不同；失败不显示成 0。分页统计不能截断汇总分母。没有可信全请求错误分母时错误率显示不支持，提供既有错误诊断入口。
+- 分别返回 usage/quality 查询状态、查询时间、最新样本时间、来源、窗口和范围限制。成功无样本与查询失败不同；失败不显示成 0。分页统计不能截断汇总分母。错误计数直接读取 ops_error_logs（不读正文/头/原始错误详情），按当前渠道账号归属和实际日志 group_id 筛选并排除 count_tokens；该表无历史 channel_id，范围明确标注。缺少全请求分母，错误率保持不支持，5xx 不当作降智。
 - 质量历史可进入已有质量计划编辑器（选中 plan），不新建默认付费任务。
 
 ## 升级与共享边界
@@ -45,3 +45,24 @@
 - [ ] 定向前端交互测试与远端类型/构建通过；浏览器桌面/移动端人工验收。
 - [ ] 迁移升级、重复应用、旧数据、删除与并发冲突验收。
 - [ ] 中文 Draft PR、Agent 声明、精确 SHA、检查证据和剩余门禁完整。
+
+## API 与人工验收路径
+
+| API | 用途与边界 |
+| --- | --- |
+| `GET/POST /admin/channels`、`GET/PUT/DELETE /admin/channels/:id` | 原 canonical 渠道 CRUD；基本编辑仅提交 name/description/status；完整价格/分组/映射沿用原编辑器 |
+| `GET /admin/channels/:id/operations` | `search/page/page_size` 账号分页；`membership=all/assigned/unassigned`；上游独立 `upstream_search/upstream_page`；返回 revision/total/upstream_total |
+| `POST /admin/channels/:id/operations` | action 为 create_upstream/update_upstream/delete_upstream/assign/detach；revision 必填；改派、解除、删除须 confirm，并校验 expected_upstream_id |
+| `GET /admin/channels/operations/snapshot` | from/until RFC3339，最长31天；channel_id/upstream_id/account_id/group_id；model_scope=public/recorded/upstream 与 model 精确匹配；dimension=channel/upstream/account；page/page_size；quality_before 游标 |
+
+快照返回 scope（实际应用的筛选，独立于尚未应用的表单）、from/until、usage/quality/errors/capacity。各区块分别返回 status、data、queried_at；失败 data 为 null，不能转成全零。错误记录分组最多20组、模型谱系最多50组，均返回总组数并标注截断；其汇总分母不截断。快照总读取预算25秒、各SQL至多8秒；不会因页面刷新启动探测。
+
+1. 新建渠道 → 打开原完整配置编辑器绑定分组 → 返回渠道运维。确认原有定价/模型映射仍可编辑，基本编辑不会重写它们。
+2. 新建两个上游 → 搜索候选账号 → 选择目标上游（支持搜索、分页或精确ID）→ 首次分配。再次改派时取消确认应无写入；确认后刷新读回新归属。
+3. 同开两个页面，先在一页改名/分配，再在另一页提交旧 revision；应返回409，并刷新供重新确认。跨渠道上游和渠道外账号应拒绝。
+4. 从渠道总览下钻上游（含未分配桶）、账号，分别切换 public/recorded/upstream 精确模型、分组与时间。验证分页前后 summary 分母不变，public 别名不应被当作 routing 模型。
+5. 查看质量模型轮历史，核对完整通过、明确降级、NULL judgment、传输失败和部分持久化轮次。点击计划 ID 定位原质量页中的计划，再打开原编辑器；不会执行探测。
+6. 错误计数只代表当前账号范围的留存日志；核对错误查询失败、空数据和无完整分母状态。容量只代表当前配置。
+7. 删除上游确认后仅解除分类；删除渠道确认后仅移除 canonical 渠道配置与关联。账号、分组实体、凭据和原 account_groups 保留。
+
+自动化证据：`channel_operations*_test.go` 包含实际 HTTP/SQL、认证/observer、并发/版本、错误/质量/模型/时间/分页与迁移重放；前端定向 Vitest 验证真实页面操作；精确HEAD远端工作流另产出合成数据桌面/移动截图和确认写入记录。合成截图不替代真实 PostgreSQL 回归，不代表生产验证。

@@ -88,7 +88,7 @@ export default {
   "descriptionField": "Description",
   "basicEdit": "Only basic details are edited here. Use the existing channel editor for pricing, mappings and groups.",
   "save": "Save",
-  "targetHint": "Search the upstream list, then enter its numeric ID. The server validates that it belongs to this channel.",
+  "targetHint": "Search and select an upstream, or enter its exact numeric ID. The server validates that it belongs to this channel.",
   "target": "Target upstream ID",
   "reassignNote": "Reassignment requires confirmation. Stale configurations return a conflict.",
   "confirmTitle": "Confirm change",
@@ -98,5 +98,13 @@ export default {
   "conflict": "Configuration changed or the name conflicts. Refresh and confirm again.",
   "failed": "Operation or query failed. Refresh and retry; failure is not treated as zero data.",
   "invalidWindow": "Choose a valid time window of at most 31 days.",
-  "saved": "Saved"
+  "saved": "Saved",
+  "appliedScope": "Applied data scope (* means all; -1 means unassigned)",
+  "errorsScope": "ops_error_logs has no historical channel ID. Filtered by current channel account membership and actual log group_id, excluding count_tokens. These are retained log counts; ignored, uncollected or purged errors are absent. No request error rate can be inferred, and 5xx does not imply degraded intelligence.",
+  "errorRecords": "Error log records",
+  "upstream5xx": "Recorded upstream 5xx",
+  "noErrors": "Query succeeded; no retained error logs. This does not establish zero errors.",
+  "errorType": "Error type",
+  "errorPhase": "Phase",
+  "topErrors": "Up to 20 categories shown; totals above remain complete"
 }

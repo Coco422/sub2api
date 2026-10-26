@@ -44,6 +44,7 @@ func newChannelOperationsFixture(t *testing.T) *channelOperationsFixture {
 	k := mustCreateApiKey(t, integrationEntClient, &service.APIKey{UserID: u.ID, Key: fmt.Sprintf("operations-fixture-%d", f.channel), Name: "Operations fixture"})
 	f.key = k.ID
 	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM ops_error_logs WHERE account_id IN ($1,$2)`, f.account, f.outsider)
 		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE account_id IN ($1,$2)`, f.account, f.outsider)
 		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM usage_logs WHERE account_id IN ($1,$2)`, f.account, f.outsider)
 		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id IN ($1,$2)`, f.account, f.outsider)
@@ -214,7 +215,7 @@ func (f *channelOperationsFixture) filter() service.ChannelOperationsFilter {
 func (f *channelOperationsFixture) addUsage(t *testing.T, model, public, upstream string, ttft *int, stream bool, tokens int, at time.Time, group, channel *int64) {
 	t.Helper()
 	duration := 500
-	_, err := NewUsageLogRepository(integrationEntClient, integrationDB).Create(context.Background(), &service.UsageLog{UserID: f.user, APIKeyID: f.key, AccountID: f.account, RequestID: fmt.Sprintf("ops-%d", time.Now().UnixNano()), Model: model, RequestedModel: public, UpstreamModel: upstream, FirstTokenMs: ttft, DurationMs: &duration, Stream: stream, InputTokens: tokens, CreatedAt: at, GroupID: group, ChannelID: channel})
+	_, err := NewUsageLogRepository(integrationEntClient, integrationDB).Create(context.Background(), &service.UsageLog{UserID: f.user, APIKeyID: f.key, AccountID: f.account, RequestID: fmt.Sprintf("ops-%d", time.Now().UnixNano()), Model: model, RequestedModel: public, UpstreamModel: &upstream, FirstTokenMs: ttft, DurationMs: &duration, Stream: stream, InputTokens: tokens, CreatedAt: at, GroupID: group, ChannelID: channel})
 	require.NoError(t, err)
 }
 func TestChannelOperationsUsageIdentityBoundariesAndUnassignedDenominator(t *testing.T) {
@@ -413,4 +414,49 @@ func TestChannelOperationsHTTPPostgresWorkflow(t *testing.T) {
 	require.Equal(t, 200, w.Code, w.Body.String())
 	_, err = integrationDB.Exec(`DELETE FROM channels WHERE name=$1`, name)
 	require.NoError(t, err)
+}
+
+func TestChannelOperationsErrorsUseExplicitCurrentCohortAndActualGroup(t *testing.T) {
+	f := newChannelOperationsFixture(t)
+	filter := f.filter()
+	filter.Model = "public"
+	at := filter.From.Add(time.Minute)
+	for _, countTokens := range []bool{false, true} {
+		_, err := integrationDB.Exec(`INSERT INTO ops_error_logs(account_id,group_id,model,requested_model,upstream_model,error_phase,error_type,status_code,upstream_status_code,is_count_tokens,created_at) VALUES($1,$2,'recorded','public','provider','upstream','http_error',502,503,$3,$4)`, f.account, f.group, countTokens, at)
+		require.NoError(t, err)
+	}
+	type data struct {
+		Records int
+		FiveXX  int      `json:"upstream_5xx"`
+		Rate    *float64 `json:"error_rate"`
+	}
+	read := func() data {
+		t.Helper()
+		got := f.repo.ReadChannelOperations(context.Background(), filter)
+		require.Equal(t, "ready", got.Errors.Status)
+		var d data
+		require.NoError(t, json.Unmarshal(got.Errors.Data, &d))
+		return d
+	}
+	got := read()
+	require.Equal(t, 1, got.Records)
+	require.Equal(t, 1, got.FiveXX)
+	require.Nil(t, got.Rate)
+	filter.Model = "recorded"
+	require.Zero(t, read().Records)
+	filter.ModelScope = "recorded"
+	require.Equal(t, 1, read().Records)
+	filter.Model = "provider"
+	filter.ModelScope = "upstream"
+	require.Equal(t, 1, read().Records)
+	filter.GroupID = f.group + 999999
+	require.Zero(t, read().Records)
+	filter.GroupID = f.group
+	filter.UpstreamID = -1
+	require.Equal(t, 1, read().Records)
+	u := f.upstream(t, "Error cohort")
+	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: u}))
+	require.Zero(t, read().Records)
+	filter.UpstreamID = u
+	require.Equal(t, 1, read().Records)
 }

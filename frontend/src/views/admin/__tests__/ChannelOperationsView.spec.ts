@@ -17,7 +17,7 @@ const catalog: ops.Catalog = { revision: 42, upstreams: [{ id: 3, name: 'Provide
 const now = '2026-10-27T00:00:00Z'
 const metrics: ops.Metrics = { requests: 3, samples: 1, unknown_samples: 2, duration_samples: 3, p50_ms: 123, p90_ms: 123, p95_ms: 123, duration_p90_ms: 456, latest_sample_at: now }
 function snapshot(): ops.Snapshot {
-  return { from: now, until: now, model_scope: 'public', usage: { status: 'ready', queried_at: now, data: { source: 'usage_logs', attribution: 'current', latency_measurement: 'legacy_forward', summary: { ...metrics }, total: 1, rows: [{ ...metrics, dimension_id: 0, name: 'Unassigned' }], lineage: [], lineage_total: 0, error_rate: null, error_scope: 'unsupported' } }, quality: { status: 'ready', queried_at: now, data: { source: 'scheduled_test_results', scope: 'current accounts', summary: { rounds: 1, passed: 0, degraded: 1, inconclusive: 0, latest_sample_at: now }, rows: [{ id: 99, plan_id: 8, account_id: 9, measured_model: 'provider-model', observed_at: now, probes: 2, passed_probes: 1, expected: 2, outcome: 'degraded', actions: ['failure_counted:1/2'] }], has_more: true } }, capacity: { status: 'ready', queried_at: now, data: { source: 'accounts', scope: 'current', accounts: 1, schedulable: 1, configured_concurrency: 5 } } }
+  return { scope: { channel_id: 7, upstream_id: 0, account_id: 0, group_id: 0, model: '', model_scope: 'public', dimension: 'upstream' }, from: now, until: now, model_scope: 'public', usage: { status: 'ready', queried_at: now, data: { source: 'usage_logs', attribution: 'current', latency_measurement: 'legacy_forward', summary: { ...metrics }, total: 1, rows: [{ ...metrics, dimension_id: 0, name: 'Unassigned' }], lineage: [], lineage_total: 0, error_rate: null, error_scope: 'unsupported' } }, quality: { status: 'ready', queried_at: now, data: { source: 'scheduled_test_results', scope: 'current accounts', summary: { rounds: 1, passed: 0, degraded: 1, inconclusive: 0, latest_sample_at: now }, rows: [{ id: 99, plan_id: 8, account_id: 9, measured_model: 'provider-model', observed_at: now, probes: 2, passed_probes: 1, expected: 2, outcome: 'degraded', actions: ['failure_counted:1/2'] }], has_more: true } }, errors: { status: 'ready', queried_at: now, data: { source: 'ops_error_logs', scope: 'current accounts', records: 1, upstream_5xx: 1, latest_sample_at: now, rows: [{ error_type: 'upstream', error_phase: 'forward', status_code: 502, records: 1 }], bucket_total: 1, error_rate: null } }, capacity: { status: 'ready', queried_at: now, data: { source: 'accounts', scope: 'current', accounts: 1, schedulable: 1, configured_concurrency: 5 } } }
 }
 function button(wrapper: ReturnType<typeof mount>, text: string) { const found = wrapper.findAll('button').find(b => b.text() === text); if (!found) throw new Error(`Button missing: ${text}`); return found }
 beforeEach(() => {
@@ -71,6 +71,36 @@ describe('channel operations workflow', () => {
     expect(ops.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({ model_scope: 'upstream', model: 'upstream-alias', group_id: 11 }), expect.anything())
     await button(w, 'channelOps.older').trigger('click'); await flushPromises()
     expect(ops.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({ quality_before: 99 }), expect.anything()); w.unmount()
+  })
+  it('supports a searched upstream picker and confirms reassignment against the previous membership', async () => {
+    const targets = structuredClone(catalog); targets.upstreams.push({ id: 4, name: 'Provider B', members: 0 }); targets.upstream_total = 2
+    vi.mocked(ops.catalog).mockResolvedValue(targets)
+    const w = mount(ChannelOperationsView); await flushPromises()
+    await button(w, 'channelOps.assign').trigger('click')
+    const picker = w.get('[data-testid="dialog"]')
+    await picker.get('input[type="radio"][value="4"]').setValue()
+    await picker.get('input[maxlength="100"]').setValue('Provider'); await picker.get('form').trigger('submit'); await flushPromises()
+    expect(ops.catalog).toHaveBeenLastCalledWith(7, expect.objectContaining({ upstream_search: 'Provider', upstream_page: 1 }), expect.anything())
+    await button(w, 'channelOps.save').trigger('click'); expect(ops.mutate).not.toHaveBeenCalled()
+    await button(w, 'channelOps.confirm').trigger('click'); await flushPromises()
+    expect(ops.mutate).toHaveBeenCalledWith(7, expect.objectContaining({ action: 'assign', account_id: 9, upstream_id: 4, expected_upstream_id: 3, revision: 42, confirm: true })); w.unmount()
+  })
+  it('creates a real upstream mutation and requires confirmation before deleting the canonical channel', async () => {
+    const w = mount(ChannelOperationsView); await flushPromises()
+    await button(w, 'channelOps.createUpstream').trigger('click')
+    await w.get('[data-testid="dialog"] input').setValue('New Provider'); await w.get('[data-testid="dialog"] form').trigger('submit'); await flushPromises()
+    expect(ops.mutate).toHaveBeenCalledWith(7, { action: 'create_upstream', upstream_id: 0, name: 'New Provider', revision: 42 })
+    await w.get('[data-testid="delete-channel"]').trigger('click'); expect(channels.remove).not.toHaveBeenCalled()
+    await button(w, 'channelOps.confirm').trigger('click'); await flushPromises()
+    expect(channels.remove).toHaveBeenCalledWith(7); w.unmount()
+  })
+  it('disables assignment for an ineligible member while retaining a confirmed detach path', async () => {
+    const invalid = structuredClone(catalog); invalid.accounts[0].eligible = false
+    vi.mocked(ops.catalog).mockResolvedValue(invalid)
+    const w = mount(ChannelOperationsView); await flushPromises()
+    expect(button(w, 'channelOps.assign').attributes('disabled')).toBeDefined()
+    expect(button(w, 'channelOps.detach').attributes('disabled')).toBeUndefined()
+    expect(w.text()).toContain('channelOps.ineligible'); w.unmount()
   })
   it('rejects a late response from the previous channel selection', async () => {
     let resolve!: (value: ops.Snapshot) => void

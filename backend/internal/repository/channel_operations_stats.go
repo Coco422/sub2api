@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logredact"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -13,7 +13,7 @@ import (
 
 // Values are explicit persisted identities, never inferred endpoint/capability aliases.
 const channelOperationsUsageBase = `WITH base AS (
- SELECT u.*, COALESCE(m.upstream_id,0) AS operation_upstream_id,
+ SELECT u.account_id,u.channel_id,u.model,u.upstream_model,u.model_mapping_chain,u.stream,u.first_token_ms,u.duration_ms,u.created_at, COALESCE(m.upstream_id,0) AS operation_upstream_id,
  COALESCE(NULLIF(u.requested_model,''),u.model) AS public_model,
  (u.actual_cost>0 OR u.total_cost>0 OR u.account_stats_cost>0 OR u.input_tokens>0 OR u.output_tokens>0 OR u.cache_read_tokens>0 OR u.cache_creation_tokens>0) AS measured
  FROM usage_logs u LEFT JOIN channel_operation_members m ON m.channel_id=u.channel_id AND m.account_id=u.account_id
@@ -28,7 +28,7 @@ const channelOperationsUsageBase = `WITH base AS (
 )`
 
 const channelOperationsQualityBase = `WITH scoped AS (
- SELECT p.account_id,r.*,NULLIF(r.pelican_config->>'model_id','') AS measured_model
+ SELECT p.account_id,r.id,r.plan_id,r.status,r.created_at,r.pelican_config,r.quality_round_id,r.quality_action,r.quality_judgment,r.error_message,NULLIF(r.pelican_config->>'model_id','') AS measured_model
  FROM scheduled_test_results r JOIN scheduled_test_plans p ON p.id=r.plan_id
  WHERE r.created_at >= $1 AND r.created_at < $2
  AND ($3::bigint=0 OR EXISTS (SELECT 1 FROM account_groups ag JOIN channel_groups cg ON cg.group_id=ag.group_id WHERE ag.account_id=p.account_id AND cg.channel_id=$3))
@@ -66,7 +66,7 @@ func (r *channelRepository) operationsSection(ctx context.Context, query string,
 	return out
 }
 func (r *channelRepository) ReadChannelOperations(ctx context.Context, f service.ChannelOperationsFilter) *service.ChannelOperationsSnapshot {
-	out := &service.ChannelOperationsSnapshot{From: f.From, Until: f.Until, ModelScope: f.ModelScope}
+	out := &service.ChannelOperationsSnapshot{From: f.From, Until: f.Until, ModelScope: f.ModelScope, Scope: service.ChannelOperationsScope{ChannelID: f.ChannelID, UpstreamID: f.UpstreamID, AccountID: f.AccountID, GroupID: f.GroupID, Model: f.Model, ModelScope: f.ModelScope, Dimension: f.Dimension}}
 	args := []any{f.From, f.Until, f.ChannelID, f.UpstreamID, f.AccountID, f.GroupID, f.Model, f.ModelScope, f.PageSize, (f.Page - 1) * f.PageSize}
 	dimension := `COALESCE(channel_id,0)`
 	names := `COALESCE((SELECT name FROM channels WHERE id=b.dimension_id),'历史未归属渠道')`
@@ -90,9 +90,24 @@ func (r *channelRepository) ReadChannelOperations(ctx context.Context, f service
 		qualityArgs := []any{f.From, f.Until, f.ChannelID, f.UpstreamID, f.AccountID, f.GroupID, f.Model, f.QualityBefore, f.PageSize}
 		out.Quality = r.operationsSection(ctx, channelOperationsQualityBase+` SELECT jsonb_build_object('source','scheduled_test_results: frozen config / judgment / plan+round+model','scope','current_account_group_membership; not request group attribution','summary',(SELECT jsonb_build_object('rounds',count(*),'passed',count(*) FILTER(WHERE outcome='passed'),'degraded',count(*) FILTER(WHERE outcome='degraded'),'inconclusive',count(*) FILTER(WHERE outcome='inconclusive'),'latest_sample_at',max(observed_at)) FROM classified),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (SELECT id,account_id,plan_id,measured_model,observed_at,probes,passed_probes,expected,outcome,actions FROM classified WHERE ($8::bigint=0 OR id<$8) ORDER BY id DESC LIMIT $9)x),'[]'::jsonb),'has_more',(SELECT count(*)>$9 FROM classified WHERE ($8::bigint=0 OR id<$8)))`, qualityArgs...)
 	}
+	errorArgs := []any{f.From, f.Until, f.ChannelID, f.UpstreamID, f.AccountID, f.GroupID, f.Model, f.ModelScope}
+	out.Errors = r.operationsSection(ctx, channelOperationsErrorQuery, errorArgs...)
 	capacityArgs := []any{f.ChannelID, f.UpstreamID, f.AccountID, f.GroupID}
 	out.Capacity = r.operationsSection(ctx, `SELECT jsonb_build_object('source','accounts current configuration','scope','current_account_group_membership; model-independent; not live load','accounts',count(*),'schedulable',count(*) FILTER(WHERE a.schedulable AND a.status='active'),'configured_concurrency',COALESCE(sum(a.concurrency),0)) FROM accounts a WHERE a.deleted_at IS NULL AND ($1::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag JOIN channel_groups cg ON cg.group_id=ag.group_id WHERE ag.account_id=a.id AND cg.channel_id=$1)) AND ($2::bigint=0 OR EXISTS(SELECT 1 FROM channel_operation_members m WHERE m.account_id=a.id AND m.channel_id=$1 AND m.upstream_id=$2) OR ($2=-1 AND NOT EXISTS(SELECT 1 FROM channel_operation_members m WHERE m.account_id=a.id AND m.channel_id=$1))) AND ($3::bigint=0 OR a.id=$3) AND ($4::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=a.id AND ag.group_id=$4))`, capacityArgs...)
 	return out
 }
 
 var _ service.ChannelOperationsRepository = (*channelRepository)(nil)
+
+// Error logs have no historical channel_id. This is explicitly a current-account
+// cohort diagnostic count, never a request/attempt error-rate denominator.
+const channelOperationsErrorQuery = `WITH scoped AS (
+ SELECT e.error_type,e.error_phase,COALESCE(e.status_code,0) AS status_code,e.upstream_status_code,e.created_at
+ FROM ops_error_logs e
+ WHERE e.created_at >= $1 AND e.created_at < $2 AND COALESCE(e.is_count_tokens,false)=false
+ AND ($3::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag JOIN channel_groups cg ON cg.group_id=ag.group_id WHERE ag.account_id=e.account_id AND cg.channel_id=$3))
+ AND ($4::bigint=0 OR EXISTS(SELECT 1 FROM channel_operation_members m WHERE m.account_id=e.account_id AND m.channel_id=$3 AND m.upstream_id=$4) OR ($4=-1 AND NOT EXISTS(SELECT 1 FROM channel_operation_members m WHERE m.account_id=e.account_id AND m.channel_id=$3)))
+ AND ($5::bigint=0 OR e.account_id=$5) AND ($6::bigint=0 OR e.group_id=$6)
+ AND ($7='' OR CASE $8 WHEN 'public' THEN COALESCE(NULLIF(e.requested_model,''),e.model) WHEN 'recorded' THEN e.model WHEN 'upstream' THEN e.upstream_model END=$7)
+), buckets AS (SELECT error_type,error_phase,status_code,count(*) AS records FROM scoped GROUP BY error_type,error_phase,status_code)
+SELECT jsonb_build_object('source','ops_error_logs','scope','current account/channel membership; actual log group filter; count_tokens excluded; no historical channel attribution','records',(SELECT count(*) FROM scoped),'upstream_5xx',(SELECT count(*) FROM scoped WHERE upstream_status_code>=500),'latest_sample_at',(SELECT max(created_at) FROM scoped),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (SELECT * FROM buckets ORDER BY records DESC,error_type,error_phase,status_code LIMIT 20)x),'[]'::jsonb),'bucket_total',(SELECT count(*) FROM buckets),'error_rate',NULL)`

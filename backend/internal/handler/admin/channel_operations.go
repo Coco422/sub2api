@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -47,6 +48,12 @@ func (h *ChannelHandler) MutateOperations(c *gin.Context) {
 		response.ErrorFrom(c, service.ErrChannelOperationsValidation)
 		return
 	}
+	if err := service.ValidateChannelOperationsMutation(&req); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	middleware.SetAuditAction(c, "channel_operations."+req.Action)
+	middleware.SetAuditExtra(c, map[string]any{"source": "channel_operations", "config_version": *req.Revision, "confirm": req.Confirm})
 	revision, err := h.channelService.MutateOperations(c.Request.Context(), id, req)
 	if err != nil {
 		response.ErrorFrom(c, err)

@@ -68,9 +68,20 @@ type ChannelOperationsSection struct {
 	Error     string    `json:"error,omitempty"`
 	QueriedAt time.Time `json:"queried_at"`
 }
+type ChannelOperationsScope struct {
+	ChannelID  int64  `json:"channel_id"`
+	UpstreamID int64  `json:"upstream_id"`
+	AccountID  int64  `json:"account_id"`
+	GroupID    int64  `json:"group_id"`
+	Model      string `json:"model"`
+	ModelScope string `json:"model_scope"`
+	Dimension  string `json:"dimension"`
+}
 type ChannelOperationsSnapshot struct {
+	Scope      ChannelOperationsScope   `json:"scope"`
 	Usage      ChannelOperationsSection `json:"usage"`
 	Quality    ChannelOperationsSection `json:"quality"`
+	Errors     ChannelOperationsSection `json:"errors"`
 	Capacity   ChannelOperationsSection `json:"capacity"`
 	From       time.Time                `json:"from"`
 	Until      time.Time                `json:"until"`
@@ -158,6 +169,8 @@ func ValidateChannelOperationsFilter(f ChannelOperationsFilter) error {
 	return nil
 }
 func (s *ChannelService) OperationsSnapshot(ctx context.Context, f ChannelOperationsFilter) (*ChannelOperationsSnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
 	if err := ValidateChannelOperationsFilter(f); err != nil {
 		return nil, err
 	}
