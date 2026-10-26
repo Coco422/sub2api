@@ -25,9 +25,10 @@ func TestPriorityObservationPersistedPublicAliasAndGroup(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, before[account.ID].Samples)
 	ttft := 1234
+	upstream := "account-upstream"
 	add := func(id, public string, groupID *int64, first *int) {
 		t.Helper()
-		_, err := repo.Create(ctx, &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, RequestID: id, Model: "channel-route", UpstreamModel: "account-upstream", RequestedModel: public, GroupID: groupID, Stream: true, FirstTokenMs: first, InputTokens: 10, ActualCost: 1, TotalCost: 2, CreatedAt: time.Now()})
+		_, err := repo.Create(ctx, &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, RequestID: id, Model: "channel-route", UpstreamModel: &upstream, RequestedModel: public, GroupID: groupID, Stream: true, FirstTokenMs: first, InputTokens: 10, ActualCost: 1, TotalCost: 2, CreatedAt: time.Now()})
 		require.NoError(t, err)
 	}
 	add("observation-completed", "public-composite", &group.ID, &ttft)

@@ -1495,6 +1495,11 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 			isGrokModelQuotaBlocked(account.ID, upstreamModel, now) {
 			continue
 		}
+		// Primary scored candidates have already been tried. Do not reintroduce
+		// a measured slow ordinary affinity through this separate shortcut.
+		if s.shouldYieldPriorityLatencySticky(req, account) {
+			continue
+		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
 		if acquireErr != nil {
 			return nil, acquireErr

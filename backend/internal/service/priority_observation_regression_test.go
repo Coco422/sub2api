@@ -168,6 +168,23 @@ func TestPriorityObservationStickyPenaltyAndExpiry(t *testing.T) {
 	require.Equal(t, int64(2), selected.Account.ID, "ordinary sticky cannot bypass measured penalty even with EWMA escape disabled")
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.Equal(t, int64(1), cache.sessionBindings["openai:sticky-penalty"], "one turn does not erase durable affinity")
+	// A separate weighted shortcut must not undo the scored selection policy.
+	weightedReq := req
+	weightedReq.StickyWeighted = true
+	weightedReq.StickyAccountID = 1
+	weightedReq.SessionHash = "sticky-penalty"
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: svc.openaiAccountStats}
+	fallback, fallbackErr := scheduler.tryFallbackToWeightedSticky(ctx, weightedReq)
+	require.NoError(t, fallbackErr)
+	require.Nil(t, fallback, "weighted fallback cannot reintroduce the active measured penalty")
+	for _, ownerReq := range []OpenAIAccountScheduleRequest{
+		func() OpenAIAccountScheduleRequest { r := req; r.DisableStickyEscape = true; return r }(),
+		func() OpenAIAccountScheduleRequest { r := req; r.GuardianParentAccountID = 1; return r }(),
+		func() OpenAIAccountScheduleRequest { r := req; r.EncryptedReasoning = true; return r }(),
+		func() OpenAIAccountScheduleRequest { r := req; r.PreserveStickyBinding = true; return r }(),
+	} {
+		require.False(t, scheduler.shouldYieldPriorityLatencySticky(ownerReq, pool[0].account))
+	}
 	// No global ban: the same slow account remains fallback capacity.
 	selected, _ = selectTurn("", map[int64]struct{}{2: {}})
 	require.Equal(t, int64(1), selected.Account.ID)
@@ -187,6 +204,12 @@ func TestPriorityObservationStickyPenaltyAndExpiry(t *testing.T) {
 	selected, decision = selectTurn("", nil)
 	require.Equal(t, int64(1), selected.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerSessionSticky, decision.Layer)
+	fallback, fallbackErr = scheduler.tryFallbackToWeightedSticky(ctx, weightedReq)
+	require.NoError(t, fallbackErr)
+	require.NotNil(t, fallback, "expiry also restores the weighted sticky fallback")
+	if fallback.ReleaseFunc != nil {
+		fallback.ReleaseFunc()
+	}
 }
 
 func TestPriorityObservationQueryBudgetAndMissingData(t *testing.T) {

@@ -243,10 +243,10 @@ describe('priority history refresh', () => {
       const value = { at: '2026-10-06T00:00:00Z', model: 'test', mode: 'balanced', history_ready: true, candidates: [] }
       vi.mocked(getPrioritySnapshot).mockResolvedValue(value)
       const wrapper = mount(PrioritySchedulingView); await flushPromises()
-      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
       await vi.advanceTimersByTimeAsync(20000)
       expect(getPrioritySnapshot).toHaveBeenCalledTimes(1)
-      vi.restoreAllMocks()
+      visibility.mockReturnValue('visible')
       let resolve!: (result: typeof value) => void
       vi.mocked(getPrioritySnapshot).mockImplementationOnce(() => new Promise(r => { resolve = r }))
       await vi.advanceTimersByTimeAsync(5000)

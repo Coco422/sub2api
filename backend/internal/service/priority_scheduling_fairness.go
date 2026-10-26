@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"math"
+	"slices"
 	"sort"
 	"time"
 )
@@ -194,8 +195,8 @@ func (s *defaultOpenAIAccountScheduler) shouldRebalancePrioritySticky(ctx contex
 			continue
 		}
 		candidate := openAIAccountCandidateScore{account: account, loadKnown: true, loadInfo: load}
-		applyPriorityCandidate(cfg, &candidate, history.signals[account.ID], now)
-		if candidate.priorityUnhealthy {
+		score := applyPriorityCandidate(cfg, &candidate, history.signals[account.ID], now)
+		if candidate.priorityUnhealthy || slices.Contains(score.Reasons, "latency_above_target") {
 			continue
 		}
 		if rpm, ok := accountRPMStateFromContext(ctx, account); ok && rpm.Enabled && rpm.Limit > 0 && rpm.Current >= rpm.Limit {
