@@ -327,10 +327,20 @@ type defaultOpenAIAccountScheduler struct {
 }
 
 type openAISelectionProbeBudget struct {
-	acquires  int
-	rechecks  int
-	attempted map[int64]struct{}
-	limited   bool
+	acquires      int
+	rechecks      int
+	attempted     map[int64]struct{}
+	limited       bool
+	latencyDenied error
+}
+
+// Keep a late policy rejection while trying healthy alternatives. It takes
+// precedence only after every acquisition/wait candidate has been exhausted.
+func (b *openAISelectionProbeBudget) selectionExhaustedError(fallback error) error {
+	if b != nil && b.latencyDenied != nil {
+		return b.latencyDenied
+	}
+	return fallback
 }
 
 func newOpenAISelectionProbeBudget() *openAISelectionProbeBudget {
@@ -1396,6 +1406,9 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			continue
 		}
 		if denied := s.service.priorityLatencyAdmission(req, candidate.account); denied != nil {
+			if budget != nil {
+				budget.latencyDenied = denied
+			}
 			continue
 		}
 		if candidate.loadKnown && candidate.account.Concurrency > 0 &&
@@ -1448,6 +1461,9 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			}
 		}
 		if denied := s.service.priorityLatencyAdmission(req, fresh); denied != nil {
+			if budget != nil {
+				budget.latencyDenied = denied
+			}
 			release(result)
 			continue
 		}
@@ -1778,14 +1794,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			if preferred != nil && preferred.Acquired {
 				return preferred, count, topK, skew, preferredErr
 			}
-			if preferredErr != nil && !errors.Is(preferredErr, ErrNoAvailableAccounts) && !errors.Is(preferredErr, ErrNoAvailableCompactAccounts) {
+			if preferredErr != nil && !errors.Is(preferredErr, ErrNoAvailableAccounts) && !errors.Is(preferredErr, ErrNoAvailableCompactAccounts) && !errors.Is(preferredErr, ErrPriorityLatencyUnavailable) {
 				return nil, count, topK, skew, preferredErr
 			}
 			fallback, fallbackCount, fallbackTopK, fallbackSkew, fallbackErr := s.selectByLoadBalanceCandidates(ctx, req, native, loadMap, budget, filterStats)
 			if fallback != nil && fallback.Acquired {
 				return fallback, fallbackCount, fallbackTopK, fallbackSkew, fallbackErr
 			}
-			if fallbackErr != nil && !errors.Is(fallbackErr, ErrNoAvailableAccounts) && !errors.Is(fallbackErr, ErrNoAvailableCompactAccounts) {
+			if fallbackErr != nil && !errors.Is(fallbackErr, ErrNoAvailableAccounts) && !errors.Is(fallbackErr, ErrNoAvailableCompactAccounts) && !errors.Is(fallbackErr, ErrPriorityLatencyUnavailable) {
 				return nil, fallbackCount, fallbackTopK, fallbackSkew, fallbackErr
 			}
 			if preferred != nil {
@@ -1989,7 +2005,7 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 	loadSkew := attempt.loadSkew
 
 	if len(attempt.selectionOrder) == 0 {
-		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, attempt.compactBlocked, filterStats.summary("selection_order_empty"))
+		return nil, candidateCount, topK, loadSkew, budget.selectionExhaustedError(noAvailableOpenAISelectionError(req.RequestedModel, attempt.compactBlocked, filterStats.summary("selection_order_empty")))
 	}
 
 	if stickyFallback, stickyErr := s.tryFallbackToWeightedSticky(ctx, req); stickyErr != nil {
@@ -2024,13 +2040,16 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 				continue
 			}
 			if !s.consumeOpenAISelectionDBRecheck(budget) {
-				return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked, filterStats.summary("selection_order_exhausted"))
+				return nil, candidateCount, topK, loadSkew, budget.selectionExhaustedError(noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked, filterStats.summary("selection_order_exhausted")))
 			}
 			fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.GroupID, req.Platform, req.RequestedModel, false, req.RequiredCapability, req.RequireCompact)
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport, req.RequestedModel) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 				continue
 			}
 			if denied := s.service.priorityLatencyAdmission(req, fresh); denied != nil {
+				if budget != nil {
+					budget.latencyDenied = denied
+				}
 				continue
 			}
 			if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
@@ -2049,7 +2068,7 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 		}
 	}
 
-	return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked, filterStats.summary("selection_order_exhausted"))
+	return nil, candidateCount, topK, loadSkew, budget.selectionExhaustedError(noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked, filterStats.summary("selection_order_exhausted")))
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport, requestedModels ...string) bool {
