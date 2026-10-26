@@ -127,7 +127,7 @@ func TestTrafficDeliverySurvivesDatabaseOutageAndRestart(t *testing.T) {
 	dir := t.TempDir()
 	d, err := NewTrafficDelivery(dir, func(context.Context, TrafficEvent) error { return errors.New("offline") })
 	require.NoError(t, err)
-	e := TrafficEvent{EventID: uuid.NewString(), UserID: 1, APIKeyID: 2, UploadBytes: 3, DownloadBytes: 4, MeasurementVersion: 1}
+	e := trafficDeliveryFixture()
 	d.RecordTraffic(e)
 	d.Stop()
 	path := filepath.Join(dir, e.EventID+".json")
@@ -157,7 +157,7 @@ func TestTrafficDeliveryQueueOverflowDoesNotLoseEvents(t *testing.T) {
 	require.NoError(t, err)
 	d.Stop() // Stage without a running consumer: the wake channel fills immediately.
 	for i := 0; i < 8; i++ {
-		d.RecordTraffic(TrafficEvent{EventID: uuid.NewString(), MeasurementVersion: 1})
+		d.RecordTraffic(trafficDeliveryFixture())
 	}
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	require.NoError(t, err)
@@ -176,12 +176,12 @@ func TestTrafficDeliveryQuarantinesCorruptionAndFallsBackOnDiskFailure(t *testin
 	d.Stop()
 	bad := filepath.Join(dir, uuid.NewString()+".json")
 	require.NoError(t, os.WriteFile(bad, []byte("truncated"), 0600))
-	d.RecordTraffic(TrafficEvent{EventID: uuid.NewString(), MeasurementVersion: 1})
+	d.RecordTraffic(trafficDeliveryFixture())
 	require.NoError(t, d.replay(context.Background()))
 	require.Equal(t, 1, count)
 	_, err = os.Stat(bad + ".invalid")
 	require.NoError(t, err)
 	d.dir = filepath.Join(dir, "missing")
-	d.RecordTraffic(TrafficEvent{EventID: uuid.NewString(), MeasurementVersion: 1})
+	d.RecordTraffic(trafficDeliveryFixture())
 	require.Equal(t, 2, count)
 }

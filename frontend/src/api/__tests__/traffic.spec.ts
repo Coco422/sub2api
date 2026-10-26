@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { formatTrafficBytes, getTraffic } from '../traffic'
+import { formatTrafficBytes, getTraffic, getTrafficKeys, getTrafficHealth } from '../traffic'
 const { get } = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('../client', () => ({ apiClient: { get } }))
 beforeEach(() => vi.clearAllMocks())
@@ -11,6 +11,16 @@ describe('traffic API', () => {
     expect(get).toHaveBeenLastCalledWith('/usage/traffic', { params, signal: undefined })
     await getTraffic(true, params)
     expect(get).toHaveBeenLastCalledWith('/admin/usage/traffic', { params, signal: undefined })
+  })
+  it('scopes history key searches by route and only sends user filters for admins', async () => {
+    get.mockResolvedValue({ data: [] })
+    const controller = new AbortController()
+    await getTrafficKeys(false, 999, 'Old', controller.signal)
+    expect(get).toHaveBeenLastCalledWith('/usage/traffic/keys', { params: { q: 'Old' }, signal: controller.signal })
+    await getTrafficKeys(true, 7, 'Old')
+    expect(get).toHaveBeenLastCalledWith('/admin/usage/traffic/keys', { params: { q: 'Old', user_id: 7 }, signal: undefined })
+    await getTrafficHealth(controller.signal)
+    expect(get).toHaveBeenLastCalledWith('/admin/usage/traffic/health', { signal: controller.signal })
   })
   it('formats binary units without changing raw metering values', () => {
     expect(formatTrafficBytes(0)).toBe('0 B')

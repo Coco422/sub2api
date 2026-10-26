@@ -2,12 +2,30 @@ package trafficquery
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
+
+func ParseKeys(c *gin.Context, userID int64, admin bool) (int64, string, bool) {
+	query := strings.TrimSpace(c.Query("q"))
+	if len(query) > 256 {
+		response.BadRequest(c, "Search query too long")
+		return 0, "", false
+	}
+	if admin && c.Query("user_id") != "" {
+		id, err := strconv.ParseInt(c.Query("user_id"), 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid user_id")
+			return 0, "", false
+		}
+		userID = id
+	}
+	return userID, query, true
+}
 
 func Parse(c *gin.Context, userID int64, admin bool) (service.TrafficFilter, bool) {
 	f, err := service.NewTrafficFilter(c.DefaultQuery("period", "month"), c.Query("date"), time.Now())

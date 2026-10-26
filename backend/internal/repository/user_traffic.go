@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/google/uuid"
 )
 
 // One statement atomically inserts the event and increments its UTC hour only
@@ -35,17 +35,47 @@ func (r *usageLogRepository) RecordTraffic(ctx context.Context, e service.Traffi
 	if r.sql == nil {
 		return errors.New("traffic database unavailable")
 	}
-	if _, err := uuid.Parse(e.EventID); err != nil {
-		return fmt.Errorf("invalid traffic event ID: %w", err)
-	}
-	if e.UserID <= 0 || e.APIKeyID <= 0 || e.UploadBytes < 0 || e.DownloadBytes < 0 ||
-		e.MeasurementVersion != 1 || e.StartedAt.IsZero() || e.FinishedAt.Before(e.StartedAt) {
-		return errors.New("invalid traffic event")
+	if err := service.ValidateTrafficEvent(e); err != nil {
+		return err
 	}
 	_, err := r.sql.ExecContext(ctx, insertTrafficSQL, e.EventID, e.UserID, e.APIKeyID, e.GroupID,
 		e.RequestID, e.Endpoint, e.Method, e.StartedAt, e.FinishedAt, e.UploadBytes, e.DownloadBytes,
 		e.StatusCode, e.Outcome, e.RequestComplete, e.MeasurementVersion)
 	return err
+}
+
+func (r *usageLogRepository) TrafficKeyOptions(ctx context.Context, userID int64, query string) ([]service.TrafficKeyOption, error) {
+	if r.sql == nil {
+		return nil, errors.New("traffic database unavailable")
+	}
+	// Explicit columns keep credentials out of history filters. Deletion does
+	// not revoke the owner's ability to inspect their historical traffic.
+	scope := ""
+	match := "name ILIKE $1"
+	args := []any{"%" + query + "%"}
+	if strings.HasPrefix(query, "#") {
+		if id, err := strconv.ParseInt(strings.TrimPrefix(query, "#"), 10, 64); err == nil && id > 0 {
+			match, args = "id=$1", []any{id}
+		}
+	}
+	if userID > 0 {
+		scope = " AND user_id=$2"
+		args = append(args, userID)
+	}
+	rows, err := r.sql.QueryContext(ctx, `SELECT id,name,deleted_at IS NOT NULL FROM api_keys WHERE `+match+scope+` ORDER BY (deleted_at IS NOT NULL),name,id LIMIT 30`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	options := []service.TrafficKeyOption{}
+	for rows.Next() {
+		var option service.TrafficKeyOption
+		if err := rows.Scan(&option.ID, &option.Name, &option.Deleted); err != nil {
+			return nil, err
+		}
+		options = append(options, option)
+	}
+	return options, rows.Err()
 }
 
 func trafficScope(f service.TrafficFilter, args []any) (string, []any) {

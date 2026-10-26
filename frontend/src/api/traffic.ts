@@ -45,6 +45,30 @@ export interface TrafficQuery {
   page: number
   page_size: number
 }
+export interface TrafficKeyOption { id: number; name: string; deleted: boolean }
+export interface TrafficDeliveryHealth {
+  status: 'ok' | 'delayed' | 'degraded'
+  pending_events: number
+  quarantined_events: number
+  oldest_pending_at: string | null
+  oldest_pending_age_seconds: number
+  delivered_events: number
+  delivery_failures: number
+  staging_failures: number
+  persistence_failures: number
+  last_delivery_at: string | null
+  checked_at: string
+}
+export async function getTrafficKeys(admin: boolean, userId?: number, query = '', signal?: AbortSignal) {
+  const { data } = await apiClient.get<TrafficKeyOption[]>(admin ? '/admin/usage/traffic/keys' : '/usage/traffic/keys', {
+    params: { q: query, ...(admin && userId ? { user_id: userId } : {}) }, signal
+  })
+  return data
+}
+export async function getTrafficHealth(signal?: AbortSignal) {
+  const { data } = await apiClient.get<TrafficDeliveryHealth>('/admin/usage/traffic/health', { signal })
+  return data
+}
 export async function getTraffic(admin: boolean, params: TrafficQuery, signal?: AbortSignal) {
   const { data } = await apiClient.get<TrafficReport>(admin ? '/admin/usage/traffic' : '/usage/traffic', { params, signal })
   return data

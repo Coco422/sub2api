@@ -1,4 +1,7 @@
 export default {
+  deletedKey: '已删除', keyHistoryHint: '支持按名称或 #ID 搜索，包含已删除密钥。', keysFailed: '密钥候选加载失败，请重新搜索。',
+  nodeHealth: '本节点流量记录状态', nodeHealthScope: '仅反映当前节点，计数器在进程重启后归零', healthStatuses: { ok: '正常', delayed: '存在积压', degraded: '需要处理' },
+  healthSummary: '待入库 {pending} 条 · 最老积压 {age} 秒 · 隔离 {quarantined} 条 · 本次启动后持久化失败告警 {lost} 次', healthFailed: '暂时无法获取记录状态，请刷新重试。',
   title: '流量记录', scope: '统计已认证 API 请求的 HTTP/SSE 正文读写量，包含失败与取消请求。暂不覆盖 WebSocket、Live/WebRTC、无 API Key 的能力链接下载和外部媒体下载。不含请求头及网络协议开销；响应写入量不代表客户端已完整接收。本期仅统计，不扣费。',
   period: '统计周期', periods: { day: '日', week: '周', month: '月', year: '年' }, date: '周期内日期', apply: '查询',
   previousPeriod: '上一周期', nextPeriod: '下一周期', upload: '上传流量', download: '下载流量', total: '总流量', requests: '请求数',

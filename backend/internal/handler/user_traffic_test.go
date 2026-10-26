@@ -13,7 +13,9 @@ import (
 
 type trafficHandlerRepository struct {
 	service.UsageLogRepository
-	filters []service.TrafficFilter
+	filters    []service.TrafficFilter
+	keyUsers   []int64
+	keyQueries []string
 }
 
 func (r *trafficHandlerRepository) RecordTraffic(context.Context, service.TrafficEvent) error {
@@ -50,5 +52,34 @@ func TestTrafficUserEndpointAlwaysScopesAuthenticatedUser(t *testing.T) {
 	r.GET("/usage/traffic", h.Traffic)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/usage/traffic", nil))
+	require.Equal(t, 401, w.Code)
+}
+
+func (r *trafficHandlerRepository) TrafficKeyOptions(_ context.Context, userID int64, query string) ([]service.TrafficKeyOption, error) {
+	r.keyUsers = append(r.keyUsers, userID)
+	r.keyQueries = append(r.keyQueries, query)
+	return []service.TrafficKeyOption{{ID: 3, Name: "Deleted key", Deleted: true}}, nil
+}
+
+func TestTrafficKeysIgnoreForeignUserAndNeverExposeCredentials(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &trafficHandlerRepository{}
+	h := &UsageHandler{usageService: service.NewUsageService(repo, nil, nil, nil)}
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+		c.Next()
+	})
+	r.GET("/usage/traffic/keys", h.TrafficKeys)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/usage/traffic/keys?user_id=999&q=Deleted", nil))
+	require.Equal(t, 200, w.Code)
+	require.Equal(t, []int64{7}, repo.keyUsers)
+	require.Equal(t, []string{"Deleted"}, repo.keyQueries)
+	require.JSONEq(t, `{"code":0,"message":"success","data":[{"id":3,"name":"Deleted key","deleted":true}]}`, w.Body.String())
+	r = gin.New()
+	r.GET("/usage/traffic/keys", h.TrafficKeys)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/usage/traffic/keys", nil))
 	require.Equal(t, 401, w.Code)
 }

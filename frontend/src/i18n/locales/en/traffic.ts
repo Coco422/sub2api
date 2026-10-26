@@ -1,4 +1,7 @@
 export default {
+  deletedKey: 'Deleted', keyHistoryHint: 'Search names or #ID, including deleted keys.', keysFailed: 'Could not load key choices. Retry the search.',
+  nodeHealth: 'Traffic recording on this node', nodeHealthScope: 'Node-local status; counters reset on restart', healthStatuses: { ok: 'Healthy', delayed: 'Delayed', degraded: 'Needs attention' },
+  healthSummary: 'Pending: {pending} · Oldest pending: {age}s · Quarantined: {quarantined} · Persistence failure alerts since restart: {lost}', healthFailed: 'Recording health is unavailable. Refresh to retry.',
   title: 'Traffic records', scope: 'HTTP/SSE payload bytes read and written for authenticated API requests, including failures and cancellations. Excludes WebSocket, Live/WebRTC, capability-link downloads without API keys, external media downloads, headers and network overhead. Written bytes do not prove client receipt. Statistics only; no traffic charges.',
   period: 'Period', periods: { day: 'Day', week: 'Week', month: 'Month', year: 'Year' }, date: 'Date within period', apply: 'Apply',
   previousPeriod: 'Previous period', nextPeriod: 'Next period', upload: 'Upload', download: 'Download', total: 'Total traffic', requests: 'Requests',

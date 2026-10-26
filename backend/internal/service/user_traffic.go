@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/google/uuid"
 )
 
 // TrafficEvent contains metering metadata only. Never add bodies, raw URLs or credentials.
@@ -25,6 +28,47 @@ type TrafficEvent struct {
 	Outcome            string    `json:"outcome"`
 	RequestComplete    bool      `json:"request_complete"`
 	MeasurementVersion int       `json:"measurement_version"`
+}
+
+var ErrInvalidTrafficEvent = errors.New("invalid traffic event")
+
+// ValidateTrafficEvent identifies permanent metadata errors before SQL delivery.
+func ValidateTrafficEvent(e TrafficEvent) error {
+	if _, err := uuid.Parse(e.EventID); err != nil {
+		return ErrInvalidTrafficEvent
+	}
+	if e.UserID <= 0 || e.APIKeyID <= 0 || e.GroupID < 0 || e.UploadBytes < 0 || e.DownloadBytes < 0 ||
+		e.MeasurementVersion != 1 || e.StartedAt.IsZero() || e.FinishedAt.Before(e.StartedAt) {
+		return ErrInvalidTrafficEvent
+	}
+	for _, field := range []struct {
+		value string
+		limit int
+	}{
+		{e.RequestID, 64}, {e.Endpoint, 256}, {e.Method, 16}, {e.Outcome, 32},
+	} {
+		if !utf8.ValidString(field.value) || strings.ContainsRune(field.value, 0) || utf8.RuneCountInString(field.value) > field.limit {
+			return ErrInvalidTrafficEvent
+		}
+	}
+	return nil
+}
+
+// TrafficKeyOption is safe for history filters, including soft-deleted keys.
+type TrafficKeyOption struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Deleted bool   `json:"deleted"`
+}
+
+func (s *UsageService) TrafficKeyOptions(ctx context.Context, userID int64, query string) ([]TrafficKeyOption, error) {
+	r, ok := s.usageRepo.(interface {
+		TrafficKeyOptions(context.Context, int64, string) ([]TrafficKeyOption, error)
+	})
+	if !ok {
+		return nil, errors.New("traffic key options unavailable")
+	}
+	return r.TrafficKeyOptions(ctx, userID, query)
 }
 
 type TrafficFilter struct {

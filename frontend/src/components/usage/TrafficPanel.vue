@@ -1,6 +1,15 @@
 <template>
   <section class="space-y-5 p-4 sm:p-6" :aria-label="t('traffic.title')" :aria-busy="loading">
     <p class="rounded-lg bg-sky-50 p-3 text-sm text-sky-900 dark:bg-sky-950/40 dark:text-sky-200">{{ t('traffic.scope') }}</p>
+    <div v-if="admin" class="rounded-lg border p-3 text-sm" :class="healthError || health?.status === 'degraded' ? 'border-red-300 text-red-700 dark:text-red-300' : health?.status === 'delayed' ? 'border-amber-300 text-amber-700 dark:text-amber-300' : 'border-gray-200 text-gray-600 dark:border-dark-700 dark:text-gray-300'" data-testid="traffic-health">
+      <template v-if="health">
+        <p class="font-medium">{{ t('traffic.nodeHealth') }} · {{ t(`traffic.healthStatuses.${health.status}`) }}</p>
+        <p>{{ t('traffic.healthSummary', { pending: health.pending_events, age: health.oldest_pending_age_seconds, quarantined: health.quarantined_events, lost: health.persistence_failures }) }}</p>
+        <p class="mt-1 text-xs">{{ t('traffic.nodeHealthScope') }} · {{ displayTime(health.checked_at) }}</p>
+      </template>
+      <p v-if="!health && !healthError">{{ t('common.loading') }}</p>
+      <p v-if="healthError" role="alert">{{ t('traffic.healthFailed') }}</p>
+    </div>
     <form class="flex flex-wrap items-end gap-3" @submit.prevent="applyFilters">
       <div>
         <label for="traffic-period" class="input-label">{{ t('traffic.period') }}</label>
@@ -17,6 +26,7 @@
         :key="searchResetKey"
         v-model="searchFilters"
         identity-only
+        :api-key-search="searchAdminKeys"
         :show-actions="false"
         :exporting="false"
         start-date=""
@@ -25,12 +35,16 @@
       />
       <div v-else class="w-full sm:w-auto sm:min-w-[220px]">
         <label for="traffic-key" class="input-label">{{ t('usage.apiKeyFilter') }}</label>
-        <Select id="traffic-key" v-model="searchFilters.api_key_id" :options="apiKeyOptions" searchable @change="applyFilters" />
+        <Select :key="searchResetKey" id="traffic-key" v-model="searchFilters.api_key_id" :options="ownKeyOptions" searchable remote :loading="ownKeyLoading" @open="onOwnKeyOpen" @search="searchOwnKeys" @change="selectOwnKey">
+          <template #selected="{ option }">{{ searchFilters.api_key_id ? selectedKeyLabel : option?.label || t('usage.allApiKeys') }}</template>
+        </Select>
+        <p v-if="ownKeyError" role="alert" class="mt-1 text-xs text-red-600 dark:text-red-400">{{ t('traffic.keysFailed') }} <button type="button" class="underline" @click="searchOwnKeys(ownKeyQuery)">{{ t('common.refresh') }}</button></p>
       </div>
       <button class="btn btn-primary" type="submit" :disabled="loading">{{ t('traffic.apply') }}</button>
       <button class="btn btn-secondary" type="button" :disabled="loading" @click="load">{{ t('common.refresh') }}</button>
       <button class="btn btn-secondary" type="button" @click="reset">{{ t('common.reset') }}</button>
     </form>
+    <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('traffic.keyHistoryHint') }}</p>
     <div class="flex flex-wrap items-center justify-between gap-3 text-sm">
       <div class="flex gap-2">
         <button class="btn btn-secondary btn-sm" type="button" :disabled="loading || !report" @click="shift(-1)">{{ t('traffic.previousPeriod') }}</button>
@@ -102,7 +116,7 @@ import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Lege
 import { Bar } from 'vue-chartjs'
 import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
-import { getTraffic, formatTrafficBytes as bytes, type TrafficPeriod, type TrafficReport } from '@/api/traffic'
+import { getTraffic, getTrafficKeys, getTrafficHealth, formatTrafficBytes as bytes, type TrafficPeriod, type TrafficReport, type TrafficKeyOption, type TrafficDeliveryHealth } from '@/api/traffic'
 
 const props = withDefaults(defineProps<{ admin?: boolean; apiKeyOptions?: SelectOption[] }>(), { admin: false, apiKeyOptions: () => [] })
 const { t } = useI18n()
@@ -114,7 +128,32 @@ const searchFilters = ref<{ user_id?: number; api_key_id?: number | null }>({ ap
 const searchResetKey = ref(0)
 const filters = ref<{ user_id?: number; api_key_id?: number }>({})
 const report = ref<TrafficReport | null>(null), loading = ref(false), error = ref('')
+const health = ref<TrafficDeliveryHealth | null>(null), healthError = ref(false)
+const ownKeyResults = ref<TrafficKeyOption[]>([]), ownKeyQuery = ref(''), ownKeyLoading = ref(false), ownKeyError = ref(false), ownKeyLabel = ref('')
+let keyController: AbortController | undefined
 let controller: AbortController | undefined
+const ownKeyOptions = computed<SelectOption[]>(() => {
+  const options = new Map<string | number | boolean | null, SelectOption>()
+  if (!ownKeyQuery.value) for (const option of props.apiKeyOptions) options.set(option.value, option)
+  for (const key of ownKeyResults.value) options.set(key.id, { value: key.id, label: `${key.name || `#${key.id}`}${key.deleted ? ` (${t('traffic.deletedKey')})` : ''}` })
+  options.delete(null)
+  return [{ value: null, label: t('usage.allApiKeys') }, ...options.values()]
+})
+const selectedKeyLabel = computed(() => ownKeyLabel.value || ownKeyOptions.value.find(option => option.value === searchFilters.value.api_key_id)?.label || `#${searchFilters.value.api_key_id}`)
+const searchAdminKeys = (userId: number | undefined, query: string) => getTrafficKeys(true, userId, query)
+async function searchOwnKeys(query = '') {
+  keyController?.abort()
+  const current = new AbortController(); keyController = current
+  ownKeyQuery.value = query; ownKeyLoading.value = true; ownKeyError.value = false; ownKeyResults.value = []
+  try {
+    const result = await getTrafficKeys(false, undefined, query, current.signal)
+    if (!current.signal.aborted) ownKeyResults.value = result
+  } catch {
+    if (!current.signal.aborted) ownKeyError.value = true
+  } finally { if (!current.signal.aborted) ownKeyLoading.value = false }
+}
+function selectOwnKey(_value: unknown, option: SelectOption | null) { ownKeyLabel.value = option?.label || ''; applyFilters() }
+function onOwnKeyOpen() { if (ownKeyQuery.value) void searchOwnKeys() }
 const siteDate = (value: string | Date) => {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: report.value?.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(value))
   const get = (type: string) => parts.find(p => p.type === type)?.value || ''
@@ -147,7 +186,10 @@ function applyFilters() {
   const user = searchFilters.value.user_id, key = searchFilters.value.api_key_id
   filters.value = { ...(props.admin && user ? { user_id: user } : {}), ...(key ? { api_key_id: key } : {}) }
 }
-function reset() { searchFilters.value = { api_key_id: null }; searchResetKey.value++; date.value = ''; period.value = 'month'; filters.value = {} }
+function reset() {
+  searchFilters.value = { api_key_id: null }; searchResetKey.value++; date.value = ''; period.value = 'month'; filters.value = {}; ownKeyLabel.value = ''
+  if (!props.admin) void searchOwnKeys()
+}
 function shift(direction: number) {
   if (!report.value) return
   const anchor = new Date(`${siteDate(report.value.start)}T00:00:00Z`)
@@ -160,6 +202,7 @@ async function load() {
   controller?.abort()
   const current = new AbortController(); controller = current
   loading.value = true; error.value = ''; report.value = null
+  if (props.admin) void loadHealth(current)
   try {
     const result = await getTraffic(props.admin, { period: period.value, date: date.value || undefined, page: page.value, page_size: 20, ...filters.value }, current.signal)
     if (!current.signal.aborted) report.value = result
@@ -169,8 +212,17 @@ async function load() {
     if (!current.signal.aborted) loading.value = false
   }
 }
+async function loadHealth(current: AbortController) {
+  try {
+    const result = await getTrafficHealth(current.signal)
+    if (!current.signal.aborted) { health.value = result; healthError.value = false }
+  } catch {
+    if (!current.signal.aborted) { health.value = null; healthError.value = true }
+  }
+}
 watch([period, date, filters], () => { if (page.value !== 1) page.value = 1; else void load() }, { deep: true })
 watch(page, () => { void load() })
 void load()
-onUnmounted(() => controller?.abort())
+if (!props.admin) void searchOwnKeys()
+onUnmounted(() => { controller?.abort(); keyController?.abort() })
 </script>

@@ -73,9 +73,11 @@
               class="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-dark-700"
             >
               <span class="truncate">{{ k.name || `#${k.id}` }}</span>
+              <span v-if="k.deleted" class="ml-1 text-xs text-gray-400">({{ t('traffic.deletedKey') }})</span>
               <span class="ml-2 text-xs text-gray-400">#{{ k.id }}</span>
             </button>
           </div>
+          <p v-if="apiKeySearchError" role="alert" class="mt-1 text-xs text-red-600 dark:text-red-400">{{ t('traffic.keysFailed') }}</p>
         </div>
 
         <template v-if="!identityOnly">
@@ -228,6 +230,7 @@ interface Props {
   flat?: boolean
   /** Reuse user/key search without token, account, model or group filters. */
   identityOnly?: boolean
+  apiKeySearch?: (userId: number | undefined, query: string) => Promise<UsageFilterOption[]>
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -262,6 +265,7 @@ let userSearchSequence = 0
 const apiKeyKeyword = ref('')
 const apiKeyResults = ref<UsageFilterOption[]>([])
 const showApiKeyDropdown = ref(false)
+const apiKeySearchError = ref(false)
 let apiKeySearchTimeout: ReturnType<typeof setTimeout> | null = null
 let apiKeySearchSequence = 0
 
@@ -383,12 +387,14 @@ const clearPendingApiKeySearch = () => {
 
 const searchApiKeys = async (userId: number | undefined, query: string, sequence: number) => {
   try {
-    const results = observerMode
+    const results = props.apiKeySearch && !observerMode
+      ? await props.apiKeySearch(userId, query)
+      : observerMode
       ? await observerUsageAPI.filterOptions('api_key', query)
       : await adminAPI.usage.searchApiKeys(userId, query)
-    if (sequence === apiKeySearchSequence && userId === filters.value.user_id) apiKeyResults.value = results
+    if (sequence === apiKeySearchSequence && userId === filters.value.user_id) { apiKeyResults.value = results; apiKeySearchError.value = false }
   } catch {
-    if (sequence === apiKeySearchSequence && userId === filters.value.user_id) apiKeyResults.value = []
+    if (sequence === apiKeySearchSequence && userId === filters.value.user_id) { apiKeyResults.value = []; apiKeySearchError.value = Boolean(props.apiKeySearch) }
   }
 }
 
@@ -429,7 +435,7 @@ const clearUser = () => {
 
 const selectApiKey = (k: UsageFilterOption) => {
   clearPendingApiKeySearch()
-  apiKeyKeyword.value = k.name || String(k.id)
+  apiKeyKeyword.value = `${k.name || String(k.id)}${k.deleted ? ` (${t('traffic.deletedKey')})` : ''}`
   showApiKeyDropdown.value = false
   filters.value.api_key_id = k.id
   emitChange()
@@ -438,6 +444,7 @@ const selectApiKey = (k: UsageFilterOption) => {
 const clearApiKey = () => {
   clearPendingApiKeySearch()
   apiKeyKeyword.value = ''
+  apiKeySearchError.value = false
   apiKeyResults.value = []
   showApiKeyDropdown.value = false
   filters.value.api_key_id = undefined
