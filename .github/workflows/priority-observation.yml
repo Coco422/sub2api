@@ -14,6 +14,9 @@ on:
       - 'frontend/src/views/admin/__tests__/PrioritySchedulingView.spec.ts'
       - '.github/workflows/priority-observation.yml'
       - '.github/scripts/priority-observation-red.py'
+concurrency:
+  group: priority-observation-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
