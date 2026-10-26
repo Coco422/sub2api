@@ -58,6 +58,18 @@ export interface TrafficDeliveryHealth {
   persistence_failures: number
   last_delivery_at: string | null
   checked_at: string
+  queued_events: number
+  queue_capacity: number
+  processing_events: number
+  dropped_events: number
+  queue_dropped_events: number
+  shutdown_dropped_events: number
+  spool_limit_dropped_events: number
+  invalid_dropped_events: number
+  unavailable_dropped_events: number
+  worker_panics: number
+  worker_running: boolean
+  storage_available: boolean
 }
 export async function getTrafficKeys(admin: boolean, userId?: number, query = '', signal?: AbortSignal) {
   const { data } = await apiClient.get<TrafficKeyOption[]>(admin ? '/admin/usage/traffic/keys' : '/usage/traffic/keys', {

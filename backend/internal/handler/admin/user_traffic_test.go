@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -43,28 +44,38 @@ func TestTrafficAdminKeysScopeAndValidation(t *testing.T) {
 	}
 }
 
-func TestTrafficAdminHealthReportsLocalBacklogAndUnavailableStorage(t *testing.T) {
+func TestTrafficAdminHealthReportsOptionalWorkerAndCachedState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &UsageHandler{}
 	r := gin.New()
 	r.GET("/traffic/health", h.TrafficHealth)
+	// An unconfigured optional recorder never calls a nil service or SQL.
+	h.RecordTraffic(service.TrafficEvent{})
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/traffic/health", nil))
-	require.Equal(t, 503, w.Code)
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"unavailable_dropped_events":1`)
 	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "corrupt.json.invalid"), []byte("preserve"), 0600))
 	d, err := service.NewTrafficDelivery(dir, func(context.Context, service.TrafficEvent) error { return nil })
 	require.NoError(t, err)
-	d.Stop()
+	defer d.Stop()
 	h.trafficDelivery = d
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "corrupt.json.invalid"), []byte("preserve"), 0600))
+	require.Eventually(t, func() bool {
+		health, err := d.Health(context.Background())
+		return err == nil && health.QuarantinedEvents == 1
+	}, time.Second, time.Millisecond)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/traffic/health", nil))
 	require.Equal(t, 200, w.Code)
 	require.Contains(t, w.Body.String(), `"quarantined_events":1`)
 	require.Contains(t, w.Body.String(), `"status":"degraded"`)
 	require.NotContains(t, w.Body.String(), dir)
+	d.Stop()
 	require.NoError(t, os.RemoveAll(dir))
+	// Cached health must still return without touching an unavailable mount.
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/traffic/health", nil))
-	require.Equal(t, 503, w.Code)
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"worker_running":false`)
 }

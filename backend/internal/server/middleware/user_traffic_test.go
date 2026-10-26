@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -86,7 +89,9 @@ func TestTrafficRecordsErrorsAndCanceledPartialRequests(t *testing.T) {
 		r.ServeHTTP(httptest.NewRecorder(), req)
 	}
 	require.Len(t, recorder.events, 2)
-	require.NotEqual(t, recorder.events[0].EventID, recorder.events[1].EventID)
+	// IDs are assigned after the nonblocking handoff, never on this goroutine.
+	require.Empty(t, recorder.events[0].EventID)
+	require.Empty(t, recorder.events[1].EventID)
 	require.Equal(t, "http_error", recorder.events[0].Outcome)
 	require.Equal(t, "canceled", recorder.events[1].Outcome)
 	require.EqualValues(t, 2, recorder.events[0].UploadBytes)
@@ -240,4 +245,52 @@ func TestTrafficRecoveryDoesNotRepeatFinalizationOnNextRequest(t *testing.T) {
 	}
 	require.Len(t, recorder.events, 3)
 	require.Equal(t, "completed", recorder.events[1].Outcome)
+}
+
+func TestTrafficAuxiliaryQueueCannotDelayGatewayResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	entered, releaseCh := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseCh) })
+	base := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(base, "blocked-mount"), []byte("file"), 0600))
+	delivery, err := service.NewTrafficDeliveryResolved(func() string { close(entered); <-releaseCh; return filepath.Join(base, "blocked-mount", "pending") }, func(context.Context, service.TrafficEvent) error { return nil })
+	require.NoError(t, err)
+	t.Cleanup(func() { release(); delivery.Stop() })
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("storage resolver did not start")
+	}
+	router := gin.New()
+	router.Use(UserTraffic(delivery), trafficTestAuth)
+	router.POST("/v1/messages", func(c *gin.Context) { c.String(200, "business-ok") })
+	health, err := delivery.Health(context.Background())
+	require.NoError(t, err)
+	done := make(chan struct{})
+	badResponse := make(chan int, 1)
+	go func() {
+		defer close(done)
+		for i := 0; i < health.QueueCapacity+5; i++ {
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest("POST", "/v1/messages", strings.NewReader("hello")))
+			if response.Code != 200 || response.Body.String() != "business-ok" {
+				badResponse <- response.Code
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("gateway waited for optional statistics storage")
+	}
+	select {
+	case code := <-badResponse:
+		t.Fatalf("statistics changed business response: %d", code)
+	default:
+	}
+	health, err = delivery.Health(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 5, health.QueueDroppedEvents)
+	require.Equal(t, health.QueueCapacity, health.QueuedEvents)
 }

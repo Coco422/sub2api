@@ -34,15 +34,19 @@ API 为 `GET /api/v1/usage/traffic` 和 `GET /api/v1/admin/usage/traffic`，参�
 
 新增迁移 `307_user_traffic.sql` 创建 `user_traffic_events` 与 `user_traffic_hourly`。事件使用独立服务端 UUID；相同 request ID 的客户端重试仍产生独立事件。数据库以一条原子 SQL 写入事件并累计小时桶，重放相同事件不会重复累计。查询使用一致性快照，小时桶覆盖完整 UTC 小时，原始事件补齐时区边界片段。
 
-应用先把已完成请求的元数据写入数据目录下的 `user-traffic-pending/`，文件同步并原子改名后再异步落库。目录随项目数据目录解析：优先 `DATA_DIR`，其次可写的 `/app/data`，最后工作目录。目录创建权限为 0700，事件文件为 0600。初始化目录失败会中止服务启动。
+统计是额外的尽力记录，不参与主业务成功与否的判定。请求结束时只做元数据快照和容量为 1024 的内存队列非阻塞投递，不做磁盘、数据库、UUID 生成或日志操作。队列满、worker 已停止或不可用时直接跳过这条统计并增加对应计数，不等待后台恢复，也不为每个请求创建 goroutine。
 
-部署时为此目录挂载持久卷并监控磁盘容量。队列通知满不会丢弃已落盘文件；数据库暂时不可用时保留文件并重试，进程重启后继续处理。停止后台补偿后，新完成请求仍可落盘，留待下次启动处理。不需要重放用户请求或再次调用上游。
+固定一个后台 worker 生成事件 UUID，落盘后再异步入库；文件同步与原子改名均在后台进行。目录为数据目录下的 `user-traffic-pending/`，按照项目规则优先 `DATA_DIR`、其次可写的 `/app/data`、最后工作目录；目录解析、探测和创建也全部在后台。目录权限为 0700，事件文件为 0600。存储初始化失败会让统计降级，HTTP 服务继续启动；后台周期性重试，本地存储不可用时仅由 worker 尝试直接写数据库。
 
-- `delivery pending; will retry` 表示数据库投递尚未完成，检查数据库连接和待补偿文件数量。
-- 本地落盘失败会尝试直接写数据库。两者都失败时输出 `METERING LOSS`，对应请求可能缺失，需处理存储故障。
-- 无法解析或元数据校验失败的文件，以及 PostgreSQL SQLSTATE `22`（数据异常）/`23`（完整性约束）永久拒绝的文件，保留为 `.json.invalid` 并记录 `DELIVERY ALERT`，跳过后继续处理有效记录。未知测量版本同样隔离保留，降级运行时不要擅自改写版本字段；恢复兼容版本或修复真实原因后，再恢复 `.json` 后缀重试。
-- 网络、事务、表结构未就绪、权限等错误继续保留 `.json` 并重试，不把运行环境故障当作坏记录删除。批次达到 256 条后会立即继续消费，不依赖新请求唤醒。
-- 请求仍在进行时遇到进程被强制杀死，内存中的当前读写量可能丢失。首版不作为可直接扣款的账本；正式收费前需补齐在途恢复、完整性核验和对账。
+资源预算为：每轮最多处理 32 条新事件和 32 条补偿记录，调度间隔 100ms；每次数据库操作超时 250ms，补偿轮次预算 1 秒，失败后至少等待 2 秒重试。补偿目录最多接纳 10000 个文件或 64MiB 逻辑文件大小，隔离文件和临时文件也计入预算，单事件最大 8KiB。达到任一目录预算后跳过新统计并计数，继续处理已有补偿文件。该限制约束本 worker 的新增文件，不自动删除旧文件，也不代表文件系统实际占用空间或阻止其他进程写入。每个副本应使用独立补偿目录。
+
+部署时为补偿目录挂载持久卷并监控容量。数据库暂时不可用时，已经落盘的文件保留并在恢复或进程重启后重试，无需重放业务请求或调用上游。数据库写入仍共用现有连接池，但该 worker 同时最多占用一次写操作；后台 CPU、磁盘和连接池仍有资源开销，尚未进行生产吞吐压测。
+
+- 无法解析、元数据校验失败或 PostgreSQL SQLSTATE `22` / `23` 永久拒绝的文件改为 `.json.invalid` 保留并告警，后续有效记录继续处理。未知测量版本同样隔离；修复原因后才能恢复 `.json` 后缀重试。
+- 网络、事务、表结构未就绪和权限错误继续保留 `.json` 重试。后台本地落盘与数据库回退都失败时增加 `persistence_failures`，表示可能缺失；目录同步失败后文件也可能已经存在，不能将此计数解释为已核实的永久丢失条数。
+- 退出时立即停止接收新统计，最多等待 1 秒排空；超时取消后台数据库操作，未处理事件计入退出丢弃。系统进入 drain 后，仍在完成的业务请求不受此规则阻断，但其统计可能被跳过。不可取消的文件系统调用可能延续到进程退出，退出调用方不会无限等待。
+- worker panic 在后台恢复并标记故障，后续统计跳过且计数，不能让附加统计的 panic 终止业务进程。进程内计数无法覆盖强杀时遗失的内存事件。
+- 正在进行的请求、已经入队但尚未落盘的记录、过载和异常退出都可能缺失。首版不能作为直接扣款账本；正式收费前必须另行设计可靠采集、完整性核验、在途恢复和对账。
 
 首版不自动删除流量明细和汇总，诊断日志与 Token 用量清理不会联动删除这些表。不要直接清理事件表：事件 UUID 去重、非整小时边界查询和历史首条时间都依赖原始记录。后续保留策略需要同时设计归档、去重和汇总边界方案。
 
@@ -50,27 +54,30 @@ API 为 `GET /api/v1/usage/traffic` 和 `GET /api/v1/admin/usage/traffic`，参�
 
 管理员流量页展示当前处理节点的状态，刷新或重新查询时更新；该卡片独立于报表请求，监控失败不会阻止查看流量。
 
-`GET /api/v1/admin/usage/traffic/health` 仅管理员可访问，不返回文件路径、数据库错误详情或请求正文。它扫描本节点补偿目录（4 秒请求预算），返回：
+`GET /api/v1/admin/usage/traffic/health` 仅管理员可访问，不返回文件路径、数据库错误详情或请求正文。接口只读原子计数与后台缓存，不扫描磁盘或访问数据库；磁盘快照正常每 2 秒更新，后台被慢存储拖住时快照也会变旧，应结合 `checked_at` 判断。返回：
 
 | 字段 | 含义 |
 | --- | --- |
-| `pending_events` | 当前 `.json` 待入库文件数量 |
-| `oldest_pending_at`、`oldest_pending_age_seconds` | 最老文件修改时间及等待秒数；用于积压诊断，不是流量统计归属时间 |
-| `quarantined_events` | 当前 `.json.invalid` 隔离文件数量 |
-| `delivered_events`、`last_delivery_at` | 本进程成功投递次数及最近时间；幂等重放也计为一次投递操作 |
-| `delivery_failures`、`staging_failures` | 本进程数据库投递失败、本地落盘失败次数 |
-| `persistence_failures` | 本地落盘及直接数据库回退同时失败的告警次数；表示可能缺失，不是已核实的永久丢失条数 |
-| `checked_at`、`status` | 检查时间及 `ok` / `delayed` / `degraded` 状态 |
+| `queued_events`、`queue_capacity`、`processing_events` | 当前内存排队数、队列容量、当前批次尚在处理数 |
+| `dropped_events` | 本进程跳过统计及持久化双重失败次数总和，表示可能缺失 |
+| `queue_dropped_events`、`shutdown_dropped_events` | 队列满、退出或 worker 停止后跳过次数 |
+| `spool_limit_dropped_events`、`invalid_dropped_events`、`unavailable_dropped_events` | 目录预算、无效事件、未初始化导致的跳过次数 |
+| `worker_running`、`worker_panics`、`storage_available` | worker 是否运行、panic 次数、最近存储检查是否可用 |
+| `pending_events`、`quarantined_events` | 当前缓存中的待入库文件数与隔离文件数 |
+| `oldest_pending_at`、`oldest_pending_age_seconds` | 最老文件修改时间及等待秒数，用于诊断，不是统计归属时间 |
+| `delivered_events`、`last_delivery_at` | 本进程成功投递次数及最近时间；幂等重放也计一次操作 |
+| `delivery_failures`、`staging_failures`、`persistence_failures` | 数据库投递失败、本地落盘失败、二者同时失败次数 |
+| `checked_at`、`status` | 后台磁盘快照时间及 `ok` / `delayed` / `degraded` 状态 |
 
-待入库达到 256 条或最老积压达到 60 秒时为 `delayed`；存在隔离文件或本进程持久化失败告警时为 `degraded`。后台每 30 秒检查一次，异常时输出汇总 `DELIVERY ALERT`；隔离坏记录与持久化双重失败会立即记录。可将这些日志接入现有日志告警系统，本功能不主动发送邮件或外部通知。
+队列达到一半、待入库达到 256 条或最老积压达到 60 秒时为 `delayed`；存储不可用、worker 停止、出现跳过/潜在丢失计数或隔离文件时为 `degraded`。后台约每 30 秒输出异常汇总 `DELIVERY ALERT`，不在请求路径输出告警。可接入现有日志告警系统，本功能不主动发送邮件或外部通知。
 
-文件数量和等待时间会在重启后重新扫描，操作计数器在进程重启后归零。多副本部署需逐节点监控并持久挂载各节点补偿目录；负载均衡后的单次响应不是全站汇总。目录不可访问、扫描超时或未初始化时返回 503，不将不可用状态伪装成零积压。
+目录不可用或 worker 未初始化时返回 HTTP 200 的明确 `degraded` 状态，不把它伪装成零积压的正常状态。页面展示队列、丢弃与存储故障提示，报表仍可查询。计数器为近似并发快照，重启归零；文件数在后台重新扫描。多副本需逐节点监控，负载均衡后的单次响应不是全站汇总。
 
 历史密钥搜索接口为 `GET /api/v1/usage/traffic/keys` 及管理员对应路径，支持名称参数 `q`（也可传 `#ID` 精确查找）；管理员可额外传 `user_id`。每次最多 30 个匹配候选，活动密钥优先；输入名称缩小范围，或直接按明细中的 `#ID` 定位重名密钥。只返回 ID、名称和删除标识，不包含密钥值、认证信息或账户设置。原密钥管理接口的删除过滤保持不变。
 
 ## 验证和页面复核
 
-离线 mock 测试覆盖普通 HTTP、SSE、预读重放、未知长度、取消、部分写入、Flush 失败、panic、伪造头和内部转发。补偿测试覆盖数据库故障、重启和通知队列满。PostgreSQL 测试使用单连接 `pg_temp` 表，验证迁移重复执行、幂等汇总、事务回滚、用户隔离、分页、非整小时偏移和夏令时重复小时。
+离线 mock 测试覆盖普通 HTTP、SSE、预读重放、未知长度、取消、部分写入、Flush 失败、panic、伪造头和内部转发。补偿测试覆盖数据库故障、重启、有界队列满、慢存储、目录解析阻塞、缓存健康读取、退出预算、worker panic、目录预算和并发退出。真实 Gin 中间件回归在后台存储被卡住并填满队列时，仍验证业务返回 HTTP 200。PostgreSQL 测试使用单连接 `pg_temp` 表，验证迁移重复执行、幂等汇总、事务回滚、用户隔离、分页、非整小时偏移和夏令时重复小时。
 
 panic 请求在生产 Recovery 完成响应后结算，包含恢复时写入的错误 JSON；已经写出正文或连接断开时仍遵循原恢复行为，不追加错误正文。回归用例覆盖 500 正文计量、部分正文后 panic、broken pipe、连续请求不重复结算，以及跳日整月查询、午夜缺失与午夜重复。
 
@@ -78,8 +85,8 @@ panic 请求在生产 Recovery 完成响应后结算，包含恢复时写入的�
 
 ```sh
 cd backend
-go test ./internal/service ./internal/repository ./internal/handler ./internal/server/middleware -run '^TestTraffic' -count=1
-go test -race -p 2 ./internal/service ./internal/repository ./internal/handler ./internal/server/middleware -run '^TestTraffic' -count=1
+go test ./internal/service ./internal/repository ./internal/handler ./internal/handler/admin ./internal/server/middleware ./internal/server -run '^TestTraffic' -count=1
+go test -race -p 2 ./internal/service ./internal/repository ./internal/handler ./internal/handler/admin ./internal/server/middleware ./internal/server -run '^TestTraffic' -count=1
 ```
 
 PostgreSQL 用例需要显式设置指向隔离测试实例的 `TRAFFIC_TEST_POSTGRES_DSN`；未设置时该用例跳过。前端定向用例位于 `TrafficPanel.spec.ts`、`traffic.spec.ts` 和两个既有 `UsageView.spec.ts`，并运行中英文 locale key 检查。
@@ -88,22 +95,10 @@ PostgreSQL 用例需要显式设置指向隔离测试实例的 `TRAFFIC_TEST_POS
 
 布局复核使用真实组件、项目样式及虚构本地数据，覆盖桌面和移动端深色布局；不代表生产数据或完整站点端到端验收。本地截图位于 `docs/screenshots/user-traffic/`，按仓库约定不入 Git，提交 PR 时作为附件上传。
 
-本次本地验证：流量专项后端测试与 `-race` 均通过，已显式启用隔离 PostgreSQL 用例；受影响的路由、middleware、handler 单元测试通过，repository 与 IP 风控测试在 `TMPDIR=/tmp` 下复测通过。前端关键测试集 108 个文件、1767 项测试通过，完整 ESLint、`vue-tsc --noEmit` 和 Vite 生产构建通过。新增前端用例已加入根 Makefile 关键测试集。
+2026-10-26 异步隔离调整验证：`TMPDIR=/tmp make -C backend test-unit` 全部通过（service 约 291 秒）；流量专项 `-race` 在 service、admin handler、middleware 与 server 包通过。前端关键测试集最终 108 文件 / 1768 项通过，完整 ESLint、`vue-tsc --noEmit` 和 Vite 生产构建通过。首次关键测试集中的既有设置页用例超过 10 秒时限，单独复测及限制为两个 worker 后的完整复测均通过，未修改该测试。队列操作基准 200000 次：入队/取出约 68ns/op、满队列跳过约 30ns/op，均为 0 allocs；仅为本地队列微基准，不代表端到端延迟或吞吐。
 
-在目标仓库 `production` 基线 `f348dba4a` 上执行 `TMPDIR=/tmp make -C backend test-unit` 已通过；流量专项竞态与隔离 PostgreSQL 用例也在该基线上复测通过。当前环境无 Docker 和 golangci-lint，未执行完整容器集成测试与该 lint。默认 pnpm 入口触发依赖和锁文件校验错误，前端验证直接调用现有 `node_modules/.bin` 工具，未改动依赖或锁文件。
-
-流量筛选交互回归覆盖真实共享搜索组件、用户自身密钥选项传递、切换用户、关键字乱序响应、清空与重置取消待执行搜索。切换已选密钥的用户时，使用同步失效通知避免误丢新用户的自动加载结果；相应用例已验证异步失效版本失败、修复后通过。本次筛选更新仅改动前端，后端验证沿用上述功能分支已有结果。
-
-本次搜索交互截图（真实组件、虚构数据）：[管理员邮箱搜索](https://github.com/user-attachments/assets/f4bc3b0d-39e5-427c-88ff-fce70011eb4f)、[用户与密钥联动](https://github.com/user-attachments/assets/84be6d4e-4a58-40df-bffb-345300dc43ef)、[移动端用户密钥搜索](https://github.com/user-attachments/assets/605d1ba4-ca6a-4675-af4f-e3e9237b41f2)。
+实际组件与虚构数据截图：[桌面异步降级与周流量](https://github.com/user-attachments/assets/5cfdbfae-516b-4a12-9909-3821d966532a)、[移动端提示](https://github.com/user-attachments/assets/ef1e2817-a75e-4a16-a774-d91ebb968af8)。前端通过现有 `node_modules/.bin` 工具运行，未修改依赖或锁文件；默认 pnpm 入口存在本地依赖校验问题。本机没有 Docker 和 golangci-lint，未执行容器集成测试与该 lint。PostgreSQL 查询算法本轮未修改，日周月年独立时间桶的隔离 PostgreSQL 回归沿用前次提交结果，不宣称本轮重新执行。
 
 ## 后续迭代顺序
 
-本轮优先完成永久失败隔离、历史密钥筛选和本节点积压监控。后续分别推进：游标分页与汇总独立加载、明细名称与 CSV 导出、基于压测的批量写入和索引优化、归档与汇总核对。正式流量收费另行设计价格版本、账期结算、迟到记录、幂等扣费、在途恢复与对账；当前改动仍只做统计。
-
-2026-10-26 本轮验证：完整 `TMPDIR=/tmp make -C backend test-unit` 通过（service 约 283 秒）；流量专项与 `-race` 使用本轮独立启动的临时 PostgreSQL 实例，包含隔离投递、错误分类、并发健康检查、历史密钥名称/`#ID` 搜索与越权隔离。后续补充的整批唤醒和精确 ID 搜索已再做定向验证。前端关键测试 108 文件 / 1763 项通过。
-
-本轮截图：[管理员本节点积压状态与已删除密钥](https://github.com/user-attachments/assets/b1f1dd2a-87d9-4b28-9d6a-33e63cd149bd)、[移动端历史密钥筛选](https://github.com/user-attachments/assets/08bcc6bb-a941-4c12-8cab-97b92634c905)。
-
-最终复测：service/repository 的流量专项 `-race` 再次通过，完整 ESLint（仅忽略 Vite 自动生成的临时 `*.timestamp-*.mjs`）、`vue-tsc --noEmit` 与 Vite 生产构建通过，构建输出保存在临时目录。未改依赖或锁文件。
-
-趋势示例核对：此前布局截图采用逐日递增的虚构样本，容易被误解为累计图。本轮替换为有升有降并含零流量时段的周视图示例；后端现有按桶聚合和前端直接绘制桶值的实现未改变。新增 PostgreSQL 回归覆盖日/周/月/年高→低→零→回升序列、非整小时偏移边界与各桶之和等于周期总量；新增 4 项前端绘图回归。隔离 PostgreSQL、前端关键测试 108 文件 / 1767 项、ESLint、类型检查和 Vite 构建均通过。
+后续分别推进游标分页与汇总独立加载、名称与 CSV 导出、基于压测的批量写入和索引优化、归档与汇总核对。正式流量收费另行设计价格版本、账期结算、迟到记录、可靠采集、幂等扣费、在途恢复与对账；当前改动仍只做尽力统计。

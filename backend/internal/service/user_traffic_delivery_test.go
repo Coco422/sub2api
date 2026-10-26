@@ -107,18 +107,20 @@ func TestTrafficDeliveryRetainsRetryableErrors(t *testing.T) {
 			health, err = d.Health(context.Background())
 			require.NoError(t, err)
 			require.Zero(t, health.PendingEvents)
-			require.Equal(t, "ok", health.Status)
+			require.Equal(t, "degraded", health.Status) // Worker is deliberately stopped in this disk unit test.
 		})
 	}
 }
 
 func TestTrafficDeliveryHealthTracksBacklogAndFailures(t *testing.T) {
 	d := stoppedTrafficDelivery(t)
+	d.running.Store(true) // Isolate backlog classification from intentionally stopped worker state.
 	event := trafficDeliveryFixture()
 	require.NoError(t, d.stage(event))
 	old := time.Now().Add(-90 * time.Second)
 	require.NoError(t, os.Chtimes(filepath.Join(d.dir, event.EventID+".json"), old, old))
 	require.NoError(t, os.WriteFile(filepath.Join(d.dir, ".traffic-in-progress"), []byte("ignore"), 0600))
+	require.NoError(t, d.scanDisk(context.Background()))
 	health, err := d.Health(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "delayed", health.Status)
@@ -129,11 +131,7 @@ func TestTrafficDeliveryHealthTracksBacklogAndFailures(t *testing.T) {
 	cancel()
 	_, err = d.Health(ctx)
 	require.ErrorIs(t, err, context.Canceled)
-	d.dir = filepath.Join(d.dir, "missing")
-	d.write = func(context.Context, TrafficEvent) error { return errors.New("offline") }
-	d.RecordTraffic(trafficDeliveryFixture())
-	require.EqualValues(t, 1, d.stagingFailures.Load())
-	require.EqualValues(t, 1, d.persistenceFailures.Load())
+
 }
 
 func TestTrafficDeliveryConcurrentHealthAndRecording(t *testing.T) {
@@ -157,22 +155,245 @@ func TestTrafficDeliveryConcurrentHealthAndRecording(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
-func TestTrafficDeliveryFullBatchWakesRemainingBacklog(t *testing.T) {
+func TestTrafficDeliveryReplayIsBounded(t *testing.T) {
 	d := stoppedTrafficDelivery(t)
-	for i := 0; i < 257; i++ {
+	for i := 0; i < trafficBatchSize+1; i++ {
 		require.NoError(t, d.stage(trafficDeliveryFixture()))
 	}
 	require.NoError(t, d.replay(context.Background()))
 	h, err := d.Health(context.Background())
 	require.NoError(t, err)
 	require.EqualValues(t, 1, h.PendingEvents)
-	select {
-	case <-d.wake:
-	default:
-		t.Fatal("full batch must wake the consumer even without new requests")
-	}
 	require.NoError(t, d.replay(context.Background()))
 	h, err = d.Health(context.Background())
 	require.NoError(t, err)
 	require.Zero(t, h.PendingEvents)
+}
+
+func TestTrafficDeliveryDoesNotWaitForBlockedStorageAndDropsOverflow(t *testing.T) {
+	entered, releaseCh := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseCh) })
+	d, err := newTrafficDelivery(func() string { return t.TempDir() }, func(context.Context, TrafficEvent) error { t.Error("unexpected database call"); return nil }, trafficDeliveryOptions{queueCapacity: 2, stopBudget: 25 * time.Millisecond, stage: func(TrafficEvent) error { close(entered); <-releaseCh; return nil }})
+	require.NoError(t, err)
+	t.Cleanup(func() { release(); d.Stop() })
+	d.RecordTraffic(trafficDeliveryFixture())
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not enter blocked storage")
+	}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 3; i++ {
+			d.RecordTraffic(trafficDeliveryFixture())
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("request waited for background storage")
+	}
+	h, err := d.Health(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, h.QueuedEvents)
+	require.EqualValues(t, 1, h.QueueDroppedEvents)
+	before := time.Now()
+	d.Stop()
+	require.Less(t, time.Since(before), 200*time.Millisecond)
+	d.RecordTraffic(trafficDeliveryFixture())
+	release()
+	select {
+	case <-d.done:
+	case <-time.After(time.Second):
+		t.Fatal("worker failed to exit after storage unblocked")
+	}
+	h, err = d.Health(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, h.QueuedEvents)
+	require.EqualValues(t, 3, h.ShutdownDroppedEvents)
+}
+
+func TestTrafficDeliveryConstructorAndHealthDoNotWaitForDirectoryResolution(t *testing.T) {
+	entered, releaseCh := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseCh) })
+	dir := t.TempDir()
+	started := time.Now()
+	d, err := newTrafficDelivery(func() string { close(entered); <-releaseCh; return dir }, func(context.Context, TrafficEvent) error { return nil }, trafficDeliveryOptions{queueCapacity: 2, stopBudget: 25 * time.Millisecond})
+	require.NoError(t, err)
+	require.Less(t, time.Since(started), 200*time.Millisecond)
+	t.Cleanup(func() { release(); d.Stop() })
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("directory resolver did not start")
+	}
+	d.RecordTraffic(trafficDeliveryFixture())
+	h, err := d.Health(context.Background())
+	require.NoError(t, err)
+	require.False(t, h.StorageAvailable)
+	require.Equal(t, 1, h.QueuedEvents)
+	started = time.Now()
+	d.Stop()
+	require.Less(t, time.Since(started), 200*time.Millisecond)
+	release()
+	select {
+	case <-d.done:
+	case <-time.After(time.Second):
+		t.Fatal("worker failed to stop")
+	}
+}
+
+func TestTrafficDeliveryBadMountFallsBackOnlyOnWorker(t *testing.T) {
+	parent := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "file"), []byte("not a directory"), 0600))
+	entered, releaseCh := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseCh) })
+	d, err := NewTrafficDelivery(filepath.Join(parent, "file", "pending"), func(ctx context.Context, _ TrafficEvent) error {
+		close(entered)
+		select {
+		case <-releaseCh:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { release(); d.Stop() })
+	returned := make(chan struct{})
+	go func() { d.RecordTraffic(trafficDeliveryFixture()); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("request waited for failed mount")
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("background fallback did not run")
+	}
+	h, err := d.Health(context.Background())
+	require.NoError(t, err)
+	require.False(t, h.StorageAvailable)
+	require.True(t, h.WorkerRunning)
+	release()
+	require.Eventually(t, func() bool { return d.delivered.Load() == 1 }, time.Second, time.Millisecond)
+}
+
+func TestTrafficDeliveryFailureAndQuotaDropsAreObservable(t *testing.T) {
+	d := stoppedTrafficDelivery(t)
+	d.maxSpoolFiles = 1
+	require.NoError(t, d.stage(trafficDeliveryFixture()))
+	d.write = func(context.Context, TrafficEvent) error {
+		t.Error("full spool should not bypass its budget")
+		return nil
+	}
+	d.persist(context.Background(), trafficDeliveryFixture())
+	h, err := d.Health(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, h.SpoolLimitDroppedEvents)
+	d.maxSpoolFiles = trafficMaxSpoolFiles
+	d.maxSpoolBytes = 1
+	d.persist(context.Background(), trafficDeliveryFixture())
+	h, err = d.Health(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 2, h.SpoolLimitDroppedEvents)
+	d.maxSpoolBytes = trafficMaxSpoolBytes
+	d.dir = filepath.Join(d.dir, "missing")
+	d.write = func(context.Context, TrafficEvent) error { return errors.New("offline") }
+	d.persist(context.Background(), trafficDeliveryFixture())
+	h, err = d.Health(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, h.StagingFailures)
+	require.EqualValues(t, 1, h.PersistenceFailures)
+	require.EqualValues(t, 3, h.DroppedEvents)
+}
+
+func TestTrafficDeliveryWorkerPanicCannotCrashBusinessProcess(t *testing.T) {
+	d, err := newTrafficDelivery(func() string { return t.TempDir() }, func(context.Context, TrafficEvent) error { return nil }, trafficDeliveryOptions{queueCapacity: 2, stopBudget: time.Second, stage: func(TrafficEvent) error { panic("simulated auxiliary failure") }})
+	require.NoError(t, err)
+	defer d.Stop()
+	d.RecordTraffic(trafficDeliveryFixture())
+	select {
+	case <-d.done:
+	case <-time.After(time.Second):
+		t.Fatal("panicking worker did not exit")
+	}
+	h, err := d.Health(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, h.WorkerPanics)
+	require.EqualValues(t, 1, h.DroppedEvents)
+	require.False(t, h.WorkerRunning)
+	d.RecordTraffic(trafficDeliveryFixture())
+	h, err = d.Health(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 2, h.DroppedEvents)
+}
+
+func TestTrafficDeliveryAssignsIndependentIDsAfterHandoff(t *testing.T) {
+	ids := make(chan string, 2)
+	d, err := NewTrafficDelivery(t.TempDir(), func(_ context.Context, event TrafficEvent) error { ids <- event.EventID; return nil })
+	require.NoError(t, err)
+	defer d.Stop()
+	event := trafficDeliveryFixture()
+	event.EventID = ""
+	event.RequestID = "same-client-retry"
+	d.RecordTraffic(event)
+	d.RecordTraffic(event)
+	var received []string
+	for range 2 {
+		select {
+		case id := <-ids:
+			received = append(received, id)
+		case <-time.After(3 * time.Second):
+			t.Fatal("events were not delivered")
+		}
+	}
+	require.NotEqual(t, received[0], received[1])
+	_, err = uuid.Parse(received[0])
+	require.NoError(t, err)
+}
+
+func TestTrafficDeliveryConcurrentProducersAndStop(t *testing.T) {
+	d, err := newTrafficDelivery(func() string { return t.TempDir() }, func(context.Context, TrafficEvent) error { return nil }, trafficDeliveryOptions{queueCapacity: 2, stopBudget: 50 * time.Millisecond, stage: func(TrafficEvent) error { return nil }})
+	require.NoError(t, err)
+	var producers sync.WaitGroup
+	for range 4 {
+		producers.Go(func() {
+			for range 1000 {
+				d.RecordTraffic(trafficDeliveryFixture())
+			}
+		})
+	}
+	d.Stop()
+	producers.Wait()
+	d.Stop()
+	h, err := d.Health(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, h.QueuedEvents)
+	require.Greater(t, h.DroppedEvents, int64(0))
+}
+
+func BenchmarkTrafficRecordNonblocking(b *testing.B) {
+	for _, full := range []bool{false, true} {
+		name := "enqueue"
+		if full {
+			name = "full"
+		}
+		b.Run(name, func(b *testing.B) {
+			d := &TrafficDelivery{queue: make(chan TrafficEvent, 1)}
+			event := trafficDeliveryFixture()
+			if full {
+				d.queue <- event
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				d.RecordTraffic(event)
+				if !full {
+					<-d.queue
+				}
+			}
+		})
+	}
 }

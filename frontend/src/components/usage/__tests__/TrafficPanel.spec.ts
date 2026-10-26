@@ -184,6 +184,14 @@ describe('TrafficPanel', () => {
     expect(user.text()).not.toContain('traffic.keysFailed')
     expect(user.find('[data-testid="traffic-health"]').exists()).toBe(false)
   })
+  it('shows queue pressure and degraded optional storage independently of business records', async () => {
+    getTrafficHealth.mockResolvedValueOnce({status: 'degraded', pending_events: 0, quarantined_events: 0, oldest_pending_age_seconds: 0, persistence_failures: 2, checked_at: '2026-10-25T01:00:00+08:00', queued_events: 1024, queue_capacity: 1024, processing_events: 32, dropped_events: 9, storage_available: false})
+    const wrapper = render(true); await flushPromises()
+    expect(wrapper.get('[data-testid="traffic-health"]').text()).toContain('traffic.queueSummary')
+    expect(wrapper.get('[data-testid="traffic-health"]').text()).toContain('traffic.storageUnavailable')
+    expect(wrapper.text()).toContain('3.00 KiB')
+    expect(wrapper.text()).toContain('/v1/messages')
+  })
   it('clears stale results on failure and distinguishes no records from historical collection', async () => {
     const wrapper = render(); await flushPromises()
     getTraffic.mockRejectedValueOnce(new Error('unavailable'))

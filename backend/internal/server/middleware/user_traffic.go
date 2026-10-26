@@ -12,7 +12,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type TrafficRecorder interface{ RecordTraffic(service.TrafficEvent) }
@@ -70,7 +69,8 @@ func UserTraffic(recorder TrafficRecorder) gin.HandlerFunc {
 					status = http.StatusInternalServerError
 				}
 			}
-			e := service.TrafficEvent{EventID: uuid.NewString(), UserID: key.UserID, APIKeyID: key.ID,
+			// UUID allocation, encoding and persistence belong to the worker.
+			e := service.TrafficEvent{UserID: key.UserID, APIKeyID: key.ID,
 				Endpoint: connectionMetadata(c.FullPath(), 256), Method: c.Request.Method, StartedAt: started, FinishedAt: time.Now(),
 				UploadBytes: body.bytes.Load(), DownloadBytes: writer.bytes.Load(), StatusCode: status, Outcome: outcome,
 				RequestComplete: body.complete.Load() || body.expected == 0, MeasurementVersion: 1}

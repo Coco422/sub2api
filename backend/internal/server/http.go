@@ -119,11 +119,14 @@ func ProvideRouter(
 	lifecycle.onDrain = append(lifecycle.onDrain, manager.Stop)
 	r.Use(manager.Ingress())
 	if handlers.Admin != nil && handlers.Admin.Usage != nil {
-		stop, err := handlers.Admin.Usage.ConfigureTrafficDelivery(filepath.Join(setup.GetDataDir(), "user-traffic-pending"))
+		stop, err := handlers.Admin.Usage.ConfigureTrafficDelivery(func() string {
+			return filepath.Join(setup.GetDataDir(), "user-traffic-pending")
+		})
 		if err != nil {
-			panic(fmt.Errorf("initialize traffic delivery: %w", err))
+			log.Printf("Traffic statistics disabled: %v", err)
+		} else {
+			lifecycle.onDrain = append(lifecycle.onDrain, stop)
 		}
-		lifecycle.onDrain = append(lifecycle.onDrain, stop)
 	}
 	r.GET("/internal/serverless/probe", manager.ProbeHandler)
 	return SetupRouter(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg, redisClient)

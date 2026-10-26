@@ -151,37 +151,16 @@ func TestTrafficDeliverySurvivesDatabaseOutageAndRestart(t *testing.T) {
 	require.Equal(t, e, received[0])
 }
 
-func TestTrafficDeliveryQueueOverflowDoesNotLoseEvents(t *testing.T) {
-	dir := t.TempDir()
-	d, err := NewTrafficDelivery(dir, func(context.Context, TrafficEvent) error { return errors.New("offline") })
-	require.NoError(t, err)
-	d.Stop() // Stage without a running consumer: the wake channel fills immediately.
-	for i := 0; i < 8; i++ {
-		d.RecordTraffic(trafficDeliveryFixture())
-	}
-	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
-	require.NoError(t, err)
-	require.Len(t, files, 8)
+func TestTrafficDeliveryCorruptionRemainsIsolated(t *testing.T) {
+	d := stoppedTrafficDelivery(t)
+	bad := filepath.Join(d.dir, uuid.NewString()+".json")
+	require.NoError(t, os.WriteFile(bad, []byte("truncated"), 0600))
+	require.NoError(t, d.stage(trafficDeliveryFixture()))
+	require.NoError(t, d.scanDisk(context.Background()))
 	count := 0
 	d.write = func(context.Context, TrafficEvent) error { count++; return nil }
 	require.NoError(t, d.replay(context.Background()))
-	require.Equal(t, 8, count)
-}
-
-func TestTrafficDeliveryQuarantinesCorruptionAndFallsBackOnDiskFailure(t *testing.T) {
-	dir := t.TempDir()
-	count := 0
-	d, err := NewTrafficDelivery(dir, func(context.Context, TrafficEvent) error { count++; return nil })
-	require.NoError(t, err)
-	d.Stop()
-	bad := filepath.Join(dir, uuid.NewString()+".json")
-	require.NoError(t, os.WriteFile(bad, []byte("truncated"), 0600))
-	d.RecordTraffic(trafficDeliveryFixture())
-	require.NoError(t, d.replay(context.Background()))
 	require.Equal(t, 1, count)
-	_, err = os.Stat(bad + ".invalid")
+	_, err := os.Stat(bad + ".invalid")
 	require.NoError(t, err)
-	d.dir = filepath.Join(dir, "missing")
-	d.RecordTraffic(trafficDeliveryFixture())
-	require.Equal(t, 2, count)
 }
