@@ -49,6 +49,15 @@ export default {
   "title": "自动配置",
   "description": "统一管理 BPS 默认配置、模型计价、新 OAuth 账号初始化和并发升级。",
   "modelBilling": {
+    "groups": "适用分组（每条规则独立）",
+    "allGroups": "全部分组（不勾选即适用于全部，包括无分组请求）",
+    "selectedGroups": "仅适用于已选的 {count} 个计费分组；无分组请求不匹配",
+    "clearGroups": "清空选择，适用于全部分组",
+    "unavailableGroup": "分组不可用，已保留选择；取消勾选会移除此 ID",
+    "loadingGroups": "正在加载全部分组…",
+    "groupsFailed": "分组列表加载失败，原范围已保留，暂不能更改分组；重试后再编辑。",
+    "invalidGroups": "适用分组 ID 必须为正的安全整数。",
+
     "title": "模型计价",
     "hint": "为指定低价模型设置额外收费倍率，默认 10 倍。独立启用后，对所有账号的新请求生效；只增加用户 token 扣费，不改变模型基础价格和账号上游成本。",
     "model": "计费模型 / 前缀规则",

@@ -49,6 +49,15 @@ export default {
   "title": "Auto Configuration",
   "description": "Manage BPS defaults, model pricing, new OAuth account initialization and concurrency upgrades.",
   "modelBilling": {
+    "groups": "Applicable groups (per rule)",
+    "allGroups": "All groups (no selection includes requests without a group)",
+    "selectedGroups": "Only the {count} selected billing groups; ungrouped requests do not match",
+    "clearGroups": "Clear selection and apply to all groups",
+    "unavailableGroup": "Unavailable group; selection retained. Uncheck to remove this ID",
+    "loadingGroups": "Loading all groups…",
+    "groupsFailed": "Group list failed to load. Existing scopes are retained and cannot be edited until retry succeeds.",
+    "invalidGroups": "Applicable group IDs must be positive safe integers.",
+
     "title": "Model pricing",
     "hint": "Set an extra billing multiplier for selected low-cost models, defaulting to 10×. Enable independently for new requests across all accounts. Only customer token charges increase; base prices and upstream account costs stay the same.",
     "model": "Billing model / prefix rule",
