@@ -278,7 +278,11 @@ func TestChannelOperationsQualityMeasuredRoundHistoryAndScope(t *testing.T) {
 	at := filter.From.Add(time.Minute)
 	probe := func(round, status, verdict, action, message, model string, parallel any) {
 		t.Helper()
-		cfg, _ := json.Marshal(map[string]any{"quality": map[string]any{}, "model_id": model, "parallel_count": parallel})
+		cfgFields := map[string]any{"quality": map[string]any{}, "model_id": model}
+		if parallel != nil {
+			cfgFields["parallel_count"] = parallel
+		}
+		cfg, _ := json.Marshal(cfgFields)
 		var judgment any
 		if verdict != "" {
 			raw, _ := json.Marshal(map[string]string{"verdict": verdict})
@@ -293,12 +297,15 @@ func TestChannelOperationsQualityMeasuredRoundHistoryAndScope(t *testing.T) {
 	probe("degraded", "success", "correct", "failure_counted:1/2", "", "provider-model", 2)
 	probe("degraded", "failed", "incorrect", "failure_counted:1/2", "answer_mismatch", "provider-model", 2)
 	probe("partial", "success", "correct", "passed", "", "provider-model", 2)
+	probe("partial-wrong", "failed", "incorrect", "failure_counted:1/2", "answer_mismatch", "provider-model", 2)
 	probe("transport", "success", "correct", "inconclusive", "", "provider-model", 2)
 	probe("transport", "failed", "inconclusive", "inconclusive", "timeout", "provider-model", 2)
 	probe("missing-verdict", "success", "correct", "passed", "", "provider-model", 2)
 	probe("missing-verdict", "success", "", "passed", "", "provider-model", 2)
 	probe("stale", "success", "correct", "stale_run", "", "provider-model", 1)
 	probe("bad-count", "success", "correct", "passed", "", "provider-model", "1")
+	probe("missing-count", "success", "correct", "passed", "", "provider-model", nil)
+	probe("", "failed", "incorrect", "failure_counted:1/2", "answer_mismatch", "provider-model", 1)
 	probe("multi-model", "success", "correct", "passed", "", "other-provider", 1)
 	probe("no-frozen-model", "success", "correct", "passed", "", "", 1)
 	type data struct {
@@ -319,10 +326,10 @@ func TestChannelOperationsQualityMeasuredRoundHistoryAndScope(t *testing.T) {
 		return out
 	}
 	got := read()
-	require.Equal(t, 7, got.Summary.Rounds)
+	require.Equal(t, 10, got.Summary.Rounds)
 	require.Equal(t, 1, got.Summary.Passed)
 	require.Equal(t, 1, got.Summary.Degraded)
-	require.Equal(t, 5, got.Summary.Inconclusive)
+	require.Equal(t, 8, got.Summary.Inconclusive)
 	// The frozen result model is authoritative even when the plan is edited/disabled.
 	filter.Model = "edited-current-plan"
 	require.Zero(t, read().Summary.Rounds)
@@ -336,22 +343,31 @@ func TestChannelOperationsQualityMeasuredRoundHistoryAndScope(t *testing.T) {
 	got = read()
 	require.Len(t, got.Rows, 2)
 	require.True(t, got.More)
-	require.Equal(t, 7, got.Summary.Rounds)
+	require.Equal(t, 10, got.Summary.Rounds)
 	filter.QualityBefore = got.Rows[1].ID
 	older := read()
 	require.Len(t, older.Rows, 2)
 	require.Less(t, older.Rows[0].ID, got.Rows[1].ID)
-	require.Equal(t, 7, older.Summary.Rounds)
+	require.Equal(t, 10, older.Summary.Rounds)
 	filter.GroupID = f.group + 999999
 	require.Zero(t, read().Summary.Rounds)
 	filter.GroupID = f.group
 	filter.UpstreamID = -1
-	require.Equal(t, 7, read().Summary.Rounds)
+	require.Equal(t, 10, read().Summary.Rounds)
 	upstream := f.upstream(t, "Quality upstream")
 	require.NoError(t, f.mutate(t, service.ChannelOperationsMutation{Action: "assign", AccountID: f.account, UpstreamID: upstream}))
 	require.Zero(t, read().Summary.Rounds)
 	filter.UpstreamID = upstream
-	require.Equal(t, 7, read().Summary.Rounds)
+	require.Equal(t, 10, read().Summary.Rounds)
+	// A quality action can remove canonical groups. Explicitly registered members
+	// retain their measured history without silently restoring those groups.
+	_, err := integrationDB.Exec(`DELETE FROM account_groups WHERE account_id=$1`, f.account)
+	require.NoError(t, err)
+	filter.GroupID = 0
+	require.Equal(t, 10, read().Summary.Rounds)
+	filter.GroupID = f.group
+	require.Zero(t, read().Summary.Rounds)
+
 }
 
 func TestChannelOperationsErrorsUseExplicitCurrentCohortAndActualGroup(t *testing.T) {
@@ -397,4 +413,8 @@ func TestChannelOperationsErrorsUseExplicitCurrentCohortAndActualGroup(t *testin
 	require.Zero(t, read().Records)
 	filter.UpstreamID = u
 	require.Equal(t, 1, read().Records)
+	_, err := integrationDB.Exec(`DELETE FROM account_groups WHERE account_id=$1`, f.account)
+	require.NoError(t, err)
+	require.Equal(t, 1, read().Records, "registered operations cohort survives canonical group removal")
+
 }

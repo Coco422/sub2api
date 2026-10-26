@@ -22,9 +22,9 @@
 - 模型谱系显示 public / recorded / upstream 与原始 mapping_chain。`model` 不能保证等于 routing model；没有可靠持久化字段时不声称已知 routing model。
 - TTFT 是持久化 `first_token_ms` 的历史转发口径，仅流式且有 token/费用证据的请求；展示 p50/p90/p95、有效/未知数量。总耗时独立用 `duration_ms`；NULL/非正数不当作零。此口径不是端到端或纯上游网络延迟。
 - 上游统计按当前人工归属回看历史，改派后历史会重分组；未分配账号保留单独桶（upstream_id=-1 下钻），渠道总数不因未分配而丢失。当前配置并发只是容量上限，不是实时负载。
-- 质量从 `scheduled_test_results` 的冻结配置、judgment 和 round_id 读取，按 plan+round 去重。通过需完整轮次全部 correct+success；降级需明确 incorrect 且 answer_mismatch/state_degraded；缺失、并发轮未完成、传输失败与 skipped 为不确定。质量不等于每个请求的智能水平，错误不自动当降智。
-- 质量没有请求 group/channel 维度：按当前渠道/分组账号范围选择，明确标记为当前账号范围。模型筛选只匹配结果快照模型，快照缺失不回填当前计划模型；它不与公开别名自动等价，选择 public/recorded 筛选时质量为范围不支持。
-- 分别返回 usage/quality 查询状态、查询时间、最新样本时间、来源、窗口和范围限制。成功无样本与查询失败不同；失败不显示成 0。分页统计不能截断汇总分母。错误计数直接读取 ops_error_logs（不读正文/头/原始错误详情），按当前渠道账号归属和实际日志 group_id 筛选并排除 count_tokens；该表无历史 channel_id，范围明确标注。缺少全请求分母，错误率保持不支持，5xx 不当作降智。
+- 质量从 `scheduled_test_results` 的冻结配置、judgment 和 round_id 读取，按 plan+round 去重。通过需完整轮次全部 correct+success；降级需明确 incorrect 且 answer_mismatch/state_degraded；缺失 judgment/冻结并发数量/轮次 ID、并发轮未完成、传输失败与 skipped 为不确定。质量不等于每个请求的智能水平，错误不自动当降智。
+- 质量没有请求 group/channel 维度：按明确登记的运维成员或当前渠道分组账号范围选择（成员被质量处置移除分组后仍保留历史）；分组筛选仅取当前仍属于该分组的账号，明确标记为当前账号范围。模型筛选只匹配结果快照模型，快照缺失不回填当前计划模型；它不与公开别名自动等价，选择 public/recorded 筛选时质量为范围不支持。
+- 分别返回 usage/quality 查询状态、查询时间、最新样本时间、来源、窗口和范围限制。成功无样本与查询失败不同；失败不显示成 0。分页统计不能截断汇总分母。错误计数直接读取 ops_error_logs（不读正文/头/原始错误详情），按明确登记的运维成员/当前渠道账号归属和实际日志 group_id 筛选并排除 count_tokens；该表无历史 channel_id，范围明确标注。缺少全请求分母，错误率保持不支持，5xx 不当作降智。
 - 质量历史可进入已有质量计划编辑器（选中 plan），不新建默认付费任务。
 
 ## 升级与共享边界
@@ -33,7 +33,7 @@
 
 优先 observation 修复文件（priority_scheduling*、attempt observer、网关、usage 写入和 request timing）不修改。必要的共享接入只有 admin routes、sidebar、router；本功能独立文件实现，最终报告记录实际重叠。本地禁止 Go 编译/动态测试、Docker、全量构建、lint、vue-tsc 与 Wire；远端精确 HEAD CI 验证 Go/PostgreSQL/前端构建。
 
-## 验收清单
+## 验收清单（按最终提交核验；实际进度及证据见 PR）
 
 - [ ] canonical 渠道 CRUD 完成，旧配置与旧入口兼容；删除不删除账号。
 - [ ] 上游 CRUD 与账号搜索/分页/分配/改派/解除可操作；跨渠道、失效账号、旧 revision 与未确认破坏操作被拒绝。
@@ -66,3 +66,8 @@
 7. 删除上游确认后仅解除分类；删除渠道确认后仅移除 canonical 渠道配置与关联。账号、分组实体、凭据和原 account_groups 保留。
 
 自动化证据：`channel_operations*_test.go` 包含实际 HTTP/SQL、认证/observer、并发/版本、错误/质量/模型/时间/分页与迁移重放；前端定向 Vitest 验证真实页面操作；精确HEAD远端工作流另产出合成数据桌面/移动截图和确认写入记录。合成截图不替代真实 PostgreSQL 回归，不代表生产验证。
+
+
+## Agent 与实施边界
+
+实施 Agent 为 OpenAI Codex CLI v0.164.0，gpt-6.1-sol / xhigh，来自本任务原始启动记录；父协调者 Hermes 为 gpt-6.1-sol，effort 未知（用户提供）。唯一实施者，无子 Agent。独立核对紧急评分修复 #572 后，两 PR 实际修改文件交集为空；本功能不包含该修复的实现或迁移。
