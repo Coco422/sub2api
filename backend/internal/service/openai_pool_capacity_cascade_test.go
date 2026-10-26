@@ -5,8 +5,12 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
@@ -108,5 +112,39 @@ func TestPoolCapacitySSEClassificationAndSafetyBoundary(t *testing.T) {
 				require.NotEmpty(t, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestPoolCapacityStreamingBeforeOutputRemainsSafeToSwitch(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for _, event := range []string{"error", "response.failed"} {
+			t.Run(fmt.Sprintf("passthrough=%t/event=%s", passthrough, event), func(t *testing.T) {
+				repo := &errorPolicyRepoStub{}
+				svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+					rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
+				account := newTempUnschedScopeAccount("model", map[string]any{
+					"keywords": []any{"capacity"}, "duration_minutes": float64(30),
+				})
+				account.Credentials["pool_mode"] = true
+				c, rec := newNonStreamingFailoverContext(t)
+				payload := fmt.Sprintf(`{"type":%q,"error":{"type":"server_error","message":"Selected model is at capacity"}}`, event)
+				resp := &http.Response{StatusCode: 200, Header: http.Header{"Retry-After": {"2"}},
+					Body: io.NopCloser(strings.NewReader("event: " + event + "\ndata: " + payload + "\n\n"))}
+				var err error
+				if passthrough {
+					_, err = svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "gpt-6.1-sol", "gpt-6.1-sol")
+				} else {
+					_, err = svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-6.1-sol", "gpt-6.1-sol")
+				}
+				var failure *UpstreamFailoverError
+				require.ErrorAs(t, err, &failure)
+				require.True(t, failure.RequestScopedTransient)
+				require.Equal(t, http.StatusServiceUnavailable, failure.ClientStatusCode)
+				require.Equal(t, 2*time.Second, failure.SameAccountRetryDelay)
+				require.False(t, c.Writer.Written())
+				require.Empty(t, rec.Body.String())
+				require.Empty(t, repo.modelRateLimitCalls)
+			})
+		}
 	}
 }
