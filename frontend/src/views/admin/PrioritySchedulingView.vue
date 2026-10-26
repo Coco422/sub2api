@@ -126,13 +126,13 @@ async function loadSnapshot(attempt: number) {
       // Short follow-ups collect an in-flight query; subsequent polling sees
       // usage committed after a successful empty read. Only one timer/request
       // exists, and hidden tabs pause reads. Backend cache bounds SQL work.
-      if (value) {
-        const pending = value.history_refreshing || value.history_status === 'loading' || value.history_status === 'partial'
-        scheduleHistoryRefresh(version, pending && attempt < 3 ? 1000 : 5000, pending ? attempt + 1 : 0)
-      }
+      const pending = value?.history_refreshing || value?.history_status === 'loading' || value?.history_status === 'partial'
+      // Also discover the first selection when this page opened before any pool
+      // existed. A null snapshot schedules no history SQL on the server.
+      scheduleHistoryRefresh(version, pending && attempt < 3 ? 1000 : 5000, pending ? attempt + 1 : 0)
     }
   }
-  catch { if (active(version)) { snapshotError.value = t('priorityScheduling.error'); if (snapshot.value) scheduleHistoryRefresh(version, 15000, 0) } }
+  catch { if (active(version)) { snapshotError.value = t('priorityScheduling.error'); scheduleHistoryRefresh(version, 15000, 0) } }
   finally { if (active(version)) refreshing.value = false }
 }
 function scheduleHistoryRefresh(version: number, delay: number, attempt: number) {

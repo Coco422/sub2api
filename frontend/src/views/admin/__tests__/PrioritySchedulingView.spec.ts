@@ -259,4 +259,17 @@ describe('priority history refresh', () => {
     } finally { vi.restoreAllMocks(); vi.useRealTimers() }
   })
 
+  it('discovers the first account snapshot after opening an empty page', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getPrioritySnapshot).mockResolvedValueOnce(null).mockResolvedValue({ at: '2026-10-06T00:00:00Z', model: 'first-public-model', mode: 'balanced', history_ready: true, candidates: [] })
+      const wrapper = mount(PrioritySchedulingView); await flushPromises()
+      expect(wrapper.text()).not.toContain('first-public-model')
+      await vi.advanceTimersByTimeAsync(5000); await flushPromises()
+      expect(getPrioritySnapshot).toHaveBeenCalledTimes(2)
+      expect(wrapper.text()).toContain('first-public-model')
+      wrapper.unmount()
+    } finally { vi.useRealTimers() }
+  })
+
 })
