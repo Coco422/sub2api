@@ -410,23 +410,27 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	if s != nil && s.service != nil && s.service.openAIGroupRequiresPrivacySet(ctx, req.GroupID) {
 		req.RequirePrivacySet = true
 	}
+
+	start := time.Now()
+	// 命名返回值保证 defer 写入的耗时同时返回给调用方。
 	defer func() {
 		if err == nil && selection != nil && selection.Account != nil {
 			if denied := s.service.priorityLatencyAdmission(req, selection.Account); denied != nil {
 				if selection.ReleaseFunc != nil {
 					selection.ReleaseFunc()
 				}
+				decision.SelectedAccountID = 0
+				decision.SelectedAccountType = ""
+				decision.StickySessionHit = false
+				decision.StickyPreviousHit = false
 				selection = nil
 				err = denied
-				return
 			}
-			owned := ownedPriorityScheduleRequest(req)
-			selection.priorityRequest = &owned
+			if selection != nil {
+				owned := ownedPriorityScheduleRequest(req)
+				selection.priorityRequest = &owned
+			}
 		}
-	}()
-	start := time.Now()
-	// 命名返回值保证 defer 写入的耗时同时返回给调用方。
-	defer func() {
 		decision.LatencyMs = time.Since(start).Milliseconds()
 		s.metrics.recordSelect(decision)
 	}()

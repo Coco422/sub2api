@@ -17,7 +17,8 @@ const (
 	PriorityLatencyStop         = "stop"
 )
 
-// PrioritySchedulingConfig only controls freely selectable OpenAI text requests.
+// PrioritySchedulingConfig controls OpenAI text routing and optional scoped
+// new-request stops. A stopped owner is rejected rather than reassigned.
 // Account eligibility, continuity, profit gates and concurrency acquisition stay authoritative.
 type PrioritySchedulingConfig struct {
 	ErrorRateWeight            float64  `json:"error_rate_weight"`

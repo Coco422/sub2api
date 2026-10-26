@@ -3824,7 +3824,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			}
 			if service.IsOpenAITurnAdmissionError(err) {
 				releaseTurnSlots()
-				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "account eligibility changed; reconnect with complete context")
+				reason := "account eligibility changed; reconnect with complete context"
+				if errors.Is(err, service.ErrPriorityLatencyUnavailable) {
+					reason = "latency scheduling temporarily unavailable; retry after 5 seconds"
+				}
+				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, reason)
 				return
 			}
 			if errors.Is(err, service.ErrOpenAIWSNodeOwner) {
