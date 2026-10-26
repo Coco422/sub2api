@@ -157,6 +157,9 @@ func (s *OpenAIGatewayService) beginPriorityLatencyTurn(ctx context.Context, c *
 		identity := priorityObservationFromContext(c.Request.Context(), model)
 		req.HistoryModel = identity.model
 		req.RequestedModel = strings.TrimSpace(model)
+		if forward, found := openAIForwardModelFromContext(c.Request.Context()); found {
+			req.RequestedModel = forward.model
+		}
 		if identity.hasGroup {
 			id := identity.groupID
 			req.GroupID = &id

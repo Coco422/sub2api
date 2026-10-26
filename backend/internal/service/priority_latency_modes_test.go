@@ -387,3 +387,21 @@ func TestPriorityLatencyModesStreamOutputContinues(t *testing.T) {
 	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable)
 	require.Len(t, upstream.requests, 1, "new turn is rejected without replay of previous output")
 }
+
+func TestPriorityLatencyModesWSTurnRoutingIdentity(t *testing.T) {
+	svc, _, req, pool, _ := latencyModeFixture(t, PriorityLatencyStop)
+	cfg := svc.prioritySchedulingRuntimeConfig()
+	cfg.Models = []string{req.RequestedModel}
+	require.NoError(t, svc.settingService.SavePrioritySchedulingConfig(context.Background(), cfg))
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, pool).ready() }, 2*time.Second, time.Millisecond)
+	ctx := WithPrioritySchedulingObservation(context.Background(), req.GroupID, req.HistoryModel, "/v1/responses")
+	ctx = WithOpenAIForwardModel(ctx, req.RequestedModel, false)
+	c := newOpenAIRejectedFieldTestContext([]byte(`{"model":"account-upstream"}`))
+	c.Request = c.Request.WithContext(ctx)
+	c.Request.Header.Set("Upgrade", "websocket")
+	_, err := svc.beginPriorityLatencyTurn(ctx, c, pool[0].account, "account-upstream")
+	require.ErrorIs(t, err, ErrPriorityLatencyUnavailable, "legacy routing-model configuration must still stop the public model after account mapping")
+	var denied *OpenAITurnAdmissionError
+	require.ErrorAs(t, err, &denied)
+	require.Equal(t, "latency_penalty", denied.Reason, "use loaded route/public evidence, not a new upstream-model cache scope")
+}

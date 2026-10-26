@@ -1662,6 +1662,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			currentRoutingModel = effectiveMappedModel
 		}
 		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		c.Request = c.Request.WithContext(service.WithOpenAIForwardModel(c.Request.Context(), currentRoutingModel, false))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
 			apiKey.GroupID,
@@ -3595,6 +3596,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if turn > 1 && !mappedModelUnchanged && !account.IsModelSupportedInGroup(apiKey.GroupID, model) && !account.IsModelSupportedInGroup(apiKey.GroupID, mapping.MappedModel) {
 					return "", newOpenAIWSUnsupportedModelSwitchError(mapping.MappedModel)
 				}
+				c.Request = c.Request.WithContext(service.WithOpenAIForwardModel(c.Request.Context(), mapping.MappedModel, false))
 				turnChannelMapping.Store(&openAIWSTurnChannelMappingSnapshot{turn: turn, mapping: mapping})
 				return mapping.MappedModel, nil
 			},
