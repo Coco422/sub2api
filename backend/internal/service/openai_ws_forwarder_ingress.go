@@ -2277,6 +2277,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return err
 			}
 		}
+		if !skipBeforeTurn {
+			if _, denied := s.beginPriorityLatencyTurn(ctx, c, account, extractOpenAICodexTicketModel(currentPayload)); denied != nil {
+				return denied
+			}
+		}
 		skipBeforeTurn = false
 		// 剥离本会话已知失效的加密项，阻断同一失效密文随历史反复触发上游拒绝。
 		// 历史序列须同步剥离，否则与已剥离的当前 input 项错位，prefix 复用失配。

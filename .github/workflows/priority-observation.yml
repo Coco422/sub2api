@@ -40,14 +40,23 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/priority-logs"
+          cleanup_old_checkout() {
+            if test -d "$RUNNER_TEMP/priority-old"; then
+              git -C "$RUNNER_TEMP/priority-old" restore --source=00788a4705152cb90aab089d352a494531e4664b --staged --worktree -- .
+              git worktree remove --force "$RUNNER_TEMP/priority-old"
+            fi
+          }
+          trap cleanup_old_checkout EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           python3 .github/scripts/priority-observation-red.py
           set +e
-          (cd "$RUNNER_TEMP/priority-old/backend" && go test -tags=unit ./internal/service ./internal/handler -run '^TestPriorityObservationBaseline' -count=1 -v -timeout=10m) > "$RUNNER_TEMP/priority-logs/red.log" 2>&1
+          (cd "$RUNNER_TEMP/priority-old/backend" && go test -tags=unit ./internal/service ./internal/handler ./internal/handler/admin -run '^TestPriorityObservationBaseline' -count=1 -v -timeout=10m) > "$RUNNER_TEMP/priority-logs/red.log" 2>&1
           result=$?
           set -e
           cat "$RUNNER_TEMP/priority-logs/red.log"
           test "$result" -ne 0
-          for name in Endpoint History Mapping Freshness Sticky; do
+          for name in Endpoint History Mapping Freshness Sticky HardStop; do
             grep -q -- "--- FAIL: TestPriorityObservationBaseline$name" "$RUNNER_TEMP/priority-logs/red.log"
           done
           if grep -Eq 'build failed|undefined:|syntax error' "$RUNNER_TEMP/priority-logs/red.log"; then exit 1; fi
@@ -55,12 +64,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd backend && go test -tags=unit ./internal/service ./internal/handler -run '^(TestPriority|TestOpenAI.*Sticky|Test.*PreviousResponse|TestOpenAI.*Profit|TestOpenAI.*RPM|TestOpenAI.*Replay|TestOpenAI.*Failover)'  -count=1 -v -timeout=15m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/green.log"
+          (cd backend && go test -tags=unit ./internal/service ./internal/handler ./internal/handler/admin -run '^(TestPriority|TestOpenAI.*Sticky|Test.*PreviousResponse|TestOpenAI.*Profit|TestOpenAI.*RPM|TestOpenAI.*Replay|TestOpenAI.*Failover)'  -count=1 -v -timeout=15m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/green.log"
       - name: Race check asynchronous history and observation seams
         shell: bash
         run: |
           set -euo pipefail
-          (cd backend && go test -race -tags=unit ./internal/service -run '^(TestPriorityObservation|TestPriorityHistory|TestPrioritySignalRefresh)' -count=1 -v -timeout=8m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/race.log"
+          (cd backend && go test -race -tags=unit ./internal/service -run '^(TestPriorityObservation|TestPriorityLatencyModes|TestPriorityHistory|TestPrioritySignalRefresh)' -count=1 -v -timeout=8m) 2>&1 | tee "$RUNNER_TEMP/priority-logs/race.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -114,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/priority-logs"
-          pnpm --dir frontend exec vitest run src/views/admin/__tests__/PrioritySchedulingView.spec.ts --maxWorkers=1 --minWorkers=1 2>&1 | tee "$RUNNER_TEMP/priority-logs/ui.log"
+          pnpm --dir frontend exec vitest run src/views/admin/__tests__/PrioritySchedulingView.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts --maxWorkers=1 --minWorkers=1 2>&1 | tee "$RUNNER_TEMP/priority-logs/ui.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

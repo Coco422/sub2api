@@ -45,6 +45,7 @@ export interface PriorityCandidate {
   exploration_eligible?: boolean
   latency_penalty_until?: string
   latency_recovery?: boolean
+  latency_stopped?: boolean
   bound_groups?: number
   profit: number | null
   margin: number | null

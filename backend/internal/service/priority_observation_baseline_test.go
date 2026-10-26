@@ -104,3 +104,34 @@ func TestPriorityObservationBaselineSticky(t *testing.T) {
 	}
 	require.Equal(t, int64(2), selected.Account.ID, "ordinary sticky cannot bypass a current measured penalty")
 }
+
+// Same behavioral assertion also runs on the complete immutable old checkout.
+// Missing action schema on old source must yield a behavioral failure, not a
+// compilation failure or a fabricated new penalty threshold.
+func TestPriorityObservationBaselineHardStop(t *testing.T) {
+	cfg := DefaultPrioritySchedulingConfig()
+	cfg.Enabled = true
+	field := reflect.ValueOf(&cfg).Elem().FieldByName("LatencyPenaltyMode")
+	if field.IsValid() && field.CanSet() {
+		field.SetString("stop")
+	}
+	bad := time.Now().Add(-time.Minute)
+	reader := &priorityReaderStub{signal: map[int64]PrioritySchedulingSignal{1: {Samples: 20, P90TTFTMs: 16000, LatestBadLatencyAt: &bad}}}
+	svc := priorityGateway(cfg, reader)
+	candidate := priorityCandidate(1, .1, 0)
+	candidate.account.Status = StatusActive
+	candidate.account.Schedulable = true
+	svc.accountRepo = schedulerTestOpenAIAccountRepo{accounts: []Account{*candidate.account}}
+	svc.cache = &schedulerTestGatewayCache{}
+	svc.cfg = newSchedulerTestOpenAIWSV2Config()
+	svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{})
+	req := OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, RequestedModel: "gpt-test", UseUpstreamTokenCost: true}
+	require.Eventually(t, func() bool { return svc.priorityHistory(req, cfg, []openAIAccountCandidateScore{candidate}).ready() }, time.Second, time.Millisecond)
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: newOpenAIAccountRuntimeStats()}
+	selected, _, err := scheduler.Select(context.Background(), req)
+	if selected != nil && selected.ReleaseFunc != nil {
+		defer selected.ReleaseFunc()
+	}
+	require.Nil(t, selected, "all matching accounts are stopped; prohibited capacity must never be used")
+	require.Error(t, err)
+}

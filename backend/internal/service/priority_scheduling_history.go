@@ -271,6 +271,9 @@ func (s *OpenAIGatewayService) cachedPriorityHistory(req OpenAIAccountScheduleRe
 }
 
 func priorityHistoryKey(req OpenAIAccountScheduleRequest, c PrioritySchedulingConfig) string {
+	// The action changes admission, not the measured population. Switching soft
+	// and stop must retain the exact same model/group/measurement evidence.
+	c.LatencyPenaltyMode = PriorityLatencyDeprioritize
 	return fmt.Sprintf("%q/%q/%d/%t/%d/%d", priorityHistoryModel(req), strings.TrimSpace(req.RequestedModel), derefGroupID(req.GroupID), req.GroupID != nil, c.WindowMinutes, c.QualityMaxAgeHours) + "/" + priorityConfigRevision(c)
 }
 

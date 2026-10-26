@@ -410,6 +410,20 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	if s != nil && s.service != nil && s.service.openAIGroupRequiresPrivacySet(ctx, req.GroupID) {
 		req.RequirePrivacySet = true
 	}
+	defer func() {
+		if err == nil && selection != nil && selection.Account != nil {
+			if denied := s.service.priorityLatencyAdmission(req, selection.Account); denied != nil {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				selection = nil
+				err = denied
+				return
+			}
+			owned := ownedPriorityScheduleRequest(req)
+			selection.priorityRequest = &owned
+		}
+	}()
 	start := time.Now()
 	// 命名返回值保证 defer 写入的耗时同时返回给调用方。
 	defer func() {
@@ -418,6 +432,28 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	}()
 
 	previousResponseID := strings.TrimSpace(req.PreviousResponseID)
+	// Even a nominally movable provider continuation must not be reassigned just
+	// because its owner is stopped. Resolve ownership without acquiring a slot.
+	if previousResponseID != "" && priorityHardStopApplies(s.service.prioritySchedulingRuntimeConfig(), req) {
+		store := s.service.getOpenAIWSStateStore()
+		if store != nil {
+			ownerID, readErr := store.GetResponseAccount(ctx, derefGroupID(req.GroupID), previousResponseID)
+			if readErr != nil {
+				return nil, decision, priorityLatencyAdmissionError(false)
+			}
+			if ownerID > 0 {
+				owner, readErr := s.service.getSchedulableAccount(ctx, ownerID)
+				if readErr != nil || owner == nil {
+					return nil, decision, priorityLatencyAdmissionError(false)
+				}
+				// Ownership lookup deliberately ignores routing exclusions. Excluding
+				// its stopped owner must never make the old provider ID portable.
+				if denied := s.service.priorityLatencyAdmission(req, owner); denied != nil {
+					return nil, decision, denied
+				}
+			}
+		}
+	}
 	if previousResponseID != "" && NormalizeOpenAICompatiblePlatform(req.Platform) == PlatformOpenAI &&
 		(!req.StickyWeighted || !req.PreviousResponseCanMove) {
 		selection, err := s.service.selectAccountByPreviousResponseIDForCapability(
@@ -630,6 +666,12 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if !req.PreserveStickyBinding && s.service.openAICodexTicketShouldYieldSticky(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.RequireCompact, req.ExcludedIDs) {
 		clearBinding()
 		return nil, false, nil
+	}
+	if denied := s.service.priorityLatencyAdmission(req, account); denied != nil {
+		if priorityLatencyOwnershipBound(req) {
+			return nil, false, denied
+		}
+		return nil, true, nil
 	}
 	// Ordinary affinity is a preference. A current measured latency penalty
 	// must enter the same scored pool as a freely routed request, independently
@@ -1349,6 +1391,9 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 		if candidate.account == nil {
 			continue
 		}
+		if denied := s.service.priorityLatencyAdmission(req, candidate.account); denied != nil {
+			continue
+		}
 		if candidate.loadKnown && candidate.account.Concurrency > 0 &&
 			candidate.loadInfo.CurrentConcurrency >= candidate.account.Concurrency {
 			continue
@@ -1397,6 +1442,10 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			if result == nil || !result.Acquired {
 				continue
 			}
+		}
+		if denied := s.service.priorityLatencyAdmission(req, fresh); denied != nil {
+			release(result)
+			continue
 		}
 		if req.SessionHash != "" && !req.PreserveStickyBinding {
 			_ = s.service.bindOpenAIStickySessionDuringSelection(ctx, req.GroupID, req.SessionHash, fresh.ID)
@@ -1493,6 +1542,12 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 		now := time.Now()
 		if isGrokTeamModelRateLimited(account, upstreamModel, now) ||
 			isGrokModelQuotaBlocked(account.ID, upstreamModel, now) {
+			continue
+		}
+		if denied := s.service.priorityLatencyAdmission(req, account); denied != nil {
+			if priorityLatencyOwnershipBound(req) {
+				return nil, denied
+			}
 			continue
 		}
 		// Primary scored candidates have already been tried. Do not reintroduce
@@ -1699,6 +1754,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 	}
 
+	filtered, err = s.filterPriorityLatencyAccounts(req, filtered, loadMap)
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
 	// Preserve BPS preference across subscription/compact priority partitions,
 	// but try native capacity before committing a request to a BPS wait plan.
 	if req.Platform == PlatformOpenAI && strings.TrimSpace(req.RequestedModel) != "" && !s.service.balancesPriorityProtocols(req) {
@@ -1965,6 +2024,9 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 			}
 			fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.GroupID, req.Platform, req.RequestedModel, false, req.RequiredCapability, req.RequireCompact)
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport, req.RequestedModel) || !s.isAccountRequestCompatible(ctx, fresh, req) {
+				continue
+			}
+			if denied := s.service.priorityLatencyAdmission(req, fresh); denied != nil {
 				continue
 			}
 			if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {

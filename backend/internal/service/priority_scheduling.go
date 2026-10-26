@@ -259,6 +259,7 @@ type PrioritySchedulingScore struct {
 	ErrorPenalty        float64    `json:"error_penalty"`
 	BaseScore           float64    `json:"base_score"`
 	LatencyPenaltyUntil *time.Time `json:"latency_penalty_until,omitempty"`
+	LatencyStopped      bool       `json:"latency_stopped"`
 	LatencyRecovery     bool       `json:"latency_recovery,omitempty"`
 	OAuthQuotaRole      string     `json:"oauth_quota_role,omitempty"`
 	HistoryStatus       string     `json:"history_status"`
@@ -359,6 +360,7 @@ func scorePriorityCandidate(c PrioritySchedulingConfig, item openAIAccountCandid
 			} else {
 				degraded = true
 				out.Reasons = append(out.Reasons, "latency_above_target")
+				out.LatencyStopped = c.LatencyPenaltyMode == PriorityLatencyStop
 			}
 		}
 	} else {
