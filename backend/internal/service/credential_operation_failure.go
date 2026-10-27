@@ -67,11 +67,19 @@ type CredentialOperationRefreshRecorder interface {
 
 func refreshOperationFailure(err error, at *time.Time) *CredentialOperationFailure {
 	var operationError *CredentialOperationError
+	var networkError interface{ Timeout() bool }
 	code := "unknown"
 	if errors.As(err, &operationError) {
 		code = operationError.Code
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		code = "timeout"
+	} else if errors.As(err, &networkError) {
+		code = "transport_error"
+		if networkError.Timeout() {
+			code = "timeout"
+		}
+	} else if infraerrors.Reason(err) == "OPENAI_OAUTH_REQUEST_FAILED" || infraerrors.Reason(err) == "OPENAI_OAUTH_PROXY_REQUIRED" {
+		code = "transport_error"
 	} else if err != nil {
 		code = credentialOperationText(err.Error())
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -65,7 +67,9 @@ func TestCredentialOperationWorkerFailurePersistsThroughSafeDTO(t *testing.T) {
 			require.Contains(t, string(encoded), `"failure"`)
 			var fields map[string]any
 			require.NoError(t, json.Unmarshal(encoded, &fields))
-			require.Len(t, fields["failure"].(map[string]any), 5)
+			failureFields, ok := fields["failure"].(map[string]any)
+			require.True(t, ok)
+			require.Len(t, failureFields, 5)
 		})
 	}
 }
@@ -92,6 +96,16 @@ func (r *credentialRefreshRecorder) RecordRefreshFailure(_ context.Context, _ in
 }
 
 func TestCredentialOperationRefreshPreservesRetryPolicyAndSafeHistory(t *testing.T) {
+	for _, sample := range []struct {
+		err  error
+		code string
+	}{
+		{fmt.Errorf("wrapped: %w", context.DeadlineExceeded), "timeout"},
+		{&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("synthetic-private")}, "transport_error"},
+		{errors.New("User said: ETIMEDOUT"), "unknown"},
+	} {
+		require.Equal(t, sample.code, refreshOperationFailure(sample.err, nil).Code)
+	}
 	for _, rawCode := range []string{"invalid_grant", "invalid_refresh_token", "token_expired", "app_session_terminated", "refresh_token_reused", "refresh_token_invalidated", "invalid_client", "unauthorized_client", "access_denied", "invalid_scope"} {
 		err := NewCredentialOperationRefreshError(400, []byte(`{"error":"`+rawCode+`","error_description":"synthetic-private"}`))
 		require.True(t, isNonRetryableRefreshError(err), rawCode)

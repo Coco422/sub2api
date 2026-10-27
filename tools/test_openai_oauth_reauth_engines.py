@@ -74,6 +74,22 @@ class ReauthEngineTests(unittest.TestCase):
         self.assertEqual(worker.safe_worker_failure(ExternalGuessedError('User said: "account_deleted"')), 'worker_failed')
         self.assertEqual(worker.safe_worker_failure(worker.OperationWorkerError('account_retired')), 'account_retired')
 
+    def test_email_transient_retry_budget_and_manual_verification_stop_are_preserved(self):
+        for code, attempts in (('rate_limited', 3), ('transport_error', 3), ('phone_verification_required', 1),
+                               ('security_check', 1), ('authorization_denied', 1), ('account_retired', 1)):
+            with self.subTest(code=code):
+                protocol = SimpleNamespace(ProtocolSession=Mock(), network_preflight=Mock(), bootstrap_authorize=Mock(),
+                    submit_email=Mock(return_value={}), submit_email_otp=Mock(side_effect=worker.OperationWorkerError(code)),
+                    resend_email_otp=Mock(), AccountUnusableError=type('ExternalAccountError', (Exception,), {}))
+                api = SimpleNamespace(progress=Mock(), callback=Mock())
+                claim = dict(task_id=7, account_id=42, credential_mode='email_otp_url', login_email='fixture',
+                    otp_url='https://fixture.invalid/code', auth_url='https://auth.openai.com/oauth/authorize?state=synthetic')
+                with patch.object(worker, 'OTPURLProvider'), patch.object(worker, '_wait_for_otp', return_value='000001'), self.assertRaises(worker.OperationWorkerError):
+                    worker.process_claim(api, protocol, claim)
+                self.assertEqual(protocol.submit_email_otp.call_count, attempts)
+                self.assertEqual(protocol.resend_email_otp.call_count, attempts-1)
+                api.callback.assert_not_called()
+
     def fixture(self, name):
         return (Path(__file__).parent / 'fixtures' / 'session-studio' / name).read_bytes()
 
