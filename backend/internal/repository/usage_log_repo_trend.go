@@ -282,7 +282,7 @@ func (r *usageLogRepository) GetUsageTrendWithUsageFilters(ctx context.Context, 
 }
 
 func (r *usageLogRepository) getUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string, upstreamModelMismatch *bool, nativeCompactionV2 *bool) (results []TrendDataPoint, err error) {
-	if shouldUsePreaggregatedTrend(granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType, billingMode, upstreamModelMismatch, nativeCompactionV2) {
+	if trendRangeMatchesAggregateBuckets(startTime, endTime, granularity) && shouldUsePreaggregatedTrend(granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType, billingMode, upstreamModelMismatch, nativeCompactionV2) {
 		aggregated, aggregatedErr := r.getUsageTrendFromAggregates(ctx, startTime, endTime, granularity)
 		if aggregatedErr == nil && len(aggregated) > 0 {
 			return aggregated, nil
@@ -354,6 +354,21 @@ func (r *usageLogRepository) getUsageTrendWithFilters(ctx context.Context, start
 		return nil, err
 	}
 	return results, nil
+}
+
+// Preaggregated rows describe whole UTC buckets. Partial buckets must read raw
+// logs so neither boundary includes extra usage or omits part of the window.
+func trendRangeMatchesAggregateBuckets(start, end time.Time, granularity string) bool {
+	var bucket time.Duration
+	switch granularity {
+	case "hour":
+		bucket = time.Hour
+	case "day":
+		bucket = 24 * time.Hour
+	default:
+		return false
+	}
+	return start.Equal(start.UTC().Truncate(bucket)) && end.Equal(end.UTC().Truncate(bucket))
 }
 
 func shouldUsePreaggregatedTrend(granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8, billingMode string, upstreamModelMismatch *bool, nativeCompactionV2 *bool) bool {
