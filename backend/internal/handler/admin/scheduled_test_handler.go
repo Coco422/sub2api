@@ -193,13 +193,17 @@ func (h *ScheduledTestHandler) Delete(c *gin.Context) {
 			response.BadRequest(c, "invalid ownership deletion confirmation")
 			return
 		}
-		req.Delete = true
-		if _, err := h.scheduledTestSvc.QualityOwnership(c.Request.Context(), planID, &req); err != nil {
-			response.ErrorFrom(c, err)
+		// Older clients send an empty JSON object on DELETE. Preserve their
+		// guarded path; only an explicit ownership confirmation selects fencing.
+		if req.Fence != "" || req.Confirm {
+			req.Delete = true
+			if _, err := h.scheduledTestSvc.QualityOwnership(c.Request.Context(), planID, &req); err != nil {
+				response.ErrorFrom(c, err)
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "deleted"})
-		return
 	}
 
 	if err := h.scheduledTestSvc.DeletePlan(c.Request.Context(), planID); err != nil {
