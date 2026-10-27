@@ -65,7 +65,6 @@ const (
 const (
 	openAIOAuthReauthStaleAfter = 30 * time.Minute
 	maxOpenAIOAuthReauthURL     = 4096
-	maxOpenAIOAuthReauthError   = 500
 )
 
 // OpenAIOAuthReauthConfig is the non-secret representation of a saved re-login

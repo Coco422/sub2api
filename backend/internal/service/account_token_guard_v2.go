@@ -77,6 +77,8 @@ func ValidateAccountTokenGuardV2Rules(rules AccountTokenGuardV2Rules) error {
 }
 
 type AccountTokenGuardV2Record struct {
+	RefreshFailureCode   string
+	LastRefreshFailureAt *time.Time
 	ReloginFailStreak    int
 	LastCountedTaskID    int64
 	AutoReloginExhausted bool
@@ -153,6 +155,7 @@ type AccountTokenGuardV2AccountInput struct {
 }
 
 type AccountTokenGuardV2Account struct {
+	RefreshFailure       *CredentialOperationFailure `json:"refresh_failure,omitempty"`
 	ProbeFailure         *CredentialOperationFailure `json:"probe_failure,omitempty"`
 	ReloginFailStreak    int                         `json:"relogin_fail_streak"`
 	LastCountedTaskID    int64                       `json:"last_counted_task_id"`
@@ -349,6 +352,7 @@ func (s *AccountTokenGuardV2Service) ListAccounts(ctx context.Context) ([]Accoun
 		view, viewErr := s.recordView(ctx, record)
 		if viewErr != nil {
 			view = &AccountTokenGuardV2Account{
+				RefreshFailure:    storedRefreshFailure(record),
 				ReloginFailStreak: record.ReloginFailStreak, LastCountedTaskID: record.LastCountedTaskID, AutoReloginExhausted: record.AutoReloginExhausted,
 				AccountID: record.AccountID, Enabled: record.Enabled, AutoReloginEnabled: record.AutoReloginEnabled,
 				ProbeState: record.ProbeState, ProbeDetail: safeProbeOperationDetail(record.ProbeState, record.ProbeDetail), ProbeFailure: probeOperationFailure(record.ProbeState, record.ProbeDetail, record.LastProbeAt), FailStreak: record.FailStreak,
@@ -386,6 +390,7 @@ func (s *AccountTokenGuardV2Service) recordView(ctx context.Context, record Acco
 		lastReauthAt = reauthStatus.Task.FinishedAt
 	}
 	return &AccountTokenGuardV2Account{
+		RefreshFailure:    storedRefreshFailure(record),
 		ReloginFailStreak: record.ReloginFailStreak, LastCountedTaskID: record.LastCountedTaskID, AutoReloginExhausted: record.AutoReloginExhausted,
 		AccountID: record.AccountID, AccountName: account.Name, AccountStatus: account.Status, Schedulable: account.Schedulable,
 		Enabled: record.Enabled, AutoReloginEnabled: record.AutoReloginEnabled,
@@ -560,7 +565,7 @@ func (s *AccountTokenGuardV2Service) probeAccount(ctx context.Context, account *
 			return AccountTokenGuardV2ProbeTransient, accountTokenGuardV2PolicyBlocked
 		}
 	}
-	code := "unknown"
+	var code string
 	if errors.As(err, &upstreamErr) {
 		code = credentialOperationEnvelope(upstreamErr.body)
 		if code == "unknown" {

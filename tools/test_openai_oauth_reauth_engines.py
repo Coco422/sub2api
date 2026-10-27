@@ -37,6 +37,29 @@ def parallel_probe(config, stop=None):
 
 
 class ReauthEngineTests(unittest.TestCase):
+    def test_operation_fixtures_pass_existing_worker_failure_boundary(self):
+        cases = json.loads((Path(__file__).parent / 'fixtures' / 'credential-operation-errors.json').read_text())
+        for case in cases:
+            with self.subTest(name=case['name']):
+                self.assertEqual(worker.credential_operation_reason(case['payload']), case['code'])
+                api = self.api()
+                api.claim = Mock(return_value=self.claim())
+                api.fail = Mock()
+                payload = {**case['payload'], 'status': 'failed'}
+                raw = json.dumps({'type': 'result', 'payload': payload}).encode()
+                with patch.object(worker.NO_REDIRECT_OPENER, 'open', return_value=ChunkResponse([raw])), self.assertLogs(worker.LOGGER, level='ERROR') as logs:
+                    worker.run_once(api, None)
+                expected = case['code'] if case['code'] != 'unknown' else 'provider_failed'
+                self.assertIn('reason=' + expected + ' ', api.fail.call_args.args[1])
+                self.assertNotIn('synthetic-private', str(logs.output) + api.fail.call_args.args[1])
+                api.credentials.assert_not_called()
+
+    def test_failure_boundary_drops_unlabelled_sensitive_data(self):
+        for raw in ('password synthetic-private', 'token synthetic-private', 'totp synthetic-private',
+                    'cookie synthetic-private', 'phone synthetic-private', 'https://example.test/?code=synthetic-private',
+                    'Your account has not been deactivated.', 'User said: "account_deleted"', 'x' * 10000):
+            self.assertEqual(worker.safe_worker_failure(worker.WorkerError(raw)), 'worker_failed')
+
     def fixture(self, name):
         return (Path(__file__).parent / 'fixtures' / 'session-studio' / name).read_bytes()
 

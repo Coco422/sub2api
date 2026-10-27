@@ -2,10 +2,15 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 // CredentialOperationFailure is a projection of one persisted operation, never
@@ -16,6 +21,61 @@ type CredentialOperationFailure struct {
 	Stage      string     `json:"stage"`
 	Action     string     `json:"action"`
 	OccurredAt *time.Time `json:"occurred_at,omitempty"`
+}
+
+// CredentialOperationError carries a safe code from the actual token response.
+// No response body or exception text is retained in the error chain.
+type CredentialOperationError struct {
+	Code  string
+	cause error
+}
+
+func (e *CredentialOperationError) Error() string { return e.cause.Error() }
+func (e *CredentialOperationError) Unwrap() error { return e.cause }
+
+func NewCredentialOperationRefreshError(status int, body []byte) error {
+	code := credentialOperationEnvelope(body)
+	if code == "unknown" {
+		switch {
+		case status == 429:
+			code = "rate_limited"
+		case status >= 500:
+			code = "service_error"
+		}
+	}
+	// Retain the invalid_grant marker used by the existing refresh race recovery
+	// and retry policy. Classification does not change that policy's semantics.
+	marker := code
+	fields, ok := credentialOperationObject(body)
+	var rawCode string
+	if ok {
+		if json.Unmarshal(fields["error"], &rawCode) != nil {
+			if nested, valid := credentialOperationObject(fields["error"]); valid {
+				_ = json.Unmarshal(nested["code"], &rawCode)
+			}
+		}
+	}
+	if credentialOperationCode(rawCode) != "unknown" || rawCode == "invalid_client" || rawCode == "unauthorized_client" || rawCode == "invalid_scope" {
+		marker = rawCode
+	}
+	return &CredentialOperationError{Code: code, cause: infraerrors.New(502, "OPENAI_OAUTH_TOKEN_REFRESH_FAILED", fmt.Sprintf("token refresh failed: status %d, code %s", status, marker))}
+}
+
+type CredentialOperationRefreshRecorder interface {
+	RecordRefreshFailure(context.Context, int64, string, time.Time) error
+}
+
+func refreshOperationFailure(err error, at *time.Time) *CredentialOperationFailure {
+	var operationError *CredentialOperationError
+	code := "unknown"
+	if errors.As(err, &operationError) {
+		code = operationError.Code
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		code = "timeout"
+	} else if err != nil {
+		code = credentialOperationText(err.Error())
+	}
+	return credentialOperationFailure(code, "refresh_token", at)
 }
 
 // Keep provider aliases at the input boundary; only canonical codes are stored.
@@ -81,6 +141,10 @@ func credentialOperationEnvelope(body []byte) string {
 	fields, ok := credentialOperationObject(body)
 	if !ok {
 		return "unknown"
+	}
+	var oauthCode string
+	if json.Unmarshal(fields["error"], &oauthCode) == nil {
+		return credentialOperationCode(oauthCode)
 	}
 	fields, ok = credentialOperationObject(fields["error"])
 	if !ok {
@@ -160,6 +224,18 @@ func credentialOperationFailure(code, stage string, at *time.Time) *CredentialOp
 	return &CredentialOperationFailure{Category: category, Code: code, Stage: stage, Action: action, OccurredAt: at}
 }
 
+// SafeCredentialOperationFailure also protects repository observation writes.
+func SafeCredentialOperationFailure(code, stage string, at *time.Time) *CredentialOperationFailure {
+	return credentialOperationFailure(code, stage, at)
+}
+
+func storedRefreshFailure(record AccountTokenGuardV2Record) *CredentialOperationFailure {
+	if record.LastRefreshFailureAt == nil && record.RefreshFailureCode == "" {
+		return nil
+	}
+	return credentialOperationFailure(record.RefreshFailureCode, "refresh_token", record.LastRefreshFailureAt)
+}
+
 func credentialOperationDetail(code string) string {
 	return "credential_operation_failed stage=inspection code=" + credentialOperationCode(code)
 }
@@ -168,7 +244,7 @@ func probeOperationFailure(state, detail string, at *time.Time) *CredentialOpera
 	if state == AccountTokenGuardV2ProbeOK || state == AccountTokenGuardV2ProbePending || state == "" {
 		return nil
 	}
-	code := "unknown"
+	var code string
 	if value, ok := strings.CutPrefix(detail, "credential_operation_failed stage=inspection code="); ok {
 		value, _, _ = strings.Cut(value, ";")
 		code = credentialOperationCode(value)

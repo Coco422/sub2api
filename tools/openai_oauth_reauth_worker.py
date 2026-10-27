@@ -64,6 +64,54 @@ CONTEXT_CODE_RE = re.compile(
 )
 
 
+# Canonical labels only; arbitrary provider text never enters task storage/logs.
+OPERATION_CODES = {
+    "phone_verification_required": "phone_verification_required", "phone_number_required": "phone_verification_required",
+    "account_deactivated": "account_deactivated", "account_disabled": "account_deactivated", "account_banned": "account_deactivated",
+    "account_deleted": "account_deleted", "account_retired": "account_retired",
+    "auth_failed": "requires_relogin", "invalid_token": "requires_relogin", "token_invalid": "requires_relogin",
+    "requires_relogin": "requires_relogin", "invalid_grant": "requires_relogin", "revoked": "requires_relogin",
+    "token_invalidated": "requires_relogin", "token_revoked": "requires_relogin", "refresh_token_reused": "requires_relogin",
+    "refresh_token_invalidated": "requires_relogin", "invalid_refresh_token": "requires_relogin",
+    "token_expired": "requires_relogin", "app_session_terminated": "requires_relogin", "session_unavailable": "requires_relogin",
+    "password_rejected": "password_rejected", "invalid_password": "password_rejected", "incorrect_password": "password_rejected",
+    "totp_rejected": "mfa_required", "mfa_required": "mfa_required", "otp_required": "mfa_required",
+    "email_verification_required": "mfa_required", "interaction_required": "mfa_required",
+    "security_check": "security_check", "security_check_required": "security_check", "challenge_required": "security_check",
+    "session_blocked_by_cyber_policy": "security_check", "cyber_policy": "security_check",
+    "access_denied": "authorization_denied", "authorization_denied": "authorization_denied", "permission_denied": "authorization_denied",
+    "rate_limit_exceeded": "rate_limited", "rate_limit_error": "rate_limited", "rate_limited": "rate_limited", "too_many_requests": "rate_limited",
+    "timeout": "timeout", "request_timeout": "timeout", "worker_timeout": "timeout", "idle_timeout": "timeout",
+    "transport_error": "transport_error", "connection_error": "transport_error", "proxy_unavailable": "transport_error",
+    "server_error": "service_error", "service_unavailable": "service_error", "service_error": "service_error",
+}
+OPERATION_TEXTS = {
+    "You must provide a phone number to continue.": "phone_verification_required",
+    "Phone verification required.": "phone_verification_required",
+    "Your account has been deactivated.": "account_deactivated",
+    "Your account has been deleted.": "account_deleted",
+    "Your account has been deleted or deactivated.": "account_retired",
+    "This account has been deleted or deactivated.": "account_retired",
+}
+SESSION_STUDIO_PHASE_REASONS["terminal_result"].update(OPERATION_CODES.values())
+
+
+def credential_operation_reason(payload):
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, str):
+        return OPERATION_CODES.get(error, "unknown")
+    if not isinstance(error, dict):
+        return "unknown"
+    if "code" in error:
+        code = error["code"]
+        return OPERATION_CODES.get(code, "unknown") if isinstance(code, str) else "unknown"
+    kind = error.get("type")
+    if isinstance(kind, str) and kind in OPERATION_CODES:
+        return OPERATION_CODES[kind]
+    message = error.get("message")
+    return OPERATION_TEXTS.get(message, "unknown") if isinstance(message, str) else "unknown"
+
+
 class WorkerError(RuntimeError):
     pass
 
@@ -1164,7 +1212,8 @@ def process_session_studio_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
     credentials = payload.get("credential")
     if payload.get("error") or str(payload.get("status", "")).lower() in {"failed", "error", "auth_failed"}:
         # Provider errors may echo secrets. Do not relay their message or code.
-        raise fail("Session Studio login failed", "terminal_result", "provider_failed")
+        code = credential_operation_reason(payload)
+        raise fail("Session Studio login failed", "terminal_result", code if code != "unknown" else "provider_failed")
     if not isinstance(credentials, dict) or not all(
         isinstance(credentials.get(key), str) and credentials[key].strip()
         for key in ("access_token", "refresh_token", "id_token")
@@ -1578,7 +1627,7 @@ def run_once(api: WorkerAPI, protocol: SimpleNamespace | None) -> bool:
     try:
         process_claim(api, protocol, claim)
     except Exception as exc:
-        reason = exc.diagnostic() if isinstance(exc, SessionStudioError) else sanitize_error(f"{type(exc).__name__}: {exc}")
+        reason = safe_worker_failure(exc)
         LOGGER.error("task=%s failed: %s", task_id or "?", reason)
         if task_id > 0:
             try:
@@ -1586,6 +1635,34 @@ def run_once(api: WorkerAPI, protocol: SimpleNamespace | None) -> bool:
             except WorkerError as fail_exc:
                 LOGGER.error("task=%s failure report rejected: %s", task_id, sanitize_error(str(fail_exc)))
     return True
+
+
+def safe_worker_failure(exc: BaseException) -> str:
+    """Allowlist the durable/logged failure boundary, including old workers."""
+    if isinstance(exc, SessionStudioError):
+        return exc.diagnostic()
+    raw = str(exc).strip()
+    if raw.startswith("local_protocol_failed"):
+        try:
+            from .openai_codex_oauth_adapter import STAGES, REASONS
+        except ImportError:
+            from openai_codex_oauth_adapter import STAGES, REASONS
+        match = re.fullmatch(r"local_protocol_failed stage=([a-z_]+) reason=([a-z_]+) elapsed_ms=([0-9]{1,7}) exit=(-?[0-9]{1,3})", raw if len(raw) <= 256 else "")
+        if match:
+            stage, reason, elapsed, exit_code = match.groups()
+            if stage in STAGES and reason in REASONS and reason != "none" and int(elapsed) <= 3600000 and -255 <= int(exit_code) <= 255:
+                return raw
+        return "local protocol failed; invalid diagnostic omitted"
+    code = getattr(exc, "error_code", None)
+    if isinstance(code, str) and code in OPERATION_CODES:
+        return OPERATION_CODES[code]
+    if raw in OPERATION_CODES:
+        return OPERATION_CODES[raw]
+    if raw in OPERATION_TEXTS:
+        return OPERATION_TEXTS[raw]
+    if isinstance(exc, (TimeoutError, socket.timeout)) or raw == "password/TOTP protocol timed out":
+        return "timeout"
+    return "worker_failed"
 
 
 def terminate_worker(_signum: int, _frame: Any) -> None:
