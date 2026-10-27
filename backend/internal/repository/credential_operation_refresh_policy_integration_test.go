@@ -34,7 +34,7 @@ func TestCredentialOperationRefreshPolicyPostgresTypeInvalidGrantRace(t *testing
 		_, err := integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, account.ID)
 		require.NoError(t, err)
 	})
-	accounts := NewAccountRepository(testEntClient(t), integrationDB, nil)
+	accounts := newAccountRepositoryWithSQL(testEntClient(t), integrationDB, nil)
 	counted := &credentialRefreshPolicyCountingRepo{AccountRepository: accounts}
 	var requests atomic.Int32
 	storeErrors := make(chan error, 1)
