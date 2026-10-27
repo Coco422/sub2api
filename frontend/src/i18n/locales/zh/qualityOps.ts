@@ -271,6 +271,7 @@ export default {
   "judgeJev": "Jev（复用安全审计 TypeSafe 配置）",
   "judgeJevHint": "使用安全审计已保存的 TypeSafe 模型、Key、逐 Key 地址、代理及超时。全局风控或内容审计关闭、审计模式关闭时不调用；可复用未被选为活动审计引擎的 TypeSafe 配置。判题失败不会回退普通账号，也不会据此停调或恢复。实际成本和速度未经测量。",
   "judgeJevLatency": "独立判题耗时 {ms} ms；回答延迟仅含被测生成",
+  "jevGrading": "Jev 独立比较参考答案与被测回答，不使用普通账号。只有明确的错误结论才进入既有失败处理；缺失、拒绝、超时、非法响应与低置信度均保留不确定，不触发停调或恢复。",
   "jevReasons": {
     "not_configured": "未保存 TypeSafe/Jev 配置或 Key，请到安全审计设置配置。",
     "config_unavailable": "无法读取安全审计配置，请稍后重试。",

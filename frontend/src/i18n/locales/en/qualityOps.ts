@@ -271,6 +271,7 @@ export default {
   "judgeJev": "Jev (reuse security audit TypeSafe profile)",
   "judgeJevHint": "Uses the saved TypeSafe model, keys, per-key endpoints, proxy and timeout. No call when global risk control, content auditing or audit mode is off. The saved TypeSafe profile can be reused while another audit engine is active. Failure never falls back to ordinary accounts or justifies stopping/restoring them. Cost and speed have not been measured.",
   "judgeJevLatency": "Separate grading time {ms} ms; answer latency covers tested generation only",
+  "jevGrading": "Jev compares the reference and candidate answer independently without ordinary accounts. Only a clear incorrect verdict enters existing failure handling. Missing data, refusal, timeout, invalid output and low confidence remain inconclusive and cannot stop or restore accounts.",
   "jevReasons": {
     "not_configured": "No saved TypeSafe/Jev profile or key. Configure it in security audit settings.",
     "config_unavailable": "Cannot read security audit configuration. Try again later.",
