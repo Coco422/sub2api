@@ -25,7 +25,7 @@ jobs:
           mkdir -p evidence
           git rev-parse HEAD | tee evidence/head.txt
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          sha256sum backend/internal/repository/quality_rule152_integration_test.go > evidence/test-input.sha256
+          sha256sum backend/internal/repository/quality_rule152{,_http}_integration_test.go > evidence/test-input.sha256
       - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
@@ -64,7 +64,7 @@ jobs:
           (cd .. && sha256sum -c evidence/test-input.sha256)
           go test -tags=integration ./internal/repository -run 'Test(Quality152|QualityOwnership|QualityLiveDeleteHTTP)' -count=1 -v 2>&1 | tee ../evidence/green.log
           if grep -Eq -- '--- SKIP:|no tests to run' ../evidence/green.log; then exit 1; fi
-          for name in TestQuality152AdminUpdatePreservesLockedIsolation TestQuality152AdminUpdateServiceReadBeforeLock TestQuality152OrdinaryBulkAndExtraSavesPreserveIsolation TestQuality152OwnershipAndExplicitRestoreRemainIntact; do
+          for name in TestQuality152AdminUpdatePreservesLockedIsolation TestQuality152AdminUpdateServiceReadBeforeLock TestQuality152OrdinaryBulkAndExtraSavesPreserveIsolation TestQuality152OwnershipAndExplicitRestoreRemainIntact TestQuality152HTTPUpdatePreservesServerIsolation; do
             grep -F -- "--- PASS: $name" ../evidence/green.log
           done
       - name: Existing locked account Extra preservation assertions

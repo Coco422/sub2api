@@ -204,3 +204,10 @@ func TestQuality152OwnershipAndExplicitRestoreRemainIntact(t *testing.T) {
 	require.Equal(t, before.Schedulable, restored.Schedulable)
 	require.Equal(t, before.Concurrency, restored.Concurrency)
 }
+
+// Quality152AdminFixture exposes only the existing isolated test fixture to the
+// external test package so it can use the real handler without an import cycle.
+func Quality152AdminFixture(t *testing.T, isolation any) (service.AdminService, service.AdminAccountRepository, *service.Account) {
+	repo, account := quality152Account(t, isolation)
+	return quality152Admin(repo), repo, account
+}
