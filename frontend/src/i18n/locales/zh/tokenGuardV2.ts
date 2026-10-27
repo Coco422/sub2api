@@ -1,5 +1,6 @@
 export default {
   operationFailure: {
+  manual: {"busy": "已有操作正在进行，请等待完成后查看原任务。", "worker": "重登服务不可用，请检查 Worker 状态。", "configuration": "请先保存完整登录配置。", "encryption": "请先启用凭据加密。", "changed": "账号凭据或任务已变化，请刷新列表并人工核对。"},
   refreshAttempt: '最近刷新失败尝试（可能已被后续重试恢复）',
   "details": "查看本次异常详情",
   "code": "安全短码",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -123,4 +124,44 @@ func TestCredentialOperationUnknownAndSecretOmission(t *testing.T) {
 	}
 	require.NotNil(t, safeReauthTask(&OpenAIOAuthReauthTaskRecord{Status: "failed"}).Failure)
 	require.Nil(t, safeReauthTask(&OpenAIOAuthReauthTaskRecord{Status: "succeeded"}).Failure)
+}
+
+func TestCredentialOperationProbePersistsEvidenceWithoutChangingAccountOrBudget(t *testing.T) {
+	raw, err := os.ReadFile("../../../tools/fixtures/credential-operation-errors.json")
+	require.NoError(t, err)
+	var fixtures []struct {
+		Name    string          `json:"name"`
+		Payload json.RawMessage `json:"payload"`
+		Code    string          `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &fixtures))
+	for _, fixture := range fixtures {
+		t.Run(fixture.Name, func(t *testing.T) {
+			reauth, reader, tasks, updater, _, _ := newReauthTestService("acct-1")
+			require.NoError(t, tasks.UpsertConfig(context.Background(), reauthEmailConfig(42, "fixture", "encrypted:https://fixture.invalid/code")))
+			repo := &accountTokenGuardV2TestRepo{record: &AccountTokenGuardV2Record{AccountID: 42, Enabled: true, AutoReloginEnabled: true, FailStreak: 10}}
+			repo.createTask = tasks.CreateTask
+			status := reader.account.Status
+			credentials, err := json.Marshal(reader.account.Credentials)
+			require.NoError(t, err)
+			svc := NewAccountTokenGuardV2Service(repo, nil, reader, accountTokenGuardV2TestProber{err: &codexModelsManifestUpstreamError{err: errors.New("synthetic-private"), statusCode: http.StatusBadRequest, body: fixture.Payload}}, reauth)
+			svc.runProbe(context.Background(), *repo.record)
+			require.NotNil(t, repo.completion)
+			failure := probeOperationFailure(repo.record.ProbeState, repo.record.ProbeDetail, repo.record.LastProbeAt)
+			require.NotNil(t, failure)
+			require.Equal(t, fixture.Code, failure.Code)
+			require.Equal(t, repo.record.LastProbeAt, failure.OccurredAt)
+			require.NotContains(t, repo.record.ProbeDetail, "synthetic-private")
+			if fixture.Code != "requires_relogin" {
+				require.Equal(t, AccountTokenGuardV2ProbeTransient, repo.completion.ProbeState)
+				require.Equal(t, 10, repo.completion.FailStreak)
+				require.Zero(t, tasks.createCalls)
+			}
+			require.False(t, updater.applied)
+			require.Equal(t, status, reader.account.Status)
+			current, err := json.Marshal(reader.account.Credentials)
+			require.NoError(t, err)
+			require.JSONEq(t, string(credentials), string(current))
+		})
+	}
 }

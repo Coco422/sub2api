@@ -60,6 +60,20 @@ class ReauthEngineTests(unittest.TestCase):
                     'Your account has not been deactivated.', 'User said: "account_deleted"', 'x' * 10000):
             self.assertEqual(worker.safe_worker_failure(worker.WorkerError(raw)), 'worker_failed')
 
+    def test_email_adapter_ignores_external_guessed_codes_and_parses_actual_envelopes(self):
+        cases = json.loads((Path(__file__).parent / 'fixtures' / 'credential-operation-errors.json').read_text())
+        for case in cases:
+            with self.subTest(name=case['name']):
+                response = SimpleNamespace(text=json.dumps(case['payload']))
+                self.assertEqual(worker.operation_response_reason(response), case['code'])
+        for raw in ('{"error":{"code":"account_deleted","code":"account_retired"}}',
+                    '{"error":{"co\\u0064e":"account_deleted","code":"account_retired"}}', 'x' * 32769):
+            self.assertEqual(worker.operation_response_reason(SimpleNamespace(text=raw)), 'unknown')
+        class ExternalGuessedError(Exception):
+            error_code = 'account_deleted'
+        self.assertEqual(worker.safe_worker_failure(ExternalGuessedError('User said: "account_deleted"')), 'worker_failed')
+        self.assertEqual(worker.safe_worker_failure(worker.OperationWorkerError('account_retired')), 'account_retired')
+
     def fixture(self, name):
         return (Path(__file__).parent / 'fixtures' / 'session-studio' / name).read_bytes()
 

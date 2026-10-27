@@ -376,7 +376,19 @@ const selectableAccounts = computed(() => {
       .some(value => String(value || '').toLowerCase().includes(query)))
 })
 
-const message = (_value: unknown) => t('tokenGuardV2.error')
+const manualErrors: Record<string, string> = {
+  TOKEN_GUARD_V2_PROBE_BUSY: 'busy', OPENAI_REAUTH_TASK_ACTIVE: 'busy',
+  OPENAI_REAUTH_WORKER_UNAVAILABLE: 'worker', OPENAI_REAUTH_UNAVAILABLE: 'worker',
+  OPENAI_REAUTH_CONFIG_REQUIRED: 'configuration', OPENAI_REAUTH_ENCRYPTION_KEY_REQUIRED: 'encryption',
+  OPENAI_REAUTH_ACCOUNT_CHANGED: 'changed', OPENAI_REAUTH_IDENTITY_MISMATCH: 'changed',
+  OPENAI_REAUTH_TASK_NOT_ACTIVE: 'changed'
+}
+const message = (value: unknown) => {
+  const reason = (value as { reason?: unknown })?.reason
+  return typeof reason === 'string' && Object.prototype.hasOwnProperty.call(manualErrors, reason)
+    ? `${t(`tokenGuardV2.operationFailure.manual.${manualErrors[reason]}`)} (${reason})`
+    : t('tokenGuardV2.error')
+}
 const date = (value?: string) => value ? new Date(value).toLocaleString() : '-'
 const modeLabel = (mode?: TokenGuardV2CredentialMode) => !mode ? '-' : mode === 'password_totp' ? t('tokenGuardV2.passwordMode') : t('tokenGuardV2.mailboxMode')
 const engineLabel = (engine?: TokenGuardV2Engine) => engine === 'session_studio' ? t('tokenGuardV2.sessionStudioEngine') : t('tokenGuardV2.localWorkerEngine')

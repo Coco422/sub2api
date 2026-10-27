@@ -15,7 +15,7 @@ export const operationStages = new Set(['starting', 'web_login', 'password_accep
 
 // Defence for old API/worker records: never render arbitrary error strings.
 export function safeOperationFailure(value?: Partial<CredentialOperationFailure>): CredentialOperationFailure {
-  const code = value?.code && Object.hasOwn(actions, value.code) ? value.code : 'unknown'
+  const code = value?.code && Object.prototype.hasOwnProperty.call(actions, value.code) ? value.code : 'unknown'
   const at = value?.occurred_at
   return { code, category: code, action: actions[code]!,
     stage: value?.stage && operationStages.has(value.stage) ? value.stage : 'unknown',
@@ -41,5 +41,5 @@ const legacyReasons = new Set(['protocol_error', 'password_rejected', 'totp_reje
   'timeout', 'diagnostic_invalid', 'output_invalid', 'http_rejected', 'duplicate_field', 'invalid_json', 'unsupported_event',
   'missing_result', 'response_too_large', 'invalid_result', 'provider_failed', 'submission_failed', 'credentials_not_accepted'])
 export function safeDiagnosticToken(value: string): string {
-  return operationStages.has(value) || Object.hasOwn(actions, value) || legacyReasons.has(value) ? value : 'unknown'
+  return operationStages.has(value) || Object.prototype.hasOwnProperty.call(actions, value) || legacyReasons.has(value) ? value : 'unknown'
 }

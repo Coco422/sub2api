@@ -1,5 +1,6 @@
 export default {
   operationFailure: {
+  manual: {"busy": "An operation is already active; wait and review the existing task.", "worker": "Re-login service is unavailable; check the worker status.", "configuration": "Save a complete login configuration first.", "encryption": "Enable credential encryption first.", "changed": "Credentials or task ownership changed; refresh the list and review manually."},
   refreshAttempt: 'Last failed refresh attempt (a later retry may have recovered)',
   "details": "View failure details",
   "code": "Safe code",

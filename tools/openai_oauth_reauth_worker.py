@@ -116,6 +116,34 @@ class WorkerError(RuntimeError):
     pass
 
 
+class OperationWorkerError(WorkerError):
+    """Created only from this adapter's validated response envelope."""
+    def __init__(self, code: str):
+        self.code = code if code in OPERATION_CODES.values() else "unknown"
+        super().__init__(self.code)
+
+
+def operation_response_reason(response):
+    raw = getattr(response, 'text', '')
+    if not isinstance(raw, str) or len(raw.encode('utf-8')) > 32768:
+        return 'unknown'
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate field')
+            result[key] = value
+        return result
+    try:
+        payload = json.loads(raw, object_pairs_hook=unique)
+    except (ValueError, RecursionError):
+        return 'unknown'
+    code = credential_operation_reason(payload)
+    if code == 'unknown' and isinstance(payload, dict) and payload.get('page') == {'type': 'add_phone'}:
+        return 'phone_verification_required'
+    return code
+
+
 class SessionStudioError(WorkerError):
     """Client-observed failure only; never carries provider diagnostic fields."""
 
@@ -661,8 +689,6 @@ def load_protocol(root: Path) -> SimpleNamespace:
     )
     from core.openai_auth import (
         AccountUnusableError,
-        _extract_error_code,
-        detect_account_unusable_response_body,
         send_email_otp,
     )
     # Turb keeps this class name for historical reasons; it is a curl_cffi
@@ -680,6 +706,9 @@ def load_protocol(root: Path) -> SimpleNamespace:
             sentinel_header=sentinel_header,
             so_header=so_header,
         )
+        code = operation_response_reason(response)
+        if code != 'unknown':
+            raise OperationWorkerError(code)
         if response.status_code not in (200, 204):
             raise WorkerError(f"OpenAI email submission returned HTTP {response.status_code}")
         try:
@@ -700,21 +729,10 @@ def load_protocol(root: Path) -> SimpleNamespace:
             so_header=so_header,
         )
         if response.status_code != 200:
-            error_code = _extract_error_code(response)
-            if error_code in ("account_deactivated", "account_deleted", "account_banned"):
-                raise AccountUnusableError(
-                    f"[Codex] 账号已废（{error_code}）status={response.status_code}: {(response.text or '')[:200]}",
-                    error_code=error_code,
-                )
-            body_error_code = detect_account_unusable_response_body(response.text or "")
-            if body_error_code:
-                raise AccountUnusableError(
-                    f"[Codex] 账号已废（{body_error_code}）status={response.status_code}: {(response.text or '')[:200]}",
-                    error_code=body_error_code,
-                )
-            raise RuntimeError(
-                f"[Codex] 邮箱 OTP 验证失败 status={response.status_code}: {(response.text or '')[:300]}"
-            )
+            code = operation_response_reason(response)
+            if code != 'unknown':
+                raise OperationWorkerError(code)
+            raise WorkerError("email OTP verification failed")
         # OpenAI can return workspaces in the OTP JSON without setting the
         # oai-client-auth-session cookie expected by Turb's next step.
         workspace_id = _workspace_id_from_auth_payload(_resp_json(response))
@@ -773,7 +791,7 @@ def _best_effort_progress(api: WorkerAPI, task_id: int, stage: str) -> None:
     try:
         api.progress(task_id, stage)
     except WorkerError as exc:
-        LOGGER.warning("task=%s progress=%s failed: %s", task_id, stage, sanitize_error(str(exc)))
+        LOGGER.warning("task=%s progress=%s failed: %s", task_id, stage, safe_worker_failure(exc))
 
 
 def sanitize_error(value: str) -> str:
@@ -1011,16 +1029,9 @@ def process_claim(api: WorkerAPI, protocol: SimpleNamespace | None, claim: dict[
         otp_after_ts = time.time()
         submission = protocol.submit_email(session, email)
         page_type, continue_path = _email_submission_state(submission)
-        flow = _auth_session_flow(session)
-        LOGGER.info(
-            "task=%s auth page=%s path=%s mode=%s passwordless_disabled=%s signup_mode=%s",
-            task_id,
-            page_type,
-            continue_path or "unknown",
-            flow.get("email_verification_mode", "unknown"),
-            flow.get("passwordless_disabled", "unknown"),
-            flow.get("signup_mode", "unknown"),
-        )
+        LOGGER.info("task=%s email submission completed", task_id)
+        if page_type == 'add_phone' or continue_path == '/add-phone':
+            raise OperationWorkerError('phone_verification_required')
         if page_type in {"login_password", "login-password", "password_login"} or continue_path == "/log-in/password":
             passwordless_url = _email_submission_url(submission)
             if not passwordless_url:
@@ -1049,9 +1060,14 @@ def process_claim(api: WorkerAPI, protocol: SimpleNamespace | None, claim: dict[
             except protocol.AccountUnusableError:
                 raise
             except Exception as exc:
+                if isinstance(exc, OperationWorkerError) and exc.code in {
+                    'phone_verification_required', 'account_deactivated', 'account_deleted', 'account_retired',
+                    'mfa_required', 'security_check', 'authorization_denied',
+                }:
+                    raise
                 if attempt >= max_otp_attempts:
                     raise
-                LOGGER.warning("task=%s OTP attempt %s/%s failed: %s", task_id, attempt, max_otp_attempts, sanitize_error(str(exc)))
+                LOGGER.warning("task=%s OTP attempt %s/%s failed: %s", task_id, attempt, max_otp_attempts, safe_worker_failure(exc))
                 protocol.resend_email_otp(session)
                 otp_after_ts = time.time()
                 _best_effort_progress(api, task_id, "email_submitted")
@@ -1070,7 +1086,7 @@ def process_claim(api: WorkerAPI, protocol: SimpleNamespace | None, claim: dict[
             try:
                 _close_protocol_session(session)
             except Exception as exc:
-                LOGGER.warning("task=%s protocol session cleanup failed: %s", task_id, sanitize_error(str(exc)))
+                LOGGER.warning("task=%s protocol session cleanup failed: %s", task_id, safe_worker_failure(exc))
 
 
 def _session_studio_result(response: Any) -> dict[str, Any]:
@@ -1556,7 +1572,7 @@ def _best_effort_session_progress(api: WorkerAPI, task_id: int, stage: str) -> N
     try:
         api.session_export_progress(task_id, stage)
     except WorkerError as exc:
-        LOGGER.warning("task=%s Session export progress=%s failed: %s", task_id, stage, sanitize_error(str(exc)))
+        LOGGER.warning("task=%s Session export progress=%s failed: %s", task_id, stage, safe_worker_failure(exc))
 
 
 def session_export_error_code(exc: BaseException) -> str:
@@ -1601,13 +1617,13 @@ def run_once(api: WorkerAPI, protocol: SimpleNamespace | None) -> bool:
     try:
         claim = api.claim()
     except WorkerError as exc:
-        LOGGER.warning("claim failed: %s", sanitize_error(str(exc)))
+        LOGGER.warning("claim failed: %s", safe_worker_failure(exc))
         return False
     if not claim:
         try:
             claim = api.claim_session_export()
         except WorkerError as exc:
-            LOGGER.warning("Session export claim failed: %s", sanitize_error(str(exc)))
+            LOGGER.warning("Session export claim failed: %s", safe_worker_failure(exc))
             return False
         if not claim:
             return False
@@ -1621,7 +1637,7 @@ def run_once(api: WorkerAPI, protocol: SimpleNamespace | None) -> bool:
                 try:
                     api.session_export_fail(task_id, reason)
                 except WorkerError as fail_exc:
-                    LOGGER.error("Session export task=%s failure report rejected: %s", task_id, sanitize_error(str(fail_exc)))
+                    LOGGER.error("Session export task=%s failure report rejected: %s", task_id, safe_worker_failure(fail_exc))
         return True
     task_id = int(claim.get("task_id") or 0)
     try:
@@ -1633,7 +1649,7 @@ def run_once(api: WorkerAPI, protocol: SimpleNamespace | None) -> bool:
             try:
                 api.fail(task_id, reason)
             except WorkerError as fail_exc:
-                LOGGER.error("task=%s failure report rejected: %s", task_id, sanitize_error(str(fail_exc)))
+                LOGGER.error("task=%s failure report rejected: %s", task_id, safe_worker_failure(fail_exc))
     return True
 
 
@@ -1653,9 +1669,8 @@ def safe_worker_failure(exc: BaseException) -> str:
             if stage in STAGES and reason in REASONS and reason != "none" and int(elapsed) <= 3600000 and -255 <= int(exit_code) <= 255:
                 return raw
         return "local protocol failed; invalid diagnostic omitted"
-    code = getattr(exc, "error_code", None)
-    if isinstance(code, str) and code in OPERATION_CODES:
-        return OPERATION_CODES[code]
+    if isinstance(exc, OperationWorkerError):
+        return exc.code
     if raw in OPERATION_CODES:
         return OPERATION_CODES[raw]
     if raw in OPERATION_TEXTS:
@@ -1759,7 +1774,7 @@ def main() -> int:
         protocol = load_protocol(config.protocol_root) if config.protocol_root is not None else None
         api = WorkerAPI(config)
     except Exception as exc:
-        LOGGER.error("worker startup failed: %s", sanitize_error(f"{type(exc).__name__}: {exc}"))
+        LOGGER.error("worker startup failed: %s", safe_worker_failure(exc))
         return 2
 
     if args.check:
@@ -1778,7 +1793,7 @@ def main() -> int:
             if not worked:
                 time.sleep(config.poll_seconds)
     except WorkerError as exc:
-        LOGGER.error("worker pool failed: %s", sanitize_error(str(exc)))
+        LOGGER.error("worker pool failed: %s", safe_worker_failure(exc))
         return 1
     except KeyboardInterrupt:
         LOGGER.info("worker stopped")
