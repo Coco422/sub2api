@@ -179,7 +179,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	var allowed []string
 	var catalogErr error
 	if plan.PelicanConfig.Quality != nil {
-		allowed, _, catalogErr = s.scheduledSvc.supportedQualityModels(runCtx, plan)
+		allowed, _, catalogErr = s.scheduledSvc.eligibleQualityModels(runCtx, plan)
 	}
 	var wg sync.WaitGroup
 	workers := len(results)

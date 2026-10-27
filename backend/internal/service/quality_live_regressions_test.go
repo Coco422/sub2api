@@ -28,8 +28,10 @@ func TestQualityLiveManualModelMissingFromManifest(t *testing.T) {
 			svc := NewScheduledTestService(plans, &pelicanResults{})
 			svc.accountTests = &AccountTestService{accountRepo: accounts}
 			svc.qualityModels = func(context.Context, int64) ([]string, error) {
-				t.Fatal("manual native test must not require manifest availability")
-				return nil, nil
+				if len(mapping) > 0 {
+					t.Fatal("configured manual test must not require manifest availability")
+				}
+				return []string{"gpt-6-sol"}, nil
 			}
 			plan := multiModelQualityPlan(t, `["gpt-6.1-sol"]`)
 			_, err := svc.CreatePlan(context.Background(), plan)
@@ -46,7 +48,7 @@ func TestQualityLiveUnknownProbeCatalogIsNotUnsupported(t *testing.T) {
 	svc.qualityModels = func(context.Context, int64) ([]string, error) { return []string{"gpt-6-sol"}, nil }
 	plan := multiModelQualityPlan(t, `["gpt-6.1-sol"]`)
 	plan.PelicanConfig.QuestionKind = "state_probe"
-	_, _, err := svc.supportedQualityModels(context.Background(), plan)
+	_, err := svc.CreatePlan(context.Background(), plan)
 	require.Equal(t, "QUALITY_MODEL_CATALOG_UNKNOWN", infraerrors.Reason(err))
 	require.NotContains(t, err.Error(), "不支持检测模型")
 }
@@ -64,12 +66,11 @@ func TestQualityLiveManualSelectionKeepsPolicyAndObservedRejection(t *testing.T)
 				account.Credentials["model_mapping"] = map[string]any{"gpt-6.1-sol": "target"}
 				account.Extra[qualityUnsupportedModelKey("target")] = "target"
 			}
-			svc := NewScheduledTestService(nil, nil)
+			svc := NewScheduledTestService(&qualityLivePlanRepo{newTemplatePlanRepo()}, nil)
 			svc.accountTests = &AccountTestService{accountRepo: &qualitySupportAccounts{account: account}}
 			svc.qualityModels = func(context.Context, int64) ([]string, error) { return []string{"gpt-6.1-sol"}, nil }
-			_, unsupported, err := svc.supportedQualityModels(context.Background(), multiModelQualityPlan(t, `["gpt-6.1-sol"]`))
-			require.NoError(t, err)
-			require.Equal(t, []string{"gpt-6.1-sol"}, unsupported)
+			_, err := svc.CreatePlan(context.Background(), multiModelQualityPlan(t, `["gpt-6.1-sol"]`))
+			require.ErrorContains(t, err, "不支持检测模型")
 		})
 	}
 }
@@ -96,4 +97,15 @@ func TestQualityLiveModelListCredentialErrorIsStructured(t *testing.T) {
 	require.NotContains(t, err.Error(), "synthetic-private-provider-text")
 	require.False(t, qualityModelUnsupported(err.Error()))
 	require.True(t, IsRetryableCodexModelsManifestError(err))
+}
+
+func TestQualityLiveAuthenticationAndPermissionFailuresAreNotModelRejections(t *testing.T) {
+	for _, message := range []string{
+		`API returned 401: {"error":{"code":"model_not_found"}}`,
+		`Authentication failed (401): model_not_supported`,
+		`HTTP 403: model not supported`,
+		`Model example is not supported by any configured account in this group`,
+	} {
+		require.False(t, qualityModelUnsupported(message), message)
+	}
 }

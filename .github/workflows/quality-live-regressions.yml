@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sources=(backend/internal/service/quality_supported_models.go backend/internal/service/openai_codex_models_service.go)
+          sources=(backend/internal/service/quality_supported_models.go backend/internal/service/openai_codex_models_service.go backend/internal/service/pelican_scheduled.go)
           for source in "${sources[@]}"; do cp "$source" "$RUNNER_TEMP/$(basename "$source")"; done
           trap 'for source in "${sources[@]}"; do cp "$RUNNER_TEMP/$(basename "$source")" "$source"; done' EXIT
           git fetch --no-tags --depth=1 origin e082313679d5269eef3e3cce4101c22692695371
@@ -55,7 +55,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -tags=unit ./internal/service -run 'Test(QualityLive|QualitySupportedModels|QualityUnsupportedResponse|FetchCodexModelsManifest|OpenAIModelsList)' -count=1 -v 2>&1 | tee ../evidence/green-service.log
+          go test -tags=unit ./internal/service -run 'Test(QualityLive|QualitySupportedModels|QualityUnsupportedResponse|QualityModelSync|CandyConfiguredModels|FetchOpenAIAccountModels|FetchCodexModelsManifest|OpenAIModelsList)' -count=1 -v 2>&1 | tee ../evidence/green-service.log
       - name: Original storage behavior must fail restoration boundary regressions
         shell: bash
         run: |

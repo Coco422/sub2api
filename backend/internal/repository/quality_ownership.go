@@ -216,7 +216,7 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 		sort.Strings(names)
 		for _, model := range names {
 			entry := modelOwnershipEntry(model, state.Models.ModelApplied[model], live[model], id)
-			if len(state.Models.ModelApplied[model]) == 0 {
+			if len(state.Models.ModelApplied[model]) == 0 || !json.Valid(state.Models.ModelRateLimits[model]) || canonicalQualityEntry(state.Models.ModelRateLimits[model]) != nil {
 				entry.Status = "unrecognized"
 				entry.CanRelinquish = false
 			}
@@ -255,6 +255,24 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 				currentJSON, _ := json.Marshal(current)
 				entry.ChangedFields = append([]string{"membership_present"}, qualityChangedFields(expectedJSON, currentJSON)...)
 			}
+			// Another rule's saved removal is an ownership conflict even when the
+			// membership remains absent. Never restore over its independent restriction.
+			var otherOwner int64
+			ownerErr := tx.QueryRowContext(ctx, `SELECT p.id FROM scheduled_test_plans p JOIN account_quality_states s ON s.plan_id=p.id
+    WHERE p.account_id=$1 AND p.id<>$2 AND (
+     EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(NULLIF(s.state->'removed','null'::jsonb),'[]'::jsonb)) e WHERE (e->>'group_id')::bigint=$3) OR
+     EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(NULLIF(s.state->'groups'->'removed','null'::jsonb),'[]'::jsonb)) e WHERE (e->>'group_id')::bigint=$3)) ORDER BY p.id LIMIT 1`, accountID, id, expected.GroupID).Scan(&otherOwner)
+			if ownerErr != nil && ownerErr != sql.ErrNoRows {
+				return nil, ownerErr
+			}
+			if ownerErr == nil {
+				entry.Status = "external_owner"
+				entry.CurrentOwner = "other_rule"
+				entry.CurrentOwnerRuleID = otherOwner
+				entry.CanRelinquish = false
+				entry.ChangedFields = append(entry.ChangedFields, "ownership")
+			}
+
 			view.Entries = append(view.Entries, entry)
 		}
 	}
@@ -269,9 +287,20 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 			view.Entries = append(view.Entries, entry)
 		}
 	}
+	sort.Slice(view.Entries, func(i, j int) bool {
+		a, b := view.Entries[i], view.Entries[j]
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		if a.Model != b.Model {
+			return a.Model < b.Model
+		}
+		return a.GroupID < b.GroupID
+	})
+
 	view.RestoreReady = state.Action == service.QualityActionIsolateModels
 	for _, entry := range view.Entries {
-		if entry.Status != "managed" && !(entry.Kind == "model" && entry.Status == "missing") {
+		if entry.Status != "managed" && (entry.Kind != "model" || entry.Status != "missing") {
 			view.RestoreReady = false
 			view.RestoreBlockedReason = "ownership_conflict"
 		}
