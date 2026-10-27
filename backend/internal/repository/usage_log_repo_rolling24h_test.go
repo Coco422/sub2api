@@ -21,6 +21,7 @@ func TestUsageTrendRolling24HoursPreservesQueryBounds(t *testing.T) {
 		{"local_calendar_day", "2026-09-30T00:00:00+09:00", "day", "usage_logs"},
 		{"utc_hour_aligned", "2026-09-30T00:00:00Z", "hour", "usage_dashboard_hourly"},
 		{"utc_day_aligned", "2026-09-30T00:00:00Z", "day", "usage_dashboard_daily"},
+		{"utc_day_from_negative_offset", "2026-09-29T20:00:00-04:00", "day", "usage_dashboard_daily"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var queries []string
@@ -51,8 +52,14 @@ func TestUsageTrendRolling24HoursPreservesQueryBounds(t *testing.T) {
 			if tc.table == "usage_dashboard_daily" {
 				predicate = `bucket_date >= \$1::date AND bucket_date < \$2::date`
 			}
+			queryStart, queryEnd := start, end
+			if tc.table != "usage_logs" {
+				// $1::date must see UTC calendar dates, regardless of the
+				// explicit offset used by the caller to express these instants.
+				queryStart, queryEnd = start.UTC(), end.UTC()
+			}
 			mock.ExpectQuery(`(?s)FROM `+tc.table+`\s+WHERE `+predicate).
-				WithArgs(start, end).
+				WithArgs(queryStart, queryEnd).
 				WillReturnRows(sqlmock.NewRows([]string{"date", "requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens", "total_tokens", "cost", "actual_cost"}).
 					AddRow("2026-09-30", 2, 2, 4, 0, 0, 6, 14, 6))
 			trend, err := repo.GetUsageTrendWithUsageFilters(context.Background(), start, end, tc.granularity, usagestats.UsageLogFilters{})

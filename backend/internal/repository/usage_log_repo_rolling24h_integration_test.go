@@ -72,6 +72,7 @@ func TestUsageLogRolling24HoursHalfOpenBoundaries(t *testing.T) {
 // unfiltered read path against raw logs, including dates returned by PostgreSQL.
 func TestUsageTrendAggregateTimezoneRealBuckets(t *testing.T) {
 	for _, tc := range []struct{ name, zone, start, end, granularity string }{
+		{"utc_day_from_negative_offset", "UTC", "2026-09-29T20:00:00-04:00", "2026-09-30T20:00:00-04:00", "day"},
 		{"shanghai_utc_midnight", "Asia/Shanghai", "2026-09-30T00:00:00Z", "2026-10-01T00:00:00Z", "day"},
 		{"half_hour_utc_hour", "Asia/Kolkata", "2026-09-30T00:00:00Z", "2026-10-01T00:00:00Z", "hour"},
 		{"quarter_hour_utc_hour", "Asia/Kathmandu", "2026-09-30T00:00:00Z", "2026-10-01T00:00:00Z", "hour"},
