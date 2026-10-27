@@ -64,7 +64,7 @@ func validateQualityPolicy(plan *ScheduledTestPlan) error {
 			}
 		case "jev":
 			if j.GroupID != 0 || j.ModelID != "" {
-				return fmt.Errorf("Jev grading reuses the audit profile; group and model must be empty")
+				return fmt.Errorf("jev grading reuses the audit profile; group and model must be empty")
 			}
 		default:
 			return fmt.Errorf("unsupported quality judge kind")
