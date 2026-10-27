@@ -86,6 +86,9 @@ jobs:
         if: github.head_ref == 'fix/moderation-user-quick-enable' || github.ref_name == 'fix/moderation-user-quick-enable'
         working-directory: backend
         run: go test -tags=unit ./internal/handler/admin ./internal/server/middleware ./internal/service ./internal/repository -run 'TestUserQuickEnable|TestAdminService_UserQuickEnable|TestModerationRecoveryUnbanDoesNotClaimOtherDisable' -count=1 -v
+      - name: Usage trend local bucket regressions
+        working-directory: backend
+        run: go test -tags=integration ./internal/repository -run '^TestUsageTrendAggregateTimezone' -count=1 -v
       - name: Unit tests
         working-directory: backend
         run: make test-unit
