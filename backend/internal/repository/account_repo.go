@@ -102,12 +102,13 @@ func stripCodexFingerprintSeedFromExtraUpdate(extra map[string]any) map[string]a
 	}
 	_, seedExists := extra["codex_fingerprint_seed"]
 	_, admissionExists := extra[service.OpenAITwoFAAdmissionExtraKey]
-	if !seedExists && !admissionExists {
+	_, isolationExists := extra[service.QualityModelIsolationKey]
+	if !seedExists && !admissionExists && !isolationExists {
 		return extra
 	}
 	stripped := make(map[string]any, len(extra)-1)
 	for key, value := range extra {
-		if key == "codex_fingerprint_seed" || key == service.OpenAITwoFAAdmissionExtraKey {
+		if key == "codex_fingerprint_seed" || key == service.OpenAITwoFAAdmissionExtraKey || key == service.QualityModelIsolationKey {
 			continue
 		}
 		stripped[key] = value
@@ -851,6 +852,17 @@ func lockAndMergeAccountProbeExtra(
 	}
 	extra := service.MergeOpenAICodexTicketExtra(copyJSONMap(normalizeJSONMap(account.Extra)), currentExtra)
 	extra = service.MergeExcelBPS403Marker(extra, currentExtra)
+	// Isolation is server-owned. A normal save must use the latest value read
+	// under this row lock, including absence after a legitimate restoration.
+	// Never revive, erase or replace it from a client/service snapshot.
+	delete(extra, service.QualityModelIsolationKey)
+	if isolation, exists := currentExtra[service.QualityModelIsolationKey]; exists {
+		if extra == nil {
+			extra = make(map[string]any)
+		}
+		extra[service.QualityModelIsolationKey] = isolation
+	}
+
 	// Omitted cost means an unrelated edit. Keep the value under the row lock,
 	// including a probe update committed after the edit form was loaded.
 	for _, key := range []string{service.AccountCostMultiplierExtraKey, service.AccountCostAutoSyncExtraKey} {
