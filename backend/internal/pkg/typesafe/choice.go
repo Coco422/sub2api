@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ChoiceResult follows the native systemone choice schema, not a chat response.
@@ -49,6 +53,9 @@ func EvaluateChoice(ctx context.Context, client *http.Client, baseURL, key strin
 
 func decodeChoice(body []byte, criteria map[string]string, id string) (*ChoiceResult, error) {
 	invalid := errors.New("typesafe invalid choice response")
+	if len(body) > MaxSystemOneResponseBytes || !utf8.Valid(body) || !validChoiceJSON(body) {
+		return nil, invalid
+	}
 	var envelope struct {
 		Model   string                     `json:"model"`
 		Answers map[string]json.RawMessage `json:"answers"`
@@ -56,13 +63,26 @@ func decodeChoice(body []byte, criteria map[string]string, id string) (*ChoiceRe
 	if json.Unmarshal(body, &envelope) != nil || envelope.Model == "" || len(envelope.Model) > 100 || len(envelope.Answers) != 1 {
 		return nil, invalid
 	}
-	if checkSystemOneObjectKeys(body, "response", []string{"model", "answers", "usage"}) != nil {
+	if checkSystemOneObjectKeys(body, "response", []string{"model", "answers", "usage", "id", "provider"}) != nil {
 		return nil, invalid
 	}
 	var top map[string]json.RawMessage
 	_ = json.Unmarshal(body, &top)
-	for field := range top {
-		if field != "model" && field != "answers" && field != "usage" {
+	for field, raw := range top {
+		switch field {
+		case "model", "answers", "usage":
+		case "id", "provider":
+			// The existing audit endpoint adds these transport identifiers. They
+			// carry no grading semantics and are never returned or logged.
+			limit := 128
+			if field == "provider" {
+				limit = 64
+			}
+			var value string
+			if json.Unmarshal(raw, &value) != nil || strings.TrimSpace(value) == "" || len(value) > limit || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+				return nil, invalid
+			}
+		default:
 			return nil, invalid
 		}
 	}
@@ -108,6 +128,48 @@ func decodeChoice(body []byte, criteria map[string]string, id string) (*ChoiceRe
 		return nil, invalid
 	}
 	return &ChoiceResult{Choice: answer.Choice, Confidence: *answer.Confidence, Probability: selected}, nil
+}
+
+// Bound nesting before unmarshalling and reject duplicate keys at every level,
+// including otherwise ignored usage. A metadata exception must not hide a second
+// verdict, refusal, ambiguous key spelling or an unbounded nested value.
+func validChoiceJSON(body []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	var value func(int) bool
+	value = func(depth int) bool {
+		token, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		delim, container := token.(json.Delim)
+		if !container {
+			return true
+		}
+		if depth >= 16 || (delim != '{' && delim != '[') {
+			return false
+		}
+		seen := map[string]bool{}
+		for decoder.More() {
+			if delim == '{' {
+				token, err := decoder.Token()
+				key, ok := token.(string)
+				if err != nil || !ok || seen[key] {
+					return false
+				}
+				seen[key] = true
+			}
+			if !value(depth + 1) {
+				return false
+			}
+		}
+		end, err := decoder.Token()
+		return err == nil && ((delim == '{' && end == json.Delim('}')) || (delim == '[' && end == json.Delim(']')))
+	}
+	if !value(0) {
+		return false
+	}
+	_, err := decoder.Token()
+	return err == io.EOF
 }
 
 func unitProbability(value float64) bool {

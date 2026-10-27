@@ -33,3 +33,5 @@ Jev 使用已有原生 `/v1/systemone`，不是 Chat Completions 模型。公开
 回滚前先将 Jev 规则改回普通 LLM 或禁用；旧二进制不理解 `kind`，不能直接用旧版本执行 Jev 规则。持久化复用既有计划与判题 JSON 字段，无新增迁移。
 
 英文说明：Omitted `kind` and `llm` preserve ordinary grading. `jev` explicitly reuses the saved TypeSafe audit profile through native System One choice grading. Disabled auditing or risk control prevents the call. Missing credentials, rejection, rate limits, cancellation, timeout, refusal and invalid output remain inconclusive with no ordinary-account fallback. This change has no measured speed/cost claim and has not called a real Jev service.
+
+真实历史回放确认现有审计端点在原生信封增加 `id` / `provider`。仅将这两个字段作为可选、非空、无控制字符的字符串兼容，UTF-8字节上限分别128/64；忽略其值，不记录或返回。其他未知顶层字段、别名、所有层级重复键、超过16层的嵌套或4 MiB响应继续拒绝，choice/置信度/概率门不变。公开OpenAPI未声明这两个扩展，本兼容范围来自既有端点的受限结构证据，不泛化成任意metadata。匿名fixture全部为虚构值；旧完整head的预期测试失败与新head通过在远端CI保留日志。
