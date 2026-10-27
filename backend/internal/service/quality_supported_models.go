@@ -227,10 +227,17 @@ func (s *ScheduledTestService) filterQualityTemplatePlan(ctx context.Context, pl
 
 // Match explicit model errors only; invalid tools, transient failures and
 // authorization errors must never permanently suppress a model.
+var qualityAuthFailureMessage = regexp.MustCompile(`(?i)(?:\b(?:API returned|HTTP(?: status)?|status(?: code)?)\s*[:=]?\s*(?:401|403)\b|\b(?:token_revoked|token_invalidated|unauthorized|invalid_token)\b)`)
+
 var qualityUnsupportedModelMessage = regexp.MustCompile(`(?i)\bmodel\b.{0,160}\b(?:not supported|not found|does not exist)\b`)
 
 func qualityModelUnsupported(message string) bool {
 	lower := strings.ToLower(message)
+	// Authentication/permission failure is never evidence of model capability,
+	// even if an upstream error happens to mention a model rejection code.
+	if strings.Contains(lower, "openai_codex_models_credentials_invalid") || qualityAuthFailureMessage.MatchString(lower) {
+		return false
+	}
 	for _, code := range []string{"model_not_found", "model_not_supported", "unsupported_model", "model_unsupported"} {
 		if strings.Contains(lower, code) {
 			return true

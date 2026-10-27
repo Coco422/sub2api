@@ -86,6 +86,10 @@ func (h *ScheduledTestHandler) Create(c *gin.Context) {
 
 	created, err := h.scheduledTestSvc.CreatePlan(c.Request.Context(), plan)
 	if err != nil {
+		if infraerrors.Reason(err) == "QUALITY_MODEL_CATALOG_UNKNOWN" || infraerrors.Reason(err) == "OPENAI_CODEX_MODELS_CREDENTIALS_INVALID" {
+			response.ErrorFrom(c, err)
+			return
+		}
 		response.BadRequest(c, err.Error())
 		return
 	}
@@ -151,7 +155,7 @@ func (h *ScheduledTestHandler) Update(c *gin.Context) {
 
 	updated, err := h.scheduledTestSvc.UpdatePlan(c.Request.Context(), existing)
 	if err != nil {
-		if infraerrors.Reason(err) == service.QualityScopeConflictReason {
+		if infraerrors.Reason(err) == service.QualityScopeConflictReason || infraerrors.Reason(err) == "QUALITY_MODEL_CATALOG_UNKNOWN" || infraerrors.Reason(err) == "OPENAI_CODEX_MODELS_CREDENTIALS_INVALID" {
 			response.ErrorFrom(c, err)
 			return
 		}
@@ -184,7 +188,7 @@ func (h *ScheduledTestHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.scheduledTestSvc.DeletePlan(c.Request.Context(), planID); err != nil {
-		if infraerrors.Reason(err) == service.QualityScopeConflictReason {
+		if infraerrors.Reason(err) == service.QualityScopeConflictReason || infraerrors.Reason(err) == "QUALITY_MODEL_CATALOG_UNKNOWN" || infraerrors.Reason(err) == "OPENAI_CODEX_MODELS_CREDENTIALS_INVALID" {
 			response.ErrorFrom(c, err)
 			return
 		}

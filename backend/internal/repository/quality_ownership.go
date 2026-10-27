@@ -124,6 +124,8 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 	var ruleVersion, accountVersion time.Time
 	var running sql.NullTime
 	var config, rawState, liveRaw []byte
+	var accountStatus string
+	var accountExpires sql.NullTime
 	err = tx.QueryRowContext(ctx, `SELECT account_id,updated_at,running_until,pelican_config FROM scheduled_test_plans WHERE id=$1 FOR UPDATE`, id).Scan(&accountID, &ruleVersion, &running, &config)
 	if err == sql.ErrNoRows {
 		return nil, infraerrors.NotFound("QUALITY_PLAN_NOT_FOUND", "quality rule not found")
@@ -135,7 +137,7 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 	if json.Unmarshal(config, &cfg) != nil || cfg.Quality == nil || cfg.Quality.Action == service.QualityActionOpenAITwoFAAdmission {
 		return nil, infraerrors.BadRequest("QUALITY_OWNERSHIP_UNSUPPORTED", "ownership inspection requires an editable quality rule")
 	}
-	err = tx.QueryRowContext(ctx, `SELECT updated_at,COALESCE(extra->'quality_model_isolation','{}'::jsonb) FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, accountID).Scan(&accountVersion, &liveRaw)
+	err = tx.QueryRowContext(ctx, `SELECT updated_at,COALESCE(extra->'quality_model_isolation','{}'::jsonb),status,expires_at FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, accountID).Scan(&accountVersion, &liveRaw, &accountStatus, &accountExpires)
 	if err == sql.ErrNoRows {
 		return nil, infraerrors.NotFound("QUALITY_ACCOUNT_NOT_FOUND", "account not found")
 	}
@@ -256,6 +258,33 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 			view.Entries = append(view.Entries, entry)
 		}
 	}
+	// A live marker still naming this rule but absent from its snapshots must
+	// never become orphaned by clearing state or deleting the rule.
+	for model, raw := range live {
+		owner, _ := qualityEntryOwner(raw, id)
+		if owner == "this_rule" && (state.Models == nil || len(state.Models.ModelApplied[model]) == 0) {
+			entry := modelOwnershipEntry(model, nil, raw, id)
+			entry.Status = "unrecognized"
+			entry.CanRelinquish = false
+			view.Entries = append(view.Entries, entry)
+		}
+	}
+	view.RestoreReady = state.Action == service.QualityActionIsolateModels
+	for _, entry := range view.Entries {
+		if entry.Status != "managed" && !(entry.Kind == "model" && entry.Status == "missing") {
+			view.RestoreReady = false
+			view.RestoreBlockedReason = "ownership_conflict"
+		}
+	}
+	if accountStatus != "active" || accountExpires.Valid && !accountExpires.Time.After(time.Now()) {
+		view.RestoreReady = false
+		view.RestoreBlockedReason = "account_unavailable"
+	}
+	if running.Valid && running.Time.After(time.Now()) {
+		view.RestoreReady = false
+		view.RestoreBlockedReason = "rule_running"
+	}
+
 	for _, entry := range view.Entries {
 		if entry.CanRelinquish {
 			view.RelinquishableCount++
@@ -265,12 +294,67 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 	}
 	// Fence includes full internal expected/current snapshots, not their redacted
 	// projection. Hidden/unrecognized fields and lease changes invalidate consent.
-	view.Fence = qualityDigest([]any{id, accountID, ruleVersion, accountVersion, running, canonicalQualityEntry(config), canonicalQualityEntry(rawState), canonicalQualityEntry(liveRaw), canonicalQualityEntry(groups), view.Entries})
+	view.Fence = qualityDigest([]any{id, accountID, ruleVersion, accountVersion, running, canonicalQualityEntry(config), canonicalQualityEntry(rawState), canonicalQualityEntry(liveRaw), canonicalQualityEntry(groups), accountStatus, accountExpires, view.Entries})
 	if request == nil {
 		return view, tx.Commit()
 	}
 	if !request.Confirm || subtle.ConstantTimeCompare([]byte(request.Fence), []byte(view.Fence)) != 1 {
 		return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_PREVIEW_CHANGED", "ownership changed; preview again before confirming")
+	}
+	if request.Restore {
+		if !view.RestoreReady {
+			return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_RESTORE_BLOCKED", "restore is blocked; review ownership, account availability and running tasks before confirming")
+		}
+		beforeGroups := groups
+		var removed []qualityGroup
+		if state.Groups != nil {
+			removed = state.Groups.Removed
+			conflict, restoreErr := restoreQualityGroups(ctx, tx, accountID, state.Groups)
+			if restoreErr != nil {
+				return nil, restoreErr
+			}
+			if conflict {
+				return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_RESTORE_BLOCKED", "group ownership changed; preview again")
+			}
+		}
+		for _, entry := range view.Entries {
+			if entry.Kind != "model" || entry.Status != "managed" {
+				continue
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE accounts SET extra=extra #- ARRAY['quality_model_isolation',$2],updated_at=clock_timestamp() WHERE id=$1`, accountID, entry.Model); err != nil {
+				return nil, err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE accounts SET extra=extra-'quality_model_isolation' WHERE id=$1 AND extra->'quality_model_isolation'='{}'::jsonb`, accountID); err != nil {
+			return nil, err
+		}
+		if len(removed) > 0 {
+			if err = qualityGroupsChanged(ctx, tx, accountID, beforeGroups, removed); err != nil {
+				return nil, err
+			}
+		} else if _, err = tx.ExecContext(ctx, `INSERT INTO scheduler_outbox(event_type,account_id,payload) VALUES('account_changed',$1,'{}')`, accountID); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM account_quality_states WHERE plan_id=$1`, id); err != nil {
+			return nil, err
+		}
+		// Pausing prevents a subsequent round from reapplying restrictions between
+		// this explicit restore and the separately retryable guarded deletion.
+		if _, err = tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET enabled=false,updated_at=GREATEST(clock_timestamp(),updated_at+interval '1 microsecond') WHERE id=$1`, id); err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		view.Fence = ""
+		view.RestrictionsChanged = true
+		return view, nil
+	}
+
+	for _, entry := range view.Entries {
+		if entry.Status == "unrecognized" {
+			return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_UNSUPPORTED_STATE", "retain unrecognized ownership for review")
+		}
 	}
 	if view.RelinquishableCount == 0 {
 		return view, tx.Commit()

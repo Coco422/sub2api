@@ -11,13 +11,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type qualityLivePlanRepo struct{ *templatePlanRepo }
+
+func (r *qualityLivePlanRepo) Create(_ context.Context, plan *ScheduledTestPlan) (*ScheduledTestPlan, error) {
+	saved, _ := r.add(plan)
+	return saved, nil
+}
+
 // Exercise the production CreatePlan -> account policy -> discovery seam, not
 // only catalog matching. Fixtures never use real credentials or paid inference.
 func TestQualityLiveManualModelMissingFromManifest(t *testing.T) {
 	for _, mapping := range []map[string]any{nil, {"gpt-6.1-sol": "upstream-sol"}, {"gpt-*": "*"}} {
 		t.Run(fmt.Sprint(mapping), func(t *testing.T) {
 			accounts := &qualitySupportAccounts{account: &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"model_mapping": mapping}}}
-			plans := newTemplatePlanRepo()
+			plans := &qualityLivePlanRepo{newTemplatePlanRepo()}
 			svc := NewScheduledTestService(plans, &pelicanResults{})
 			svc.accountTests = &AccountTestService{accountRepo: accounts}
 			svc.qualityModels = func(context.Context, int64) ([]string, error) {
