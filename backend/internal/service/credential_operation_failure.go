@@ -34,7 +34,7 @@ func (e *CredentialOperationError) Error() string { return e.cause.Error() }
 func (e *CredentialOperationError) Unwrap() error { return e.cause }
 
 func NewCredentialOperationRefreshError(status int, body []byte) error {
-	code := credentialOperationEnvelope(body)
+	rawCode, code := credentialOperationEnvelopeSignal(body)
 	if code == "unknown" {
 		switch {
 		case status == 429:
@@ -46,19 +46,21 @@ func NewCredentialOperationRefreshError(status int, body []byte) error {
 	// Retain the invalid_grant marker used by the existing refresh race recovery
 	// and retry policy. Classification does not change that policy's semantics.
 	marker := code
-	fields, ok := credentialOperationObject(body)
-	var rawCode string
-	if ok {
-		if json.Unmarshal(fields["error"], &rawCode) != nil {
-			if nested, valid := credentialOperationObject(fields["error"]); valid {
-				_ = json.Unmarshal(nested["code"], &rawCode)
-			}
-		}
-	}
-	if credentialOperationCode(rawCode) != "unknown" || rawCode == "invalid_client" || rawCode == "unauthorized_client" || rawCode == "invalid_scope" {
-		marker = rawCode
+	if safe := credentialOperationRefreshMarker(rawCode); safe != "" {
+		marker = safe
 	}
 	return &CredentialOperationError{Code: code, cause: infraerrors.New(502, "OPENAI_OAUTH_TOKEN_REFRESH_FAILED", fmt.Sprintf("token refresh failed: status %d, code %s", status, marker))}
+}
+
+func credentialOperationRefreshMarker(code string) string {
+	if credentialOperationCode(code) != "unknown" {
+		return code
+	}
+	switch code {
+	case "invalid_client", "unauthorized_client", "invalid_scope":
+		return code
+	}
+	return ""
 }
 
 type CredentialOperationRefreshRecorder interface {
@@ -146,17 +148,24 @@ func credentialOperationText(text string) string {
 // Only the top-level error envelope is authoritative. Do not search arbitrary
 // nested input/message/debug fields. A nonempty unknown code blocks text fallback.
 func credentialOperationEnvelope(body []byte) string {
+	_, code := credentialOperationEnvelopeSignal(body)
+	return code
+}
+
+// Select the authoritative structured signal once for both display and refresh
+// policy. An explicit code, even unknown or malformed, blocks type/message.
+func credentialOperationEnvelopeSignal(body []byte) (string, string) {
 	fields, ok := credentialOperationObject(body)
 	if !ok {
-		return "unknown"
+		return "", "unknown"
 	}
 	var oauthCode string
 	if json.Unmarshal(fields["error"], &oauthCode) == nil {
-		return credentialOperationCode(oauthCode)
+		return oauthCode, credentialOperationCode(oauthCode)
 	}
 	fields, ok = credentialOperationObject(fields["error"])
 	if !ok {
-		return "unknown"
+		return "", "unknown"
 	}
 	value := func(key string) string {
 		var text string
@@ -164,14 +173,13 @@ func credentialOperationEnvelope(body []byte) string {
 		return text
 	}
 	if _, exists := fields["code"]; exists {
-		return credentialOperationCode(value("code"))
+		code := value("code")
+		return code, credentialOperationCode(code)
 	}
-	if value("type") != "" {
-		if code := credentialOperationCode(value("type")); code != "unknown" {
-			return code
-		}
+	if kind := value("type"); credentialOperationRefreshMarker(kind) != "" {
+		return kind, credentialOperationCode(kind)
 	}
-	return credentialOperationText(value("message"))
+	return "", credentialOperationText(value("message"))
 }
 
 func credentialOperationObject(body []byte) (map[string]json.RawMessage, bool) {
