@@ -1,0 +1,64 @@
+name: Quality live regressions
+on:
+  push:
+    branches: [fix/quality-operations-live-regressions]
+  pull_request:
+    paths:
+      - 'backend/internal/service/quality*'
+      - 'backend/internal/service/openai_codex_models_service.go'
+      - 'backend/internal/repository/quality*'
+      - 'frontend/src/components/admin/operations/QualityOwnershipReview.vue'
+      - 'frontend/src/views/admin/AccountQualityView.vue'
+      - '.github/workflows/quality-live-regressions.yml'
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record exact head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD | tee evidence/head.txt
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Original behavior must fail the unchanged boundary regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          sources=(backend/internal/service/quality_supported_models.go backend/internal/service/openai_codex_models_service.go)
+          for source in "${sources[@]}"; do cp "$source" "$RUNNER_TEMP/$(basename "$source")"; done
+          trap 'for source in "${sources[@]}"; do cp "$RUNNER_TEMP/$(basename "$source")" "$source"; done' EXIT
+          git fetch --no-tags --depth=1 origin e082313679d5269eef3e3cce4101c22692695371
+          for source in "${sources[@]}"; do git show "e082313679d5269eef3e3cce4101c22692695371:$source" > "$source"; done
+          set +e
+          (cd backend && go test -tags=unit ./internal/service -run '^TestQualityLive' -count=1 -v) > evidence/red-service.log 2>&1
+          result=$?
+          set -e
+          cat evidence/red-service.log
+          test "$result" -ne 0
+          ! grep -Eq '\[build failed\]|\[setup failed\]|undefined:|syntax error:|no tests to run|panic:' evidence/red-service.log
+          grep -F -- '--- FAIL: TestQualityLiveManualModelMissingFromManifest' evidence/red-service.log
+          grep -F -- '--- FAIL: TestQualityLiveUnknownProbeCatalogIsNotUnsupported' evidence/red-service.log
+          grep -F -- '--- FAIL: TestQualityLiveModelListCredentialErrorIsStructured' evidence/red-service.log
+      - name: Current behavior and retained safety assertions
+        working-directory: backend
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -tags=unit ./internal/service -run 'Test(QualityLive|QualitySupportedModels|QualityUnsupportedResponse|FetchCodexModelsManifest|OpenAIModelsList)' -count=1 -v 2>&1 | tee ../evidence/green-service.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: quality-live-${{ github.event_name }}-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error

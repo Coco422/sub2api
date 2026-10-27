@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -146,27 +147,31 @@ func (s *ScheduledTestService) supportedQualityModels(ctx context.Context, plan 
 	}
 	var catalog []string
 	var blocked map[string]any
+	var account *Account
 	if s.accountTests != nil {
-		account, err := s.accountTests.accountRepo.GetByID(ctx, plan.AccountID)
+		var err error
+		account, err = s.accountTests.accountRepo.GetByID(ctx, plan.AccountID)
 		if err != nil {
 			return nil, nil, err
 		}
-		if account != nil {
-			blocked = account.Extra
-			// Native candy tests can exercise explicitly configured public model
-			// names even when an upstream /models catalog omits them. This applies
-			// to every account type; it does not claim upstream availability.
-			// State probes and BPS retain their route-specific discovery checks.
-			if isQualityAnswerQuestion(plan.PelicanConfig.QuestionKind) && plan.PelicanConfig.TestChannel != "bps" &&
-				!account.IsExcelBPSEnabled() && !account.IsOpenAIPassthroughEnabled() {
-				for model := range account.GetModelMapping() {
+		if account == nil {
+			return nil, nil, ErrAccountNotFound
+		}
+		blocked = account.Extra
+		// A manual native answer test may use any model permitted by the
+		// existing routing policy. Discovery is advisory and can be stale or
+		// incomplete; configured aliases need not occur in an upstream manifest.
+		if isQualityAnswerQuestion(plan.PelicanConfig.QuestionKind) && plan.PelicanConfig.TestChannel != "bps" &&
+			!account.IsExcelBPSEnabled() && !account.IsOpenAIPassthroughEnabled() {
+			for _, model := range requested {
+				if account.IsModelSupported(model) {
 					catalog = append(catalog, model)
 				}
 			}
 		}
 	}
 	for _, model := range requested {
-		if !qualityCatalogSupportsModel(catalog, model) {
+		if (account == nil || account.IsModelSupported(model)) && blocked[qualityUnsupportedModelKey(model)] == nil && !qualityCatalogSupportsModel(catalog, model) {
 			discovered, err := s.qualityModels(ctx, plan.AccountID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("无法读取账号 #%d 的模型列表：%w", plan.AccountID, err)
@@ -178,11 +183,15 @@ func (s *ScheduledTestService) supportedQualityModels(ctx context.Context, plan 
 	var supported, unsupported []string
 	for _, model := range requested {
 		found := qualityCatalogSupportsModel(catalog, model)
-		if blocked[qualityUnsupportedModelKey(model)] != nil {
+		if blocked[qualityUnsupportedModelKey(model)] != nil || account != nil && (!account.IsModelSupported(model) || blocked[qualityUnsupportedModelKey(account.GetMappedModel(model))] != nil) {
 			found = false
 		}
 		if found {
 			supported = append(supported, model)
+		} else if account != nil && account.IsModelSupported(model) && blocked[qualityUnsupportedModelKey(model)] == nil && blocked[qualityUnsupportedModelKey(account.GetMappedModel(model))] == nil {
+			// Route-specific probes/BPS still require discovery. Absence is an
+			// unknown state, never an observed upstream model rejection.
+			return nil, nil, infraerrors.ServiceUnavailable("QUALITY_MODEL_CATALOG_UNKNOWN", "模型目录尚未确认该检测模型，请刷新模型列表或使用允许手动选择的原生回答检测").WithMetadata(map[string]string{"model": model})
 		} else {
 			unsupported = append(unsupported, model)
 		}
