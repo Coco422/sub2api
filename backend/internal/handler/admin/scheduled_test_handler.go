@@ -187,6 +187,21 @@ func (h *ScheduledTestHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	if c.Request.ContentLength != 0 {
+		var req service.QualityOwnershipRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "invalid ownership deletion confirmation")
+			return
+		}
+		req.Delete = true
+		if _, err := h.scheduledTestSvc.QualityOwnership(c.Request.Context(), planID, &req); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+		return
+	}
+
 	if err := h.scheduledTestSvc.DeletePlan(c.Request.Context(), planID); err != nil {
 		if infraerrors.Reason(err) == service.QualityScopeConflictReason {
 			response.ErrorFrom(c, err)

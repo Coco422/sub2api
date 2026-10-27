@@ -128,6 +128,9 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 	var accountExpires sql.NullTime
 	err = tx.QueryRowContext(ctx, `SELECT account_id,updated_at,running_until,pelican_config FROM scheduled_test_plans WHERE id=$1 FOR UPDATE`, id).Scan(&accountID, &ruleVersion, &running, &config)
 	if err == sql.ErrNoRows {
+		if request != nil && request.Delete {
+			return &service.QualityOwnershipPreview{PlanID: id}, tx.Commit()
+		}
 		return nil, infraerrors.NotFound("QUALITY_PLAN_NOT_FOUND", "quality rule not found")
 	}
 	if err != nil {
@@ -330,6 +333,25 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 	if !request.Confirm || subtle.ConstantTimeCompare([]byte(request.Fence), []byte(view.Fence)) != 1 {
 		return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_PREVIEW_CHANGED", "ownership changed; preview again before confirming")
 	}
+	if request.Delete {
+		// The separate deletion confirmation is fenced too: an edit or new
+		// ownership between restoration and deletion cannot consume old consent.
+		if state.Action != "" || state.Models != nil || state.Groups != nil || len(view.Entries) > 0 {
+			return nil, service.QualityScopeConflict("review remaining ownership before deleting this rule")
+		}
+		if running.Valid && running.Time.After(time.Now()) {
+			return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_PREVIEW_CHANGED", "rule is running; preview again before deleting")
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, id); err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		view.Fence = ""
+		return view, nil
+	}
+
 	if request.Restore {
 		if !view.RestoreReady {
 			return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_RESTORE_BLOCKED", "restore is blocked; review ownership, account availability and running tasks before confirming")

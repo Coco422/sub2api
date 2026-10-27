@@ -41,12 +41,12 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { previewQualityOwnership, reconcileQualityOwnership, restoreQualityOwnership, type QualityOwnershipPreview } from '@/api/admin/accountQuality'
 const props = defineProps<{ planId: number; draftModels?: string[]; draftGroupIds?: number[]; draftAction?: string; deleting?: boolean; disabled?: boolean }>()
-const emit = defineEmits<{ reconciled: []; blocked: [value: boolean]; deletable: [value: boolean] }>()
+const emit = defineEmits<{ reconciled: []; blocked: [value: boolean]; deletable: [value: boolean]; deletionFence: [fence: string] }>()
 const { t } = useI18n()
 const preview = ref<QualityOwnershipPreview | null>(null), working = ref(false), error = ref(''), confirmed = ref(false), reconciled = ref(false)
 const restoreConfirmed = ref(false)
 const busy = computed(() => working.value || !!props.disabled)
-watch(() => !!preview.value && preview.value.action !== 'isolate_models' && !working.value && !error.value, value => emit('deletable', value), { immediate: true })
+watch(() => !!preview.value?.fence && preview.value.action !== 'isolate_models' && !working.value && !error.value, value => { emit('deletable', value); emit('deletionFence', value ? preview.value?.fence || '' : '') }, { immediate: true })
 let generation = 0
 onBeforeUnmount(() => { generation++ })
 const same = (a: readonly (string | number)[], b: readonly (string | number)[]) => JSON.stringify([...new Set(a)].sort()) === JSON.stringify([...new Set(b)].sort())

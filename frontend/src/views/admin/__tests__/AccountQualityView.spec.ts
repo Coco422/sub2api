@@ -959,7 +959,7 @@ describe('quality operations', () => {
   it('restores isolated ownership before deletion and retries deletion without restoring twice', async () => {
     const plan = rules()[0]; plan.pelican_config!.quality!.action = 'isolate_models'
     const owned = { plan_id: 1, account_id: 1, rule_version: 'v1', account_version: 'v1', fence: 'a'.repeat(64), action: 'isolate_models', models: ['model-1'], group_ids: [1], entries: [], relinquishable_count: 0, ownership_retained: true, restrictions_changed: false, restore_ready: true }
-    vi.mocked(previewQualityOwnership).mockResolvedValueOnce(owned).mockResolvedValueOnce({ ...owned, action: '', entries: [] })
+    vi.mocked(previewQualityOwnership).mockResolvedValueOnce(owned).mockResolvedValue({ ...owned, action: '', entries: [] })
     vi.mocked(restoreQualityOwnership).mockResolvedValueOnce({ ...owned, restrictions_changed: true })
     vi.mocked(listQualityPlans).mockResolvedValue([plan])
     vi.mocked(scheduledTests.delete).mockRejectedValueOnce({ status: 503, message: 'temporary delete failure' }).mockResolvedValueOnce(undefined)
@@ -976,7 +976,7 @@ describe('quality operations', () => {
     expect(wrapper.get('[data-testid="quality-delete-targets"]').text()).toContain('#1')
     vi.mocked(listQualityPlans).mockResolvedValue([])
     await wrapper.get('[data-testid="quality-confirm-delete"]').trigger('click'); await flushPromises()
-    expect(restoreQualityOwnership).toHaveBeenCalledTimes(1); expect(vi.mocked(scheduledTests.delete).mock.calls).toEqual([[1], [1]])
+    expect(restoreQualityOwnership).toHaveBeenCalledTimes(1); expect(vi.mocked(scheduledTests.delete).mock.calls).toEqual([[1, { fence: 'a'.repeat(64), confirm: true }], [1, { fence: 'a'.repeat(64), confirm: true }]])
     expect(wrapper.find('[data-testid="quality-delete-targets"]').exists()).toBe(false); wrapper.unmount()
   })
 

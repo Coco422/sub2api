@@ -29,6 +29,9 @@ func qualityLiveRouter(f *repository.QualityLiveFixture) *gin.Engine {
 }
 func qualityLiveRequest(r *gin.Engine, method, path string, body any) *httptest.ResponseRecorder {
 	data, _ := json.Marshal(body)
+	if body == nil {
+		data = nil
+	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -81,8 +84,13 @@ func TestQualityLiveDeleteHTTPRestoresMatchingOwnershipThenDeletes(t *testing.T)
 	require.Equal(t, 2, f.Count(`SELECT count(*) FROM account_groups WHERE account_id=$1`))
 	require.Positive(t, f.Count(`SELECT count(*) FROM scheduler_outbox WHERE account_id=$1`))
 	require.Equal(t, "stale_run", f.Round("failed", "failed"), "an old worker cannot recreate restored ownership")
-	require.Equal(t, 200, qualityLiveRequest(r, "DELETE", path, nil).Code)
-	require.Equal(t, 200, qualityLiveRequest(r, "DELETE", path, nil).Code, "deletion retry is idempotent")
+	fresh := qualityLivePreview(t, r, f.Plan.ID)
+	confirmation := map[string]any{"confirm": true, "fence": fresh.Fence}
+	require.Equal(t, 200, qualityLiveRequest(r, "DELETE", path, confirmation).Code)
+	require.Equal(t, 200, qualityLiveRequest(r, "DELETE", path, confirmation).Code, "deletion retry is idempotent")
+	var remaining int
+	require.NoError(t, repository.QualityLiveDB().QueryRow(`SELECT count(*) FROM scheduled_test_plans WHERE id=$1`, f.Plan.ID).Scan(&remaining))
+	require.Zero(t, remaining)
 	require.Equal(t, 2, f.Count(`SELECT count(*) FROM account_groups WHERE account_id=$1 AND group_id IN (`+qualityLiveID(group)+`,`+qualityLiveID(other)+`)`))
 	var states int
 	require.NoError(t, repository.QualityLiveDB().QueryRow(`SELECT count(*) FROM account_quality_states WHERE plan_id=$1`, f.Plan.ID).Scan(&states))
@@ -154,3 +162,24 @@ func TestQualityLiveDeleteHTTPRejectsOrphanMarkerAfterRestore(t *testing.T) {
 }
 
 func qualityLiveID(id int64) string { return fmt.Sprint(id) }
+
+func TestQualityLiveDeleteHTTPRevalidatesVersionAfterRestoration(t *testing.T) {
+	f, _, _ := repository.NewQualityLiveFixture(t)
+	f.Round("failed", "failed")
+	qualityLiveFinish(t, f)
+	r := qualityLiveRouter(f)
+	p := qualityLivePreview(t, r, f.Plan.ID)
+	require.Equal(t, 200, qualityLiveRestore(r, f.Plan.ID, p.Fence).Code)
+	fresh := qualityLivePreview(t, r, f.Plan.ID)
+	_, err := repository.QualityLiveDB().Exec(`UPDATE scheduled_test_plans SET updated_at=clock_timestamp() WHERE id=$1`, f.Plan.ID)
+	require.NoError(t, err)
+	path := fmt.Sprintf("/plans/%d", f.Plan.ID)
+	w := qualityLiveRequest(r, "DELETE", path, map[string]any{"confirm": true, "fence": fresh.Fence})
+	require.Equal(t, 409, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "QUALITY_OWNERSHIP_PREVIEW_CHANGED")
+	current, err := f.Plans.GetByID(context.Background(), f.Plan.ID)
+	require.NoError(t, err)
+	require.False(t, current.Enabled)
+	latest := qualityLivePreview(t, r, f.Plan.ID)
+	require.Equal(t, 200, qualityLiveRequest(r, "DELETE", path, map[string]any{"confirm": true, "fence": latest.Fence}).Code)
+}

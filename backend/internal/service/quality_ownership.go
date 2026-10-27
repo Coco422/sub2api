@@ -49,13 +49,14 @@ type QualityOwnershipRequest struct {
 	Fence   string `json:"fence"`
 	Confirm bool   `json:"confirm"`
 	Restore bool   `json:"-"`
+	Delete  bool   `json:"-"`
 }
 type QualityOwnershipRepository interface {
 	QualityOwnership(context.Context, int64, *QualityOwnershipRequest) (*QualityOwnershipPreview, error)
 }
 
 func (s *ScheduledTestService) QualityOwnership(ctx context.Context, id int64, request *QualityOwnershipRequest) (*QualityOwnershipPreview, error) {
-	if request != nil && request.Restore {
+	if request != nil && (request.Restore || request.Delete) {
 		if _, observer := ObserverGroupIDs(ctx); observer {
 			return nil, ErrObserverScope
 		}
