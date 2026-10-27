@@ -16,11 +16,14 @@ import (
 
 // The provider/model is supplied by the operator, never inferred from a model name.
 type QualityJudgeConfig struct {
+	// Empty preserves the ordinary LLM path used by existing plans.
+	Kind    string `json:"kind,omitempty"`
 	GroupID int64  `json:"group_id"`
 	ModelID string `json:"model_id"`
 	Prompt  string `json:"prompt"`
 }
 type QualityJudgment struct {
+	Kind      string `json:"kind,omitempty"`
 	Verdict   string `json:"verdict"`
 	Reason    string `json:"reason"`
 	AccountID int64  `json:"account_id,omitempty"`
@@ -55,6 +58,14 @@ func (s *QualityJudgeService) Judge(ctx context.Context, testedAccount int64, cf
 		return result
 	}
 	judge := cfg.Quality.Judge
+	if judge.Kind == "jev" {
+		// Jev must never fall through to business account selection.
+		return s.judgeJev(ctx, cfg, answer)
+	}
+	if judge.Kind != "" && judge.Kind != "llm" {
+		result.Reason = "judge_invalid_config"
+		return result
+	}
 	result.GroupID = judge.GroupID
 	result.ModelID = judge.ModelID
 	if len(answer) > 64000 {
