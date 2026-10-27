@@ -19,12 +19,17 @@ const modules = {
   groups: `export const getModelAllowlistCandidates=async()=>['synthetic-judge']; export const getAllIncludingInactive=async()=>[{id:21,name:'虚构普通判题分组',status:'active',platform:'openai'}];`,
   scheduled: `export default {create:async()=>({id:7}),update:async()=>({id:7}),delete:async()=>{},listResults:async()=>[],getResult:async()=>({})};`,
 }
+// Real JS fixtures let Vite's dependency scanner classify imports that replace
+// .vue files; a virtual ID there is incorrectly treated as an HTML entry.
+const fixtures = path.join(frontend, 'node_modules', '.quality-jev-fixtures')
+await fs.mkdir(fixtures, { recursive: true })
+for (const [name, source] of Object.entries(modules)) await fs.writeFile(path.join(fixtures, `${name}.mjs`), source)
 const aliases = [
   ['@/stores/auth', 'auth'], ['@/components/layout/AppLayout.vue', 'layout'],
   ['@/components/admin/operations/SmartOpsNav.vue', 'nav'],
   ['@/api/admin/accountQuality', 'quality'], ['@/api/admin/accounts', 'accounts'],
   ['@/api/admin/groups', 'groups'], ['@/api/admin/scheduledTests', 'scheduled'],
-].map(([find, name]) => ({ find, replacement: `virtual:jev-${name}` }))
+].map(([find, name]) => ({ find, replacement: path.join(fixtures, `${name}.mjs`) }))
 const html = `<!doctype html><meta charset="utf-8"><div id="app"></div><script type="module">
 import {createApp} from 'vue'; import {createPinia} from 'pinia'; import {createI18n} from 'vue-i18n'; import {createRouter,createMemoryHistory} from 'vue-router';
 import View from '/src/views/admin/AccountQualityView.vue'; import zh from '/src/i18n/locales/zh/qualityOps.ts'; import en from '/src/i18n/locales/en/qualityOps.ts'; import '/src/style.css';
@@ -37,10 +42,8 @@ const server = await createServer({
   plugins: [(vueModule.default || vueModule)(), {
     name: 'quality-jev-offline',
     resolveId(id, importer) {
-      if (id.startsWith('virtual:jev-')) return '\0' + id
-      if (id === './auth' && importer?.endsWith('/stores/accountQuality.ts')) return '\0virtual:jev-auth'
+      if (id === './auth' && importer?.endsWith('/stores/accountQuality.ts')) return path.join(fixtures, 'auth.mjs')
     },
-    load(id) { if (id.startsWith('\0virtual:jev-')) return modules[id.slice('\0virtual:jev-'.length)] },
     configureServer(vite) { vite.middlewares.use((req, res, next) => {
       if (req.url === '/') { res.setHeader('Content-Type', 'text/html'); void vite.transformIndexHtml('/', html).then(value => res.end(value)); return }
       next()
