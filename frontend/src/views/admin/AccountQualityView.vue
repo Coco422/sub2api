@@ -245,12 +245,13 @@
       </template>
       <template #footer><div class="detail-footer"><button class="btn btn-secondary" :disabled="operationIndex <= 0 || !detailOperation" @click="navigateOperation(-1)"><Icon name="arrowLeft" size="sm" />{{ t('qualityOps.previousRound') }}</button><span>{{ detailOperation ? `${operationIndex + 1} / ${filteredOperations.length}` : t('qualityOps.history') }}</span><button class="btn btn-secondary" :disabled="!detailOperation || operationIndex < 0 || operationIndex >= filteredOperations.length - 1" @click="navigateOperation(1)">{{ t('qualityOps.nextRound') }}<Icon name="arrowRight" size="sm" /></button></div></template>
     </BaseDialog>
-    <BaseDialog :show="!!deleteTargets.length" :title="t('qualityOps.deleteRulesTitle', { count: deleteTargets.length })" width="narrow" :close-on-escape="!deleting" :show-close-button="!deleting" @close="!deleting && (deleteTargets = [])">
+    <BaseDialog :show="!!deleteTargets.length" :title="t('qualityOps.deleteRulesTitle', { count: deleteTargets.length })" width="normal" :close-on-escape="!deleting" :show-close-button="!deleting" @close="!deleting && (deleteTargets = [])">
       <p class="text-sm text-gray-600 dark:text-gray-300">{{ deleteTargets.length > 1 ? t('qualityOps.bulkDeleteConfirm', { count: deleteTargets.length }) : t('qualityOps.deleteConfirm') }}</p>
       <ul class="mt-3 max-h-48 space-y-1 overflow-auto break-words text-sm" data-testid="quality-delete-targets"><li v-for="plan in deleteTargets" :key="plan.id">{{ name(plan) }} · {{ t('qualityOps.rule') }} #{{ plan.id }}</li></ul>
+      <div v-for="plan in deleteReviewTargets" :key="plan.id" class="mt-3" :data-delete-review="plan.id"><h4>{{ t('qualityOps.rule') }} #{{ plan.id }}</h4><QualityOwnershipReview :plan-id="plan.id" deleting :disabled="deleting" @deletable="deleteReady[plan.id] = $event" @deletion-fence="deleteFences[plan.id] = $event" @reconciled="store.refreshRules(true)" /></div>
       <p v-if="deleteProgress" class="mt-3 text-sm" role="status">{{ deleteProgress }}</p>
       <p v-if="deleteError" class="editor-error mt-3" role="alert" data-testid="quality-delete-error">{{ deleteError }}</p>
-      <template #footer><div class="flex justify-end gap-2"><button class="btn btn-secondary" :disabled="deleting" data-testid="quality-cancel-delete" @click="deleteTargets = []">{{ t('qualityOps.cancel') }}</button><button class="btn bg-red-600 text-white hover:bg-red-700" :disabled="deleting" data-testid="quality-confirm-delete" @click="confirmDelete">{{ deleting ? t('qualityOps.deleting') : t('qualityOps.delete') }}</button></div></template>
+      <template #footer><div class="flex justify-end gap-2"><button class="btn btn-secondary" :disabled="deleting" data-testid="quality-cancel-delete" @click="deleteTargets = []">{{ t('qualityOps.cancel') }}</button><button class="btn bg-red-600 text-white hover:bg-red-700" :disabled="deleting || deleteReviewTargets.some(plan => !deleteReady[plan.id])" data-testid="quality-confirm-delete" @click="confirmDelete">{{ deleting ? t('qualityOps.deleting') : t('qualityOps.delete') }}</button></div></template>
     </BaseDialog>
     <BaseDialog :show="!!templateDeleteTarget" :title="t('qualityOps.deleteTemplate')" width="narrow" :close-on-escape="!templateDeleting" @close="!templateDeleting && (templateDeleteTarget = null)">
       <p class="text-sm text-gray-600 dark:text-gray-300">{{ t('qualityOps.deleteTemplateConfirm') }}</p>
@@ -373,6 +374,9 @@ const busy = ref(false), error = ref(''), notice = ref(''), showForm = ref(false
 watch(showAccountPicker, (show) => { if (!show) invalidateAccountRequests() }, { flush: 'sync' })
 const pending = ref<Record<number, string>>({}), deleteTargets = ref<ScheduledTestPlan[]>([]), deleting = ref(false)
 const deleteError = ref(''), deleteProgress = ref('')
+const deleteFences = ref<Record<number, string>>({})
+const deleteReady = ref<Record<number, boolean>>({}), deleteConflicts = ref<number[]>([])
+const deleteReviewTargets = computed(() => deleteTargets.value.filter(plan => plan.pelican_config?.quality?.action === 'isolate_models' || deleteConflicts.value.includes(plan.id)))
 const discardPrompt = ref(false), initialForm = ref('')
 const judgeModels = ref<string[]>([])
 let judgeModelsRequest = 0, accountRequest = 0, detailRequest = 0, answerRequest = 0
@@ -570,7 +574,7 @@ const probeLabels: Record<StateProbeVerdict, string> = { healthy: 'qualityOps.pr
 function isProbePlan(plan: ScheduledTestPlan) { return plan.pelican_config?.question_kind === STATE_PROBE_QUESTION }
 function isProbeResult(result: ScheduledTestResult) { return result.pelican_config?.question_kind === STATE_PROBE_QUESTION }
 function resultLabel(result: ScheduledTestResult) {
-  if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogUnavailable' : 'qualityOps.modelUnsupportedSkipped')
+  if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogUnavailable' : result.error_message === 'model_unavailable' ? 'qualityOps.modelUnavailableSkipped' : 'qualityOps.modelUnsupportedSkipped')
   if (!result.status) return t('qualityOps.notLoaded')
   const verdict = stateProbeVerdict(result)
   if (verdict) return t(probeLabels[verdict])
@@ -589,7 +593,7 @@ function resultTone(result: ScheduledTestResult) {
   return result.status === 'success' ? 'tone-success' : 'tone-danger'
 }
 function resultContent(result: ScheduledTestResult) {
-  if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogSkipHelp' : 'qualityOps.unsupportedSkipHelp')
+  if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogSkipHelp' : result.error_message === 'model_unavailable' ? 'qualityOps.modelUnavailableSkipHelp' : 'qualityOps.unsupportedSkipHelp')
   return result.response_text || result.error_message || t('qualityOps.noAnswer')
 }
 function defaults() {
@@ -1050,8 +1054,10 @@ function requestDelete(ids: number[]) {
   const selected = new Set(ids)
   deleteTargets.value = plans.value.filter(plan => selected.has(plan.id))
   deleteError.value = deleteProgress.value = ''
+  deleteReady.value = {}; deleteFences.value = {}; deleteConflicts.value = []
 }
 async function confirmDelete() {
+  if (deleteReviewTargets.value.some(plan => !deleteReady.value[plan.id])) return
   if (!deleteTargets.value.length || deleting.value || busy.value || deleteTargets.value.some(plan => pending.value[plan.id])) return
   deleting.value = busy.value = true
   deleteError.value = deleteProgress.value = error.value = notice.value = ''
@@ -1062,7 +1068,9 @@ async function confirmDelete() {
     for (const plan of targets) {
       if (!alive || scope !== identity()) return
       try {
-        await scheduledTests.delete(plan.id)
+        if (deleteReviewTargets.value.some(target => target.id === plan.id)) {
+          await scheduledTests.delete(plan.id, { fence: deleteFences.value[plan.id], confirm: true })
+        } else await scheduledTests.delete(plan.id)
         if (!alive || scope !== identity()) return
         selectedRuleIds.value = selectedRuleIds.value.filter(id => id !== plan.id)
         bulkRuleIds.value = bulkRuleIds.value.filter(id => id !== plan.id)
@@ -1072,6 +1080,8 @@ async function confirmDelete() {
         if (historyPlan.value?.id === plan.id) closeDetails()
       } catch (e) {
         if (!alive || scope !== identity()) return
+        const failure = e as { reason?: string; response?: { data?: { reason?: string } } }
+        if ((failure.reason ?? failure.response?.data?.reason) === 'QUALITY_ISOLATION_SCOPE_CONFLICT' || (failure.reason ?? failure.response?.data?.reason) === 'QUALITY_OWNERSHIP_PREVIEW_CHANGED') { deleteConflicts.value.push(plan.id); deleteReady.value[plan.id] = false }
         failed.push(plan); failures.push(`#${plan.id}: ${message(e)}`)
       }
       completed++
