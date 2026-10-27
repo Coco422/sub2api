@@ -55,14 +55,20 @@ func (j *qualityJevJudge) config(ctx context.Context) (*ContentModerationConfig,
 	if j == nil || j.profile == nil || j.profile.settingRepo == nil {
 		return nil, "judge_jev_not_configured"
 	}
-	cfg, err := j.profile.loadConfig(ctx) // Pure read/parse; never Check or enqueue.
+	// Same stored settings and parser as auditing; no runtime snapshot refresh,
+	// request audit, hash lookup, queue, notification or penalty side effects.
+	values, err := j.profile.settingRepo.GetMultiple(ctx, []string{SettingKeyContentModerationConfig, SettingKeyRiskControlEnabled})
+	if err != nil {
+		return nil, "judge_jev_config_unavailable"
+	}
+	cfg, err := parseContentModerationConfig(values[SettingKeyContentModerationConfig])
 	if err != nil {
 		return nil, "judge_jev_config_unavailable"
 	}
 	if cfg.TypeSafe == nil || len(cfg.TypeSafe.APIKeys) == 0 {
 		return nil, "judge_jev_not_configured"
 	}
-	if !cfg.Enabled || cfg.Mode == ContentModerationModeOff || !j.profile.isRiskControlEnabled(ctx) {
+	if !cfg.Enabled || cfg.Mode == ContentModerationModeOff || values[SettingKeyRiskControlEnabled] != "true" {
 		return nil, "judge_jev_disabled"
 	}
 	cfg = cfg.effectiveEngine(ContentModerationEngineTypeSafe)

@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -tags=unit -json ./internal/pkg/typesafe ./internal/service -run 'Test(TypeSafeQuality|QualityJev|QualityJudge|QualityValidation|QualityOutcome|QualityRunner|RandomQualityRound|QualityRestoreDiagnostic)' -count=1 | tee "$RUNNER_TEMP/quality-jev-unit.jsonl"
+          go test -tags=unit -json ./internal/pkg/typesafe ./internal/service ./internal/handler/admin -run 'Test(TypeSafeQuality|QualityJev|QualityJudge|QualityValidation|QualityOutcome|QualityRunner|RandomQualityRound|QualityRestoreDiagnostic)' -count=1 | tee "$RUNNER_TEMP/quality-jev-unit.jsonl"
       - name: Isolated PostgreSQL and Redis seams
         working-directory: backend
         shell: bash
@@ -43,7 +43,7 @@ jobs:
           import json, os, pathlib
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
           events = [json.loads(line) for name in ('quality-jev-unit.jsonl', 'quality-jev-db.jsonl') for line in (root/name).read_text().splitlines() if line.startswith('{')]
-          required = ['TestTypeSafeQualityChoiceStrictProtocol', 'TestTypeSafeQualityChoiceOneAttemptBoundAndRedaction', 'TestQualityJevNativeIsolationAndUnknownSafety', 'TestQualityJevDisabledAndMissingConfigNeverCalls', 'TestQualityJevErrorsRetryRotationAndRedaction', 'TestQualityJevCancellationTimeoutAndConcurrency', 'TestQualityJevConfigValidationAndInputBounds', 'TestQualityJevURLPolicyAndNoAuditMutation', 'TestQualityJevRotationReloadsSavedCredentials', 'TestQualityJevGenerationLatencyAndDeterministicPriority', 'TestQualityJevPersistenceAndIsolationSafety']
+          required = ['TestTypeSafeQualityChoiceStrictProtocol', 'TestTypeSafeQualityChoiceOneAttemptBoundAndRedaction', 'TestQualityJevNativeIsolationAndUnknownSafety', 'TestQualityJevDisabledAndMissingConfigNeverCalls', 'TestQualityJevErrorsRetryRotationAndRedaction', 'TestQualityJevCancellationTimeoutAndConcurrency', 'TestQualityJevConfigValidationAndInputBounds', 'TestQualityJevURLPolicyAndNoAuditMutation', 'TestQualityJevRotationReloadsSavedCredentials', 'TestQualityJevGenerationLatencyAndDeterministicPriority', 'TestQualityJevAPICompatibilityAndPermission', 'TestQualityJevObserverCannotEnableSavedRule', 'TestQualityJevPersistenceAndIsolationSafety']
           passed = {e.get('Test') for e in events if e.get('Action') == 'pass'}
           assert set(required) <= passed, f'Missing executed gates: {set(required)-passed}'
       - uses: actions/upload-artifact@v7
