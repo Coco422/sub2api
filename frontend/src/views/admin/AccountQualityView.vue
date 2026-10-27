@@ -573,7 +573,7 @@ const probeLabels: Record<StateProbeVerdict, string> = { healthy: 'qualityOps.pr
 function isProbePlan(plan: ScheduledTestPlan) { return plan.pelican_config?.question_kind === STATE_PROBE_QUESTION }
 function isProbeResult(result: ScheduledTestResult) { return result.pelican_config?.question_kind === STATE_PROBE_QUESTION }
 function resultLabel(result: ScheduledTestResult) {
-  if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogUnavailable' : 'qualityOps.modelUnsupportedSkipped')
+  if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogUnavailable' : result.error_message === 'model_unavailable' ? 'qualityOps.modelUnavailableSkipped' : 'qualityOps.modelUnsupportedSkipped')
   if (!result.status) return t('qualityOps.notLoaded')
   const verdict = stateProbeVerdict(result)
   if (verdict) return t(probeLabels[verdict])
@@ -592,7 +592,7 @@ function resultTone(result: ScheduledTestResult) {
   return result.status === 'success' ? 'tone-success' : 'tone-danger'
 }
 function resultContent(result: ScheduledTestResult) {
-  if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogSkipHelp' : 'qualityOps.unsupportedSkipHelp')
+  if (result.status === 'skipped') return t(result.error_message === 'model_catalog_unavailable' ? 'qualityOps.catalogSkipHelp' : result.error_message === 'model_unavailable' ? 'qualityOps.modelUnavailableSkipHelp' : 'qualityOps.unsupportedSkipHelp')
   return result.response_text || result.error_message || t('qualityOps.noAnswer')
 }
 function defaults() {

@@ -207,7 +207,10 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 				}
 				_, excluded := unsupported.Load(samplePlan.ModelID)
 				if plan.PelicanConfig.Quality != nil && (catalogErr != nil || excluded || !containsString(allowed, samplePlan.ModelID)) {
-					reason := "model_unsupported"
+					reason := "model_unavailable"
+					if excluded {
+						reason = "model_unsupported"
+					}
 					if catalogErr != nil {
 						reason = "model_catalog_unavailable"
 					}

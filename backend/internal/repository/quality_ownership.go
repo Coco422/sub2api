@@ -158,7 +158,7 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 	}
 	// Never drop a legacy restriction simply because it is in a recognizable
 	// JSON field outside the supported composite Models/Groups ownership layout.
-	if state.PersistentModels || len(state.ModelApplied) > 0 || len(state.ModelRateLimits) > 0 || len(state.Removed) > 0 || state.PreviousConcurrency != nil || state.AppliedConcurrency != nil ||
+	if state.PersistentModels || len(state.ModelApplied) > 0 || len(state.ModelRateLimits) > 0 || len(state.Removed) > 0 || state.PreviousConcurrency != nil || state.AppliedConcurrency != nil || state.RecoveryTarget != nil || len(state.BPSApplied) > 0 || len(state.BPSPrevious) > 0 ||
 		(state.Groups != nil && (state.Groups.Action != "remove_groups" || len(state.Groups.ModelApplied) > 0 || len(state.Groups.ModelRateLimits) > 0 || state.Groups.Models != nil || state.Groups.Groups != nil)) ||
 		(state.Models != nil && (state.Models.Models != nil || state.Models.Groups != nil || len(state.Models.Removed) > 0)) {
 		return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_UNSUPPORTED_STATE", "retain unsupported ownership layout for review")
@@ -199,7 +199,7 @@ func (r *scheduledTestPlanRepository) QualityOwnership(ctx context.Context, id i
 	view := &service.QualityOwnershipPreview{PlanID: id, AccountID: accountID, RuleVersion: ruleVersion.UTC().Format(time.RFC3339Nano), AccountVersion: accountVersion.UTC().Format(time.RFC3339Nano), Action: state.Action, Models: append([]string{}, state.IsolationModels...), GroupIDs: append([]int64{}, state.IsolationGroupIDs...), Entries: []service.QualityOwnershipEntry{}}
 	if state.Models != nil {
 		// Legacy concurrency/cooldown ownership is not silently folded into this API.
-		if !state.Models.PersistentModels || state.Models.PreviousConcurrency != nil || state.Models.AppliedConcurrency != nil {
+		if !state.Models.PersistentModels || state.Models.PreviousConcurrency != nil || state.Models.AppliedConcurrency != nil || state.Models.RecoveryTarget != nil || len(state.Models.BPSApplied) > 0 || len(state.Models.BPSPrevious) > 0 {
 			return nil, infraerrors.Conflict("QUALITY_OWNERSHIP_UNSUPPORTED_STATE", "retain legacy concurrency ownership for review")
 		}
 		keys := map[string]bool{}

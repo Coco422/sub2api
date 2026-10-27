@@ -134,7 +134,7 @@ func (r *scheduledTestPlanRepository) Delete(ctx context.Context, id int64) erro
 	if err != nil {
 		return err
 	}
-	if state.Action == service.QualityActionIsolateModels {
+	if state.Action == service.QualityActionIsolateModels || state.Models != nil || state.Groups != nil {
 		return service.QualityScopeConflict("restore this rule's isolated models and groups before deleting it")
 	}
 	// Revalidate live ownership as well as durable snapshots. A stale/cleared

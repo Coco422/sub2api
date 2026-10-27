@@ -1,13 +1,13 @@
 <template>
   <section class="space-y-3 rounded border p-3" data-testid="quality-ownership-review">
-    <h4>{{ t('qualityOps.ownershipTitle') }}</h4>
+    <h4>{{ t(deleting ? 'qualityOps.deleteOwnershipTitle' : 'qualityOps.ownershipTitle') }}</h4>
     <p>{{ t(deleting ? 'qualityOps.deleteRestoreHelp' : 'qualityOps.ownershipNotUnlock') }}</p>
     <p v-if="scopeConflict" role="alert" data-testid="quality-scope-conflict">{{ t('qualityOps.scopeConflictHelp') }}</p>
     <p v-if="error" role="alert">{{ error }}</p>
     <button type="button" class="btn btn-secondary" :disabled="busy" @click="load">{{ t('qualityOps.previewOwnership') }}</button>
     <template v-if="preview">
       <p>{{ t('qualityOps.savedScope') }}: {{ preview.models.join(', ') || '—' }} · {{ preview.group_ids.join(', ') || '—' }}</p>
-      <p v-if="preview.ownership_retained">{{ t('qualityOps.managedEntriesRemain') }}</p>
+      <p v-if="preview.ownership_retained">{{ t(deleting ? 'qualityOps.deleteManagedEntries' : 'qualityOps.managedEntriesRemain') }}</p>
       <div class="overflow-auto">
         <table class="w-full text-left text-xs"><thead><tr><th>{{ t('qualityOps.ownershipTarget') }}</th><th>{{ t('qualityOps.ownershipExpected') }}</th><th>{{ t('qualityOps.ownershipCurrent') }}</th><th>{{ t('qualityOps.ownershipDecision') }}</th></tr></thead>
           <tbody><tr v-for="entry in preview.entries" :key="`${entry.kind}:${entry.model || entry.group_id}`">

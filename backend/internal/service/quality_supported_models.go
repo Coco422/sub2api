@@ -194,6 +194,10 @@ func (s *ScheduledTestService) supportedQualityModels(ctx context.Context, plan 
 	return supported, unsupported, nil
 }
 
+func qualityAccountAllowsModel(account *Account, model string) bool {
+	return (!account.IsTypeSafe() || model == typesafe.JevLatestModel) && account.IsModelSupported(model)
+}
+
 // eligibleQualityModels separates routing restrictions and observed rejections
 // from incomplete discovery at the actual business boundary.
 func (s *ScheduledTestService) eligibleQualityModels(ctx context.Context, plan *ScheduledTestPlan) ([]string, []string, error) {
@@ -209,7 +213,7 @@ func (s *ScheduledTestService) eligibleQualityModels(ctx context.Context, plan *
 	}
 	var allowed, blocked []string
 	for _, model := range qualityPlanModels(plan) {
-		if (account.IsTypeSafe() && model != typesafe.JevLatestModel) || !account.IsModelSupported(model) || account.Extra[qualityUnsupportedModelKey(model)] != nil || account.Extra[qualityUnsupportedModelKey(account.GetMappedModel(model))] != nil {
+		if !qualityAccountAllowsModel(account, model) || account.Extra[qualityUnsupportedModelKey(model)] != nil || account.Extra[qualityUnsupportedModelKey(account.GetMappedModel(model))] != nil {
 			blocked = append(blocked, model)
 		} else {
 			allowed = append(allowed, model)
@@ -252,6 +256,21 @@ func (s *ScheduledTestService) eligibleQualityModels(ctx context.Context, plan *
 }
 
 func (s *ScheduledTestService) validateQualityAccountModels(ctx context.Context, plan *ScheduledTestPlan) error {
+	if plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil && s.accountTests != nil {
+		account, err := s.accountTests.accountRepo.GetByID(ctx, plan.AccountID)
+		if err != nil {
+			return err
+		}
+		if account == nil {
+			return ErrAccountNotFound
+		}
+		for _, model := range qualityPlanModels(plan) {
+			if !qualityAccountAllowsModel(account, model) {
+				return infraerrors.BadRequest("QUALITY_MODEL_NOT_ALLOWED", "账号检测策略不允许所选模型，请核对模型映射、账号权限和检测通道")
+			}
+		}
+	}
+
 	_, unsupported, err := s.eligibleQualityModels(ctx, plan)
 	if err != nil {
 		return err

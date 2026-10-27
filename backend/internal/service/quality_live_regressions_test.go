@@ -70,7 +70,12 @@ func TestQualityLiveManualSelectionKeepsPolicyAndObservedRejection(t *testing.T)
 			svc.accountTests = &AccountTestService{accountRepo: &qualitySupportAccounts{account: account}}
 			svc.qualityModels = func(context.Context, int64) ([]string, error) { return []string{"gpt-6.1-sol"}, nil }
 			_, err := svc.CreatePlan(context.Background(), multiModelQualityPlan(t, `["gpt-6.1-sol"]`))
-			require.ErrorContains(t, err, "不支持检测模型")
+			if kind == "allowlist" {
+				require.Equal(t, "QUALITY_MODEL_NOT_ALLOWED", infraerrors.Reason(err))
+				require.NotContains(t, err.Error(), "不支持检测模型")
+			} else {
+				require.ErrorContains(t, err, "不支持检测模型")
+			}
 		})
 	}
 }
@@ -108,4 +113,32 @@ func TestQualityLiveAuthenticationAndPermissionFailuresAreNotModelRejections(t *
 	} {
 		require.False(t, qualityModelUnsupported(message), message)
 	}
+}
+
+func TestQualityLiveModelListCredentialReplacementRecoversWithoutCachedFailure(t *testing.T) {
+	calls := 0
+	upstream := &codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+		calls++
+		if req.Header.Get("Authorization") == "Bearer synthetic-old" {
+			response := ordinaryModelsUpstreamResponse(`{"error":{"code":"token_revoked","message":"synthetic-private"}}`)
+			response.StatusCode = 401
+			return response, nil
+		}
+		return ordinaryModelsUpstreamResponse(`{"data":[{"id":"gpt-6.1-sol"}]}`), nil
+	}}
+	gateway := newCodexModelsAPIKeyTestService(upstream)
+	tests := &AccountTestService{openaiGatewayService: gateway}
+	account := newCodexModelsAPIKeyTestAccount("https://models.example/v1")
+	account.Credentials["api_key"] = "synthetic-old"
+	_, err := tests.FetchOpenAIAccountModels(context.Background(), account)
+	require.Equal(t, "OPENAI_CODEX_MODELS_CREDENTIALS_INVALID", infraerrors.Reason(err))
+	// This is a synthetic credential replacement, not a real refresh/login.
+	account.Credentials["api_key"] = "synthetic-replaced"
+	models, err := tests.FetchOpenAIAccountModels(context.Background(), account)
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	require.Equal(t, "gpt-6.1-sol", models[0].ID)
+	_, err = tests.FetchOpenAIAccountModels(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, 2, calls, "successful replacement shares cache; failed credentials are not cached")
 }

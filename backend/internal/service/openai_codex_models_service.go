@@ -2018,7 +2018,7 @@ func (s *OpenAIGatewayService) fetchOpenAIModelsUpstream(ctx context.Context, re
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		body = s.redactAgentIdentitySensitiveBody(reqCtx, request.credentialAccount, body)
-		publicErr := infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_FAILED", "模型列表上游请求失败 [redacted]").WithMetadata(map[string]string{"upstream_status": fmt.Sprint(resp.StatusCode)})
+		publicErr := infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_FAILED", "codex models manifest upstream error %d: [redacted]", resp.StatusCode).WithMetadata(map[string]string{"upstream_status": fmt.Sprint(resp.StatusCode)})
 		if resp.StatusCode == http.StatusUnauthorized {
 			credentialState := "rejected"
 			var envelope struct {
