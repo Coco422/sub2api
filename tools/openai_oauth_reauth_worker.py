@@ -139,7 +139,7 @@ def operation_response_reason(response):
     except (ValueError, RecursionError):
         return 'unknown'
     code = credential_operation_reason(payload)
-    if code == 'unknown' and isinstance(payload, dict) and payload.get('page') == {'type': 'add_phone'}:
+    if code == 'unknown' and isinstance(payload, dict) and 'error' not in payload and payload.get('page') == {'type': 'add_phone'}:
         return 'phone_verification_required'
     return code
 
@@ -534,7 +534,7 @@ class WorkerAPI:
     def fail(self, task_id: int, reason: str) -> None:
         self._post(
             f"/api/v1/internal/openai-reauth/{task_id}/fail",
-            {"worker_id": self.config.worker_id, "reason": sanitize_error(reason)},
+            {"worker_id": self.config.worker_id, "reason": safe_worker_failure(WorkerError(reason))},
         )
 
 
@@ -1658,6 +1658,8 @@ def safe_worker_failure(exc: BaseException) -> str:
     if isinstance(exc, SessionStudioError):
         return exc.diagnostic()
     raw = str(exc).strip()
+    if raw.startswith("session_studio_failed"):
+        return sanitize_error(raw)  # Whole-protocol validator; never generic prose.
     if raw.startswith("local_protocol_failed"):
         try:
             from .openai_codex_oauth_adapter import STAGES, REASONS

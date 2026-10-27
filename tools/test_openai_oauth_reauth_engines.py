@@ -60,6 +60,18 @@ class ReauthEngineTests(unittest.TestCase):
                     'Your account has not been deactivated.', 'User said: "account_deleted"', 'x' * 10000):
             self.assertEqual(worker.safe_worker_failure(worker.WorkerError(raw)), 'worker_failed')
 
+    def test_real_api_failure_report_preserves_bounded_elapsed_and_drops_secrets(self):
+        api = worker.WorkerAPI(SimpleNamespace(worker_id='fixture-worker'))
+        api._post = Mock()
+        for diagnostic in (
+            'local_protocol_failed stage=web_login reason=phone_verification_required elapsed_ms=123456 exit=1',
+            'session_studio_failed stage=terminal_result reason=account_retired elapsed_ms=123456 http_status=0',
+        ):
+            api.fail(7, diagnostic)
+            self.assertEqual(api._post.call_args.args[1]['reason'], diagnostic)
+        api.fail(7, 'token password cookie totp phone synthetic-private')
+        self.assertEqual(api._post.call_args.args[1]['reason'], 'worker_failed')
+
     def test_email_adapter_ignores_external_guessed_codes_and_parses_actual_envelopes(self):
         cases = json.loads((Path(__file__).parent / 'fixtures' / 'credential-operation-errors.json').read_text())
         for case in cases:

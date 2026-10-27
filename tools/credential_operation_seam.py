@@ -25,14 +25,17 @@ def generate():
             def __enter__(self): return self
             def __exit__(self, *_args): pass
         api = SimpleNamespace(config=SimpleNamespace(), progress=Mock(), credentials=Mock(),
-                              fail=Mock(), claim=Mock(return_value=dict(task_id=7, account_id=42,
+                              claim=Mock(return_value=dict(task_id=7, account_id=42,
                               credential_mode='password_totp', engine='session_studio', oauth_profile='codex',
                               login_email='fixture', password='synthetic-private',
                               relogin_endpoint='https://fixture.invalid/relogin', relogin_headers={})))
+        reporter = worker.WorkerAPI(SimpleNamespace(worker_id='fixture-worker'))
+        reporter._post = Mock()
+        api.fail = reporter.fail
         with patch.object(worker.NO_REDIRECT_OPENER, 'open', return_value=Response()):
             assert worker.run_once(api, None)
         api.credentials.assert_not_called()
-        reason = api.fail.call_args.args[1]
+        reason = reporter._post.call_args.args[1]['reason']
         assert 'synthetic-private' not in reason
         expected = case['code'] if case['code'] != 'unknown' else 'provider_failed'
         assert f'reason={expected} ' in reason, (case['name'], reason)

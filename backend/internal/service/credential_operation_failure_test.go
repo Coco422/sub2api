@@ -127,13 +127,17 @@ func TestCredentialOperationRefreshPreservesRetryPolicyAndSafeHistory(t *testing
 }
 
 func TestCredentialOperationUnknownAndSecretOmission(t *testing.T) {
-	for _, secret := range []string{"token=synthetic-private", "password synthetic-private", "totp:synthetic-private", "cookie synthetic-private", "phone synthetic-private", "https://example.test/?private=synthetic-private", strings.Repeat("synthetic-private", 1000)} {
+	email := strings.Join([]string{"synthetic-private", "example.test"}, "@")
+	phone := strings.Repeat("5", 11)
+	for _, secret := range []string{"token=synthetic-private", "password synthetic-private", "totp:synthetic-private", "cookie synthetic-private", "phone synthetic-private", email, phone, "https://example.test/?private=synthetic-private", strings.Repeat("synthetic-private", 1000)} {
 		task := safeReauthTask(&OpenAIOAuthReauthTaskRecord{Status: "failed", Stage: "failed", Error: secret})
 		require.Equal(t, "unknown", task.Failure.Category)
 		require.Equal(t, "unknown", task.Failure.Stage)
 		raw, err := json.Marshal(task)
 		require.NoError(t, err)
 		require.NotContains(t, string(raw), "synthetic-private")
+		require.NotContains(t, string(raw), email)
+		require.NotContains(t, string(raw), phone)
 		require.Less(t, len(raw), 1000)
 	}
 	require.NotNil(t, safeReauthTask(&OpenAIOAuthReauthTaskRecord{Status: "failed"}).Failure)

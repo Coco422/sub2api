@@ -81,7 +81,7 @@ export function observeProtocolResponse(result, fallback = 'protocol_error') {
   const status = Number(result?.res?.status);
   const code = credentialOperationReason(payload);
   if (code !== 'unknown') throw new Error(code);
-  if (payload?.page?.type === 'add_phone') throw new Error('phone_verification_required');
+  if (!payload?.error && payload?.page?.type === 'add_phone') throw new Error('phone_verification_required');
   if (status >= 400 || payload?.error) {
     throw new Error(status === 429 ? 'rate_limited' : status >= 500 ? 'service_error' : fallback);
   }
