@@ -169,7 +169,7 @@ func TestQualityJevCancellationTimeoutAndConcurrency(t *testing.T) {
 	var calls atomic.Int32
 	entered := make(chan struct{}, 4)
 	release := make(chan struct{})
-	svc, cfg, _, _ := qualityJevFixture(t, func(req *http.Request) (*http.Response, error) {
+	svc, cfg, _, settings := qualityJevFixture(t, func(req *http.Request) (*http.Response, error) {
 		calls.Add(1)
 		entered <- struct{}{}
 		select {
@@ -205,7 +205,12 @@ func TestQualityJevCancellationTimeoutAndConcurrency(t *testing.T) {
 			return nil, req.Context().Err()
 		})}, nil
 	}
-	svc.jev.profile.settingRepo.(*contentModerationTestSettingRepo).values[SettingKeyContentModerationConfig] = strings.ReplaceAll(svc.jev.profile.settingRepo.(*contentModerationTestSettingRepo).values[SettingKeyContentModerationConfig], `"timeout_ms":1000`, `"timeout_ms":1`)
+	var saved ContentModerationConfig
+	require.NoError(t, json.Unmarshal([]byte(settings.values[SettingKeyContentModerationConfig]), &saved))
+	saved.TypeSafe.TimeoutMS = 1
+	body, err := json.Marshal(saved)
+	require.NoError(t, err)
+	settings.values[SettingKeyContentModerationConfig] = string(body)
 	require.Equal(t, "judge_jev_timeout", svc.Judge(t.Context(), 1, cfg, "21").Reason)
 }
 
