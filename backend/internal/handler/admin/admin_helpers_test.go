@@ -27,6 +27,8 @@ func TestParseTimeRange(t *testing.T) {
 	require.Equal(t, time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC), end)
 
 	req = httptest.NewRequest(http.MethodGet, "/?start_date=bad&timezone=UTC", nil)
+	// Gin caches query parameters per context; each request needs a new one.
+	c, _ = gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 	_, _, err = parseTimeRange(c)
 	require.Error(t, err, "explicit invalid bounds must not silently widen to the default window")

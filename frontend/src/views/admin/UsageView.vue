@@ -180,11 +180,11 @@
   </AppLayout>
   <UsageExportProgress :show="exportProgress.show" :progress="exportProgress.progress" :current="exportProgress.current" :total="exportProgress.total" :estimated-time="exportProgress.estimatedTime" @cancel="cancelExport" />
   <UsageCleanupDialog
-    v-if="!props.observerMode"
+    v-if="!props.observerMode && cleanupUsesCalendarDates"
     :show="cleanupDialogVisible"
     :filters="filters"
-    :start-date="calendarDate(startDate)"
-    :end-date="calendarDate(endDate)"
+    :start-date="startDate"
+    :end-date="endDate"
     @close="cleanupDialogVisible = false"
   />
   <!-- Balance history modal triggered from usage table user click -->
@@ -322,6 +322,9 @@ const getGranularityForRange = (start: string, end: string): 'day' | 'hour' => {
 }
 const defaultRange = getLast24HoursRangeDates()
 const startDate = ref(defaultRange.start); const endDate = ref(defaultRange.end)
+const cleanupUsesCalendarDates = computed(() =>
+  /^\d{4}-\d{2}-\d{2}$/.test(startDate.value) && /^\d{4}-\d{2}-\d{2}$/.test(endDate.value)
+)
 const datePreset = ref<string | null>('last24Hours')
 const filters = ref<AdminUsageQueryParams>({ user_id: undefined, model: undefined, group_id: undefined, request_type: undefined, native_compaction_v2: null, billing_type: null, start_date: startDate.value, end_date: endDate.value })
 const pagination = reactive({ page: 1, page_size: getPersistedPageSize(), total: 0 })
@@ -609,7 +612,14 @@ const handleIpGeoBatchFailed = () => {
   appStore.showError(t('usage.ipGeo.batchFailed'))
 }
 const cancelExport = () => exportAbortController?.abort()
-const openCleanupDialog = () => { if (!props.observerMode) cleanupDialogVisible.value = true }
+const openCleanupDialog = () => {
+  if (props.observerMode) return
+  if (!cleanupUsesCalendarDates.value) {
+    appStore.showWarning(t('admin.usage.cleanup.calendarRangeRequired'))
+    return
+  }
+  cleanupDialogVisible.value = true
+}
 const getRequestTypeLabel = (log: AdminUsageLog): string => {
   const requestType = resolveUsageRequestType(log)
   if (requestType === 'cyber') return t('usage.cyber')
