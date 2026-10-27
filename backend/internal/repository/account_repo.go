@@ -102,13 +102,12 @@ func stripCodexFingerprintSeedFromExtraUpdate(extra map[string]any) map[string]a
 	}
 	_, seedExists := extra["codex_fingerprint_seed"]
 	_, admissionExists := extra[service.OpenAITwoFAAdmissionExtraKey]
-	_, isolationExists := extra[service.QualityModelIsolationKey]
-	if !seedExists && !admissionExists && !isolationExists {
+	if !seedExists && !admissionExists {
 		return extra
 	}
 	stripped := make(map[string]any, len(extra)-1)
 	for key, value := range extra {
-		if key == "codex_fingerprint_seed" || key == service.OpenAITwoFAAdmissionExtraKey || key == service.QualityModelIsolationKey {
+		if key == "codex_fingerprint_seed" || key == service.OpenAITwoFAAdmissionExtraKey {
 			continue
 		}
 		stripped[key] = value
@@ -3413,7 +3412,10 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	updates.Extra = stripCodexFingerprintSeedFromExtraUpdate(updates.Extra)
+	updates.Extra = copyJSONMap(stripCodexFingerprintSeedFromExtraUpdate(updates.Extra))
+	// Only ordinary bulk saves reject this input; runtime UpdateExtra remains
+	// available to the dedicated isolation owner.
+	delete(updates.Extra, service.QualityModelIsolationKey)
 
 	setClauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)
