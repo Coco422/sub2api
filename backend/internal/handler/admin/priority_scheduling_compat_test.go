@@ -184,3 +184,103 @@ func TestPrioritySaveQuantileCompatibilityAndValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestPriorityErrorConfigLegacyAndSaveCompatibility(t *testing.T) {
+	repo := &priorityCompatSettings{value: `{"enabled":true}`}
+	settings := service.NewSettingService(repo, nil)
+	legacy, err := settings.GetPrioritySchedulingConfig(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, legacy.ErrorRateWeight)
+	require.Equal(t, 10, legacy.ErrorRateWindowMinutes)
+	require.Equal(t, 5, legacy.ErrorRatePriorSamples)
+	for _, explicit := range []bool{false, true} {
+		cfg := service.DefaultPrioritySchedulingConfig()
+		cfg.ErrorRateWeight = 70
+		cfg.ErrorRateWindowMinutes = 20
+		cfg.ErrorRatePriorSamples = 15
+		raw, err := json.Marshal(cfg)
+		require.NoError(t, err)
+		repo.value = string(raw)
+		var request map[string]any
+		require.NoError(t, json.Unmarshal(raw, &request))
+		delete(request, "error_rate_weight")
+		delete(request, "error_rate_window_minutes")
+		delete(request, "error_rate_prior_samples")
+		if explicit {
+			request["error_rate_weight"] = 0
+			request["error_rate_window_minutes"] = 1
+			request["error_rate_prior_samples"] = 1
+		}
+		raw, err = json.Marshal(request)
+		require.NoError(t, err)
+		h := &SettingHandler{settingService: settings}
+		router := gin.New()
+		router.PUT("/config", h.SavePriorityScheduling)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(rec, req)
+		require.Equal(t, 200, rec.Code, rec.Body.String())
+		saved, err := settings.GetPrioritySchedulingConfig(context.Background())
+		require.NoError(t, err)
+		if explicit {
+			require.Zero(t, saved.ErrorRateWeight)
+			require.Equal(t, 1, saved.ErrorRateWindowMinutes)
+			require.Equal(t, 1, saved.ErrorRatePriorSamples)
+		} else {
+			require.Equal(t, 70.0, saved.ErrorRateWeight)
+			require.Equal(t, 20, saved.ErrorRateWindowMinutes)
+			require.Equal(t, 15, saved.ErrorRatePriorSamples)
+		}
+	}
+}
+
+func TestPrioritySaveLatencyPenaltyModes(t *testing.T) {
+	for _, stored := range []string{"", service.PriorityLatencyDeprioritize, service.PriorityLatencyStop} {
+		for _, sent := range []string{"omitted", service.PriorityLatencyDeprioritize, service.PriorityLatencyStop, "invalid", ""} {
+			t.Run(stored+"/"+sent, func(t *testing.T) {
+				cfg := service.DefaultPrioritySchedulingConfig()
+				cfg.LatencyPenaltyMinutes = 10
+				body, _ := json.Marshal(cfg)
+				var initial map[string]any
+				require.NoError(t, json.Unmarshal(body, &initial))
+				if stored == "" {
+					delete(initial, "latency_penalty_mode")
+				} else {
+					initial["latency_penalty_mode"] = stored
+				}
+				body, _ = json.Marshal(initial)
+				repo := &priorityCompatSettings{value: string(body)}
+				h := &SettingHandler{settingService: service.NewSettingService(repo, nil)}
+				if sent == "omitted" {
+					delete(initial, "latency_penalty_mode")
+				} else {
+					initial["latency_penalty_mode"] = sent
+				}
+				body, _ = json.Marshal(initial)
+				router := gin.New()
+				router.PUT("/config", h.SavePriorityScheduling)
+				recorder := httptest.NewRecorder()
+				request := httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader(body))
+				request.Header.Set("Content-Type", "application/json")
+				router.ServeHTTP(recorder, request)
+				if sent == "invalid" || sent == "" {
+					require.Equal(t, http.StatusBadRequest, recorder.Code)
+					return
+				}
+				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+				var saved service.PrioritySchedulingConfig
+				require.NoError(t, json.Unmarshal([]byte(repo.value), &saved))
+				expected := sent
+				if sent == "omitted" {
+					expected = stored
+					if expected == "" {
+						expected = service.PriorityLatencyDeprioritize
+					}
+				}
+				require.Equal(t, expected, saved.LatencyPenaltyMode)
+				require.Equal(t, 10, saved.LatencyPenaltyMinutes)
+			})
+		}
+	}
+}

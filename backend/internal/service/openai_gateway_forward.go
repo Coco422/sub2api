@@ -91,6 +91,17 @@ func prismBrowserResponsesURL(baseURL string) string {
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (result *OpenAIForwardResult, resultErr error) {
+	admittedCtx, admissionErr := s.beginPriorityLatencyTurn(ctx, c, account, gjson.GetBytes(body, "model").String())
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	ctx = admittedCtx
+	endpoint := openAIResponsesUpstreamEndpoint
+	if IsOpenAIResponsesCompactPath(c) {
+		endpoint += "/compact"
+	}
+	ctx, errorScope := withPriorityAttemptScope(ctx, gjson.GetBytes(body, "model").String(), endpoint)
+	defer func() { errorScope.finish(result) }()
 	ctx = s.withOpenAIHTTPBudget(ctx, c)
 	var finishMeter func(*OpenAIForwardResult, error) error
 	var meterErr error

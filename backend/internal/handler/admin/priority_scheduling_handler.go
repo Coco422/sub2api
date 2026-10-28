@@ -19,13 +19,17 @@ func (h *SettingHandler) SavePriorityScheduling(c *gin.Context) {
 	defaults := service.DefaultPrioritySchedulingConfig()
 	var request struct {
 		service.PrioritySchedulingConfig
-		OAuthQuotaPriority         *bool   `json:"oauth_quota_priority"`
-		OAuthQuotaThreshold        *int    `json:"oauth_quota_threshold"`
-		BalanceProtocols           *bool   `json:"balance_protocols"`
-		LatencyPenaltyMinutes      *int    `json:"latency_penalty_minutes"`
-		LatencyPercentile          *int    `json:"latency_percentile"`
-		LatencyMeasurement         *string `json:"latency_measurement"`
-		RecoveryExplorationPercent *int    `json:"recovery_exploration_percent"`
+		ErrorRateWeight            *float64 `json:"error_rate_weight"`
+		ErrorRateWindowMinutes     *int     `json:"error_rate_window_minutes"`
+		ErrorRatePriorSamples      *int     `json:"error_rate_prior_samples"`
+		OAuthQuotaPriority         *bool    `json:"oauth_quota_priority"`
+		OAuthQuotaThreshold        *int     `json:"oauth_quota_threshold"`
+		BalanceProtocols           *bool    `json:"balance_protocols"`
+		LatencyPenaltyMode         *string  `json:"latency_penalty_mode"`
+		LatencyPenaltyMinutes      *int     `json:"latency_penalty_minutes"`
+		LatencyPercentile          *int     `json:"latency_percentile"`
+		LatencyMeasurement         *string  `json:"latency_measurement"`
+		RecoveryExplorationPercent *int     `json:"recovery_exploration_percent"`
 	}
 	request.PrioritySchedulingConfig = defaults
 	if c.ShouldBindJSON(&request) != nil {
@@ -33,19 +37,32 @@ func (h *SettingHandler) SavePriorityScheduling(c *gin.Context) {
 		return
 	}
 	cfg := request.PrioritySchedulingConfig
-	if request.OAuthQuotaPriority == nil || request.OAuthQuotaThreshold == nil || request.BalanceProtocols == nil || request.LatencyPenaltyMinutes == nil || request.LatencyPercentile == nil || request.LatencyMeasurement == nil || request.RecoveryExplorationPercent == nil {
+	if request.ErrorRateWeight == nil || request.ErrorRateWindowMinutes == nil || request.ErrorRatePriorSamples == nil || request.OAuthQuotaPriority == nil || request.OAuthQuotaThreshold == nil || request.BalanceProtocols == nil || request.LatencyPenaltyMode == nil || request.LatencyPenaltyMinutes == nil || request.LatencyPercentile == nil || request.LatencyMeasurement == nil || request.RecoveryExplorationPercent == nil {
 		current, err := h.settingService.GetPrioritySchedulingConfig(c.Request.Context())
 		if err != nil {
 			response.Error(c, http.StatusServiceUnavailable, "Priority scheduling configuration unavailable")
 			return
 		}
+		cfg.ErrorRateWeight = current.ErrorRateWeight
+		cfg.ErrorRateWindowMinutes = current.ErrorRateWindowMinutes
+		cfg.ErrorRatePriorSamples = current.ErrorRatePriorSamples
 		cfg.BalanceProtocols = current.BalanceProtocols
 		cfg.OAuthQuotaPriority = current.OAuthQuotaPriority
 		cfg.OAuthQuotaThreshold = current.OAuthQuotaThreshold
+		cfg.LatencyPenaltyMode = current.LatencyPenaltyMode
 		cfg.LatencyPenaltyMinutes = current.LatencyPenaltyMinutes
 		cfg.LatencyPercentile = current.LatencyPercentile
 		cfg.LatencyMeasurement = current.LatencyMeasurement
 		cfg.RecoveryExplorationPercent = current.RecoveryExplorationPercent
+	}
+	if request.ErrorRateWeight != nil {
+		cfg.ErrorRateWeight = *request.ErrorRateWeight
+	}
+	if request.ErrorRateWindowMinutes != nil {
+		cfg.ErrorRateWindowMinutes = *request.ErrorRateWindowMinutes
+	}
+	if request.ErrorRatePriorSamples != nil {
+		cfg.ErrorRatePriorSamples = *request.ErrorRatePriorSamples
 	}
 	if request.OAuthQuotaPriority != nil {
 		cfg.OAuthQuotaPriority = *request.OAuthQuotaPriority
@@ -55,6 +72,13 @@ func (h *SettingHandler) SavePriorityScheduling(c *gin.Context) {
 	}
 	if request.BalanceProtocols != nil {
 		cfg.BalanceProtocols = *request.BalanceProtocols
+	}
+	if request.LatencyPenaltyMode != nil {
+		if *request.LatencyPenaltyMode == "" {
+			response.BadRequest(c, "Invalid latency penalty mode")
+			return
+		}
+		cfg.LatencyPenaltyMode = *request.LatencyPenaltyMode
 	}
 	if request.LatencyPenaltyMinutes != nil {
 		cfg.LatencyPenaltyMinutes = *request.LatencyPenaltyMinutes

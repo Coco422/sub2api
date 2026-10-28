@@ -229,6 +229,7 @@ import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
 import { resolveSiteBillingMode } from '@/utils/siteBillingMode'
 import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
+import { getCustomMenuLabel } from '@/utils/customMenu'
 
 interface NavItem {
   path: string
@@ -810,7 +811,7 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/profile', label: t('nav.profile'), icon: UserIcon },
     ...customMenuItemsForUser.value.map((item): NavItem => ({
       path: `/custom/${item.id}`,
-      label: item.label,
+      label: getCustomMenuLabel(item, locale.value),
       icon: null,
       iconSvg: item.icon_svg,
     })),
@@ -870,6 +871,7 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/smart-ops', label: t('accountOps.smartTitle'), icon: SmartOpsIcon, expandOnly: true, children: [
       { path: '/admin/auto-config', label: t('autoConfig.title'), icon: AccountOpsIcon },
       { path: '/admin/priority-scheduling', label: t('priorityScheduling.title'), icon: AccountOpsIcon },
+      { path: '/admin/channel-operations', label: t('channelOps.title'), icon: ChannelIcon },
       { path: '/admin/account-quality', label: t('qualityOps.title'), icon: QualityOpsIcon },
       { path: '/admin/controlled-experiments', label: t('controlledExperiments.title'), icon: QualityOpsIcon },
       { path: '/admin/account-ops', label: t('accountOps.title'), icon: AccountOpsIcon },
@@ -892,6 +894,7 @@ const adminNavItems = computed((): NavItem[] => {
       children: [
         { path: '/admin/risk-control', label: t('nav.contentModeration'), icon: ShieldIcon, featureFlag: flagRiskControl },
         { path: '/admin/prompt-audit', label: t('nav.promptAudit'), icon: ShieldIcon, featureFlag: flagRiskControl },
+        { path: '/admin/safety-prompt-audit', label: t('admin.safetyPromptAudit.nav'), icon: ShieldIcon, featureFlag: flagRiskControl },
         { path: '/admin/ip-audit', label: t('ipAudit.title'), icon: ShieldIcon },
       ],
     },
@@ -935,14 +938,24 @@ const adminNavItems = computed((): NavItem[] => {
     filtered.push({ path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon })
     filtered.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
     for (const cm of customMenuItemsForAdmin.value) {
-      filtered.push({ path: `/custom/${cm.id}`, label: cm.label, icon: null, iconSvg: cm.icon_svg })
+      filtered.push({
+        path: `/custom/${cm.id}`,
+        label: getCustomMenuLabel(cm, locale.value),
+        icon: null,
+        iconSvg: cm.icon_svg,
+      })
     }
     return filtered
   }
 
   visible.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
   for (const cm of customMenuItemsForAdmin.value) {
-    visible.push({ path: `/custom/${cm.id}`, label: cm.label, icon: null, iconSvg: cm.icon_svg })
+    visible.push({
+      path: `/custom/${cm.id}`,
+      label: getCustomMenuLabel(cm, locale.value),
+      icon: null,
+      iconSvg: cm.icon_svg,
+    })
   }
   return visible
 })

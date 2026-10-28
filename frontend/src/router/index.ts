@@ -560,6 +560,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/admin/priority-scheduling', name: 'AdminPriorityScheduling', component: () => import('@/views/admin/PrioritySchedulingView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Priority scheduling', titleKey: 'priorityScheduling.title' } },
   { path: '/admin/auto-config', name: 'AdminAutoConfig', component: () => import('@/views/admin/AutoConfigView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Auto Configuration', titleKey: 'autoConfig.title' } },
   { path: '/admin/group-cache-tests', name: 'AdminGroupCacheTests', component: () => import('@/views/admin/GroupCacheTestView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Group cache test', titleKey: 'admin.groupCacheTest.title', descriptionKey: 'admin.groupCacheTest.description' } },
+  { path: '/admin/channel-operations', name: 'AdminChannelOperations', component: () => import('@/views/admin/ChannelOperationsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'channelOps.title', descriptionKey: 'channelOps.description' } },
   { path: '/admin/smart-ops', redirect: '/admin/account-quality', meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/admin/controlled-experiments', name: 'AdminControlledExperiments', component: () => import('@/views/admin/ControlledExperimentsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Controlled experiments', titleKey: 'controlledExperiments.title', descriptionKey: 'controlledExperiments.description' } },
   { path: '/admin/token-guard', name: 'AdminTokenGuard', component: () => import('@/views/admin/ops/TokenGuardView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Credential Guard', titleKey: 'tokenGuard.title', descriptionKey: 'tokenGuard.description' } },
@@ -732,6 +733,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/safety-prompt-audit',
+    name: 'AdminSafetyPromptAudit',
+    component: () => import('@/views/admin/SafetyPromptAuditView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Safety Injection Audit',
+      titleKey: 'admin.safetyPromptAudit.title',
+      descriptionKey: 'admin.safetyPromptAudit.description',
+      requiresRiskControl: true
+    }
+  },
+  {
     path: '/admin/usage',
     name: 'AdminUsage',
     component: () => import('@/views/admin/UsageView.vue'),
@@ -899,6 +913,22 @@ router.beforeEach(async (to, _from, next) => {
   if (!authInitialized) {
     authStore.checkAuth()
     authInitialized = true
+  }
+
+  // Old IP tabs are now a separate page. Normalize before auth/feature checks
+  // so refresh, same-route query navigation and login return URLs agree.
+  if (to.path === '/admin/prompt-audit' && to.query.tab === 'ip') {
+    const query = { ...to.query }
+    delete query.tab
+    next({ path: '/admin/ip-audit', query, hash: to.hash, replace: true })
+    return
+  }
+
+  // The former settings form now lives on IP Audit. Match the exact anchor
+  // so unrelated Security settings and their deep links stay on Settings.
+  if (to.path === '/admin/settings' && to.hash === '#ip-risk-settings') {
+    next({ path: '/admin/ip-audit', query: { ...to.query, tab: 'config' }, hash: to.hash, replace: true })
+    return
   }
 
   // Set page title
